@@ -11,19 +11,19 @@ pip install capacium
 ### From GitHub
 
 ```bash
-pip install git+https://github.com/typelicious/capacium.git
+pip install git+https://github.com/Capacium/capacium.git
 ```
 
 ### Via Homebrew
 
 ```bash
-brew install typelicious/tap/capacium
+brew install capacium/tap/capacium
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/typelicious/capacium.git
+git clone https://github.com/Capacium/capacium.git
 cd capacium
 pip install -e .
 ```

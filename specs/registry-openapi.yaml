@@ -7,7 +7,7 @@ info:
   version: "1.0.0"
   contact:
     name: Capacium Project
-    url: https://github.com/typelicious/capacium
+    url: https://github.com/Capacium/capacium
 
 servers:
   - url: https://registry.capacium.dev/v1
@@ -160,7 +160,7 @@ paths:
           description: Capability name (owner/name format)
           schema:
             type: string
-            example: "typelicious/web-fetcher"
+            example: "capacium/web-fetcher"
       responses:
         "200":
           description: Capability details
@@ -202,7 +202,7 @@ paths:
           description: Capability name (owner/name format)
           schema:
             type: string
-            example: "typelicious/web-fetcher"
+            example: "capacium/web-fetcher"
       responses:
         "200":
           description: List of versions
@@ -251,7 +251,7 @@ paths:
           description: Capability name (owner/name format)
           schema:
             type: string
-            example: "typelicious/web-fetcher"
+            example: "capacium/web-fetcher"
         - name: version
           in: query
           required: true
@@ -303,7 +303,7 @@ components:
           example: "web-fetcher"
         owner:
           type: string
-          example: "typelicious"
+          example: "capacium"
         version:
           type: string
           example: "1.2.0"
@@ -368,4 +368,4 @@ components:
           example: 404
         message:
           type: string
-          example: "Capability typelicious/web-fetcher not found"
+          example: "Capability capacium/web-fetcher not found"

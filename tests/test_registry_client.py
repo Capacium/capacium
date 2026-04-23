@@ -56,10 +56,10 @@ def test_search_empty():
 
 def test_get_capability_found():
     client = RegistryClient()
-    fake_data = {"name": "web-fetcher", "owner": "typelicious", "version": "1.2.0", "kind": "skill"}
+    fake_data = {"name": "web-fetcher", "owner": "capacium", "version": "1.2.0", "kind": "skill"}
 
     with patch("urllib.request.urlopen", return_value=FakeResponse(fake_data)):
-        result = client.get_capability(name="typelicious/web-fetcher", registry_url="http://localhost:8000/v1")
+        result = client.get_capability(name="capacium/web-fetcher", registry_url="http://localhost:8000/v1")
 
     assert result is not None
     assert result.name == "web-fetcher"

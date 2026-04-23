@@ -5,7 +5,7 @@ Thanks for your interest. Contributions are welcome.
 ## Development Setup
 
 ```bash
-git clone https://github.com/typelicious/capacium.git capacium
+git clone https://github.com/Capacium/capacium.git capacium
 cd capacium
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

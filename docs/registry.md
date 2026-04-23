@@ -26,7 +26,7 @@ The registry is used internally by all CLI commands. Key operations:
 
 ## Remote Registry
 
-The remote registry protocol is defined by an [OpenAPI spec](https://github.com/typelicious/capacium/blob/main/specs/registry-openapi.yaml).
+The remote registry protocol is defined by an [OpenAPI spec](https://github.com/Capacium/capacium/blob/main/specs/registry-openapi.yaml).
 
 ### Configuration
 
@@ -48,13 +48,13 @@ client = RegistryClient()
 results = client.search("web-fetcher", kind="skill")
 
 # Get capability details
-cap = client.get_capability("typelicious/web-fetcher")
+cap = client.get_capability("capacium/web-fetcher")
 
 # List versions
-versions = client.list_versions("typelicious/web-fetcher")
+versions = client.list_versions("capacium/web-fetcher")
 
 # Download an archive
-data = client.download("typelicious/web-fetcher", "1.2.0", dest_path="/tmp/cap.tar.gz")
+data = client.download("capacium/web-fetcher", "1.2.0", dest_path="/tmp/cap.tar.gz")
 ```
 
 ### API Endpoints

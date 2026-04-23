@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="cap",
         description="Capacium - Capability Packaging System for AI agent capabilities",
-        epilog="For more information, visit https://github.com/typelicious/capacium"
+        epilog="For more information, visit https://github.com/Capacium/capacium"
     )
     parser.add_argument(
         "-v", "--version",

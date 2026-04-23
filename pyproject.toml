@@ -8,7 +8,7 @@ version = "0.4.0"
 description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
 readme = "README.md"
 authors = [
-    {name = "typelicious"},
+    {name = "Capacium"},
 ]
 license = {text = "Apache-2.0"}
 classifiers = [
@@ -40,9 +40,9 @@ signing = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/typelicious/capacium"
-Repository = "https://github.com/typelicious/capacium"
-Issues = "https://github.com/typelicious/capacium/issues"
+Homepage = "https://github.com/Capacium/capacium"
+Repository = "https://github.com/Capacium/capacium"
+Issues = "https://github.com/Capacium/capacium/issues"
 
 [project.scripts]
 cap = "capacium.cli:main"

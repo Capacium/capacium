@@ -241,7 +241,7 @@ class TestRegistryClientWithKindFilter:
         client = RegistryClient()
         data = {
             "results": [
-                {"name": "skillweave", "owner": "typelicious", "version": "0.5.0", "kind": "bundle"},
+                {"name": "skillweave", "owner": "capacium", "version": "0.5.0", "kind": "bundle"},
             ]
         }
         with patch("urllib.request.urlopen", return_value=FakeResponse(data)) as mock:
@@ -281,9 +281,10 @@ class TestRegistryClientWithKindFilter:
 
     def test_get_capability_returns_bundle(self):
         client = RegistryClient()
-        data = {"name": "skillweave", "owner": "typelicious", "version": "0.5.0", "kind": "bundle"}
+        data = {"name": "skillweave", "owner": "capacium", "version": "0.5.0", "kind": "bundle"}
+
         with patch("urllib.request.urlopen", return_value=FakeResponse(data)):
-            result = client.get_capability(name="typelicious/skillweave", registry_url="http://localhost:8000/v1")
+            result = client.get_capability(name="capacium/skillweave", registry_url="http://localhost:8000/v1")
         assert result is not None
         assert result.kind == "bundle"
         assert result.name == "skillweave"

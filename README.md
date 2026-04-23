@@ -1,8 +1,8 @@
 # Capacium
 
-[![CI](https://github.com/typelicious/capacium/actions/workflows/ci.yml/badge.svg)](https://github.com/typelicious/capacium/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/typelicious/capacium/actions/workflows/codeql.yml/badge.svg)](https://github.com/typelicious/capacium/actions/workflows/codeql.yml)
-[![Release](https://img.shields.io/github/v/release/typelicious/capacium?display_name=tag)](https://github.com/typelicious/capacium/releases)
+[![CI](https://github.com/Capacium/capacium/actions/workflows/ci.yml/badge.svg)](https://github.com/Capacium/capacium/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Capacium/capacium/actions/workflows/codeql.yml/badge.svg)](https://github.com/Capacium/capacium/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/Capacium/capacium?display_name=tag)](https://github.com/Capacium/capacium/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](./pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-213%20passing-green.svg)](./tests/)
@@ -22,10 +22,10 @@ Works fully offline from local paths; a registry adds discovery, trust, and dist
 pip install capacium
 
 # From GitHub (works now)
-pip install git+https://github.com/typelicious/capacium.git
+pip install git+https://github.com/Capacium/capacium.git
 
 # Via Homebrew (requires custom tap)
-brew install typelicious/tap/capacium
+brew install capacium/tap/capacium
 
 # With optional signing support
 pip install capacium[yaml]  # Enable YAML lock files
