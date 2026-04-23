@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.ruff_cache/
+.benchmarks/
 *.db
 .capacium/
 .DS_Store

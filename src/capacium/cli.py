@@ -54,6 +54,11 @@ def main():
     publish_parser.add_argument("path", nargs="?", default=".", help="Path to capability directory (default: current directory)")
     publish_parser.add_argument("--registry", help="Target registry URL")
 
+    marketplace_parser = subparsers.add_parser("marketplace", help="Start the marketplace web UI")
+    marketplace_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    marketplace_parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
+    marketplace_parser.add_argument("--open", action="store_true", help="Open browser automatically")
+
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
@@ -115,6 +120,10 @@ def main():
             from .commands.publish import publish_capability
             success = publish_capability(Path(args.path))
             sys.exit(0 if success else 1)
+
+        elif args.command == "marketplace":
+            from .commands.marketplace import serve_marketplace
+            serve_marketplace(host=args.host, port=args.port, open_browser=args.open)
 
         else:
             parser.print_help()
