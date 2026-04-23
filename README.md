@@ -15,11 +15,26 @@ Capacium defines a standard manifest format (`capability.yaml`), a CLI (`cap`) f
 
 Works fully offline from local paths; a registry adds discovery, trust, and distribution when needed.
 
-## Quickstart
+## Installation
 
 ```bash
+# From PyPI (once published)
 pip install capacium
 
+# From GitHub (works now)
+pip install git+https://github.com/typelicious/capacium.git
+
+# Via Homebrew (requires custom tap)
+brew install typelicious/tap/capacium
+
+# With optional signing support
+pip install capacium[yaml]  # Enable YAML lock files
+pip install capacium[signing]  # Enable Ed25519 signing
+```
+
+### Quickstart
+
+```bash
 # Install a capability
 cap install code-reviewer --source ./my-skill
 

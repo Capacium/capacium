@@ -39,7 +39,7 @@ class RegistryClient:
     ) -> Dict[str, Any]:
         req_headers = {
             "Accept": "application/json",
-            "User-Agent": "capacium/0.3.1",
+            "User-Agent": "capacium/0.4.0",
         }
         token = os.environ.get("CAPACIUM_REGISTRY_TOKEN")
         if token:
@@ -132,7 +132,7 @@ class RegistryClient:
         )
         req_headers = {
             "Accept": "application/octet-stream",
-            "User-Agent": "capacium/0.3.1",
+            "User-Agent": "capacium/0.4.0",
         }
         token = os.environ.get("CAPACIUM_REGISTRY_TOKEN")
         if token:

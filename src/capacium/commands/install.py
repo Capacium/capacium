@@ -4,11 +4,10 @@ from typing import Optional, List
 from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
-from ..symlink_manager import SymlinkManager
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..manifest import Manifest
-from ..adapters.opencode import OpenCodeAdapter
+from ..adapters import get_adapters_for_manifest
 from ..models import Capability, Kind
 
 
@@ -29,20 +28,23 @@ def install_capability(cap_spec: str, source_dir: Optional[Path] = None, no_lock
 
     storage = StorageManager()
     registry = Registry()
-    adapter = OpenCodeAdapter()
 
     existing = registry.get_capability(cap_id, version)
     if existing:
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
-    success = adapter.install_capability(cap_name, version, source_dir, owner=owner)
-    if not success:
-        print("Failed to install capability for opencode.")
-        return False
+    source_manifest = Manifest.detect_from_directory(source_dir)
+    adapters = get_adapters_for_manifest(source_manifest)
+    frameworks = source_manifest.frameworks or ["opencode"]
+
+    for fw, adapter in zip(frameworks, adapters):
+        success = adapter.install_capability(cap_name, version, source_dir, owner=owner)
+        if not success:
+            print(f"Failed to install capability for {fw}.")
+            return False
 
     package_dir = storage.get_package_dir(cap_name, version, owner=owner)
-
     manifest = Manifest.detect_from_directory(package_dir)
     errors = manifest.validate()
     if errors:
@@ -57,6 +59,7 @@ def install_capability(cap_spec: str, source_dir: Optional[Path] = None, no_lock
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
 
+    first_fw = (frameworks or ["opencode"])[0]
     cap = Capability(
         owner=owner,
         name=cap_name,
@@ -66,7 +69,7 @@ def install_capability(cap_spec: str, source_dir: Optional[Path] = None, no_lock
         install_path=package_dir,
         installed_at=datetime.now(),
         dependencies=[],
-        framework="opencode"
+        framework=first_fw,
     )
 
     registry.add_capability(cap)
@@ -137,11 +140,12 @@ def _install_single_sub_cap(
         shutil.rmtree(package_dir)
     shutil.copytree(source_path, package_dir)
 
-    sm = SymlinkManager()
-    link_path = Path.home() / ".opencode" / "skills" / sub_name
-    sm.create_symlink(package_dir, link_path)
-
     sub_manifest = Manifest.detect_from_directory(package_dir)
+    adapters = get_adapters_for_manifest(sub_manifest)
+    frameworks = sub_manifest.frameworks or ["opencode"]
+    for fw, adapter in zip(frameworks, adapters):
+        adapter.install_capability(sub_name, version, source_path, owner=owner)
+
     sub_errors = sub_manifest.validate()
     if sub_errors:
         for e in sub_errors:
@@ -155,6 +159,7 @@ def _install_single_sub_cap(
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
 
+    first_fw = (frameworks or ["opencode"])[0]
     capacity = Capability(
         owner=owner,
         name=sub_name,
@@ -164,7 +169,7 @@ def _install_single_sub_cap(
         install_path=package_dir,
         installed_at=datetime.now(),
         dependencies=[],
-        framework="opencode"
+        framework=first_fw,
     )
 
     registry.add_capability(capacity)

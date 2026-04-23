@@ -8,6 +8,18 @@
 pip install capacium
 ```
 
+### From GitHub
+
+```bash
+pip install git+https://github.com/typelicious/capacium.git
+```
+
+### Via Homebrew
+
+```bash
+brew install typelicious/tap/capacium
+```
+
 ### From Source
 
 ```bash

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -65,3 +66,53 @@ class OpenCodeAdapter(FrameworkAdapter):
                 metadata["files"].append(str(rel_path))
 
         return metadata
+
+
+class OpencodeCommandAdapter(FrameworkAdapter):
+
+    def __init__(self):
+        self.storage = StorageManager()
+        self.commands_dir = Path.home() / ".config" / "opencode" / "commands"
+        self.commands_dir.mkdir(parents=True, exist_ok=True)
+
+    def install_capability(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
+        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
+        if package_dir.exists():
+            shutil.rmtree(package_dir)
+        shutil.copytree(source_dir, package_dir)
+
+        md_files = sorted(package_dir.glob("*.md"))
+        cmd_file = None
+        for f in md_files:
+            if f.stem == cap_name:
+                cmd_file = f
+                break
+        if cmd_file is None and md_files:
+            cmd_file = md_files[0]
+
+        if cmd_file is None or not cmd_file.exists():
+            print(f"  Warning: No .md file found for command '{cap_name}'")
+            return False
+
+        link_path = self.commands_dir / f"{cap_name}.md"
+        if link_path.exists():
+            link_path.unlink()
+        try:
+            os.symlink(str(cmd_file), str(link_path))
+        except OSError as e:
+            print(f"  Failed to create command symlink: {e}")
+            return False
+
+        metadata = {"name": cap_name, "version": version, "file": cmd_file.name}
+        with open(package_dir / ".capacium-meta.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        return True
+
+    def remove_capability(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.commands_dir / f"{cap_name}.md"
+        if link_path.exists():
+            link_path.unlink()
+        return True
+
+    def capability_exists(self, cap_name: str) -> bool:
+        return (self.commands_dir / f"{cap_name}.md").exists()
