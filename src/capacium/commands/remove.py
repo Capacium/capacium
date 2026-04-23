@@ -1,5 +1,3 @@
-from pathlib import Path
-from typing import Optional
 import shutil
 from ..storage import StorageManager
 from ..registry import Registry

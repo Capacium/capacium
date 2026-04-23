@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 from ..registry import Registry
 from ..manifest import Manifest
 from ..fingerprint import compute_fingerprint

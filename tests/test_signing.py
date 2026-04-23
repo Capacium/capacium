@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-import pytest
 
 from capacium.signing import (
     generate_keypair,
@@ -16,7 +15,6 @@ from capacium.signing import (
     export_public_key_pem,
     sign,
     verify,
-    get_keys_dir,
 )
 from capacium.registry import Registry
 from capacium.fingerprint import compute_fingerprint

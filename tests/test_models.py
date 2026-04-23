@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 from capacium.models import Capability, Kind
 

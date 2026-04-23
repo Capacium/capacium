@@ -3,7 +3,6 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from http.server import HTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 

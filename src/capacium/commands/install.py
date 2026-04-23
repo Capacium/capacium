@@ -1,4 +1,3 @@
-import sys
 import shutil
 from pathlib import Path
 from typing import Optional, List
@@ -133,8 +132,6 @@ def _install_single_sub_cap(
     storage: StorageManager,
     no_lock: bool,
 ) -> None:
-    adapter = OpenCodeAdapter()
-
     package_dir = storage.get_package_dir(sub_name, version, owner=owner)
     if package_dir.exists():
         shutil.rmtree(package_dir)

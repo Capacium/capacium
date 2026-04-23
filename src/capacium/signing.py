@@ -251,7 +251,6 @@ def verify(pubkey_bytes: bytes, signature: bytes, data: bytes) -> bool:
     try:
         if backend["name"] == "cryptography":
             from cryptography.hazmat.primitives.asymmetric import ed25519
-            from cryptography.exceptions import InvalidSignature
             public_key = ed25519.Ed25519PublicKey.from_public_bytes(pubkey_bytes)
             public_key.verify(signature, data)
             return True

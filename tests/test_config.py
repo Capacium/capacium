@@ -3,8 +3,6 @@ from capacium.utils.config import (
     get_config_dir,
     get_registry_path,
     get_cache_dir,
-    get_active_dir,
-    get_packages_dir,
     load_config,
     save_config,
     get_config,

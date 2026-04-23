@@ -205,7 +205,6 @@ class TestAdapterAutoSelection:
         assert isinstance(adapter, CustomAdapter)
 
     def test_get_unknown_adapter_raises(self):
-        from contextlib import nullcontext
         import pytest
         with pytest.raises(ValueError, match="Unknown framework adapter: nonexistent"):
             get_adapter("nonexistent")

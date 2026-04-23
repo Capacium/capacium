@@ -1,9 +1,8 @@
-import sqlite3
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from enum import Enum, auto
+from enum import Enum
 
 
 class Kind(Enum):

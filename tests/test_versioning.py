@@ -1,4 +1,3 @@
-from pathlib import Path
 from capacium.versioning import VersionManager
 
 

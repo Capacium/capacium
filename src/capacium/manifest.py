@@ -1,8 +1,7 @@
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional, Dict, List, Any
-from .models import Kind
+from typing import Dict, List, Any
 
 
 MANIFEST_FILENAME = "capability.yaml"

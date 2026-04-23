@@ -1,6 +1,5 @@
 import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from capacium.registry_client import RegistryClient, RegistryResult, RegistryClientError
 
 

@@ -1,4 +1,3 @@
-from pathlib import Path
 from ..registry import Registry
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint

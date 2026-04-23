@@ -1,4 +1,3 @@
-from pathlib import Path
 from capacium.fingerprint import compute_fingerprint, verify_fingerprint
 
 

@@ -7,7 +7,7 @@ from capacium.fingerprint import compute_bundle_fingerprint, compute_fingerprint
 from capacium.manifest import Manifest
 from capacium.models import Capability, Kind, LockFile, LockEntry
 from capacium.registry import Registry
-from capacium.registry_client import RegistryClient, RegistryResult
+from capacium.registry_client import RegistryClient
 
 
 # ── INTEG-001.1: Bundle manifest with lock file integration ──────────────

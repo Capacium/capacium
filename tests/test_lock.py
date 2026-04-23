@@ -76,7 +76,7 @@ class TestLockCapability:
 
         from capacium.registry import Registry
         from capacium.fingerprint import compute_fingerprint
-        from capacium.models import Capability, Kind
+        from capacium.models import Kind
 
         cap_dir = tmp_path / ".capacium" / "packages" / "owner" / "test-cap" / "1.0.0"
         cap_dir.mkdir(parents=True)
@@ -106,7 +106,6 @@ class TestLockCapability:
 
     def _install_dep(self, tmp_path, name, version, fingerprint, owner="owner"):
         from capacium.registry import Registry
-        from capacium.models import Capability, Kind
         dep_dir = tmp_path / ".capacium" / "packages" / owner / name / version
         dep_dir.mkdir(parents=True)
         (dep_dir / "capability.yaml").write_text(f"kind: skill\nname: {name}\nversion: {version}\n")
@@ -187,7 +186,6 @@ class TestEnforceLock:
 
         from capacium.registry import Registry
         from capacium.fingerprint import compute_fingerprint
-        from capacium.models import Capability, Kind
 
         cap_dir = tmp_path / ".capacium" / "packages" / "owner" / "test-cap" / "1.0.0"
         cap_dir.mkdir(parents=True)
@@ -222,7 +220,6 @@ class TestEnforceLock:
 
     def _install_dep_to_registry(self, tmp_path, name, version, fingerprint):
         from capacium.registry import Registry
-        from capacium.models import Capability, Kind
         dep_dir = tmp_path / ".capacium" / "packages" / "owner" / name / version
         dep_dir.mkdir(parents=True)
         (dep_dir / "lib.py").write_text("")

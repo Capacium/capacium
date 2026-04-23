@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from capacium.manifest import Manifest
 from capacium.fingerprint import compute_bundle_fingerprint

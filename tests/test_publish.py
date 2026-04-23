@@ -1,4 +1,3 @@
-from pathlib import Path
 from capacium.commands.publish import publish_capability
 
 

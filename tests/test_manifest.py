@@ -1,4 +1,3 @@
-from pathlib import Path
 from capacium.manifest import Manifest, parse_cap_id, format_cap_id
 
 

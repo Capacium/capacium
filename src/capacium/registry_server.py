@@ -1,5 +1,4 @@
 import json
-import os
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -115,7 +114,7 @@ class MarketplaceHandler(SimpleHTTPRequestHandler):
                     self._json_response(400, {
                         "error": f"Invalid kind: {kind}",
                         "code": 400,
-                        "message": f"Must be one of: skill, bundle, tool, prompt, template, workflow"
+                        "message": "Must be one of: skill, bundle, tool, prompt, template, workflow"
                     })
                     return
 

@@ -1,10 +1,9 @@
 import base64
-from pathlib import Path
 from typing import Optional
 from ..registry import Registry
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..models import Kind
-from ..signing import load_public_key, verify, list_keys
+from ..signing import load_public_key, verify
 
 
 def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False,
