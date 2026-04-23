@@ -22,9 +22,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml cryptography pytest pytest-cov
+          pip install pyyaml cryptography pytest pytest-cov ruff
+          pip install -e .
       - name: Lint with ruff
-        uses: chartboost/ruff-action@v1
+        run: python -m ruff check .
       - name: Test with pytest
         run: |
           python -m pytest tests/ -v --tb=short --cov=src/capacium
