@@ -4,13 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capacium"
-version = "0.4.0"
+version = "0.4.1"
 description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
 readme = "README.md"
 authors = [
     {name = "Capacium"},
 ]
 license = {text = "Apache-2.0"}
+keywords = [
+    "ai",
+    "agents",
+    "skills",
+    "capabilities",
+    "packaging",
+    "workflow",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
