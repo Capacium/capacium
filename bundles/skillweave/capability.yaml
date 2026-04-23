@@ -1,0 +1,22 @@
+kind: bundle
+name: skillweave
+version: 0.5.0
+description: SkillWeave - multi-agent orchestration system for AI agent workflows
+author: Capacium Team
+license: MIT
+frameworks:
+  - opencode
+  - claude-code
+  - gemini-cli
+
+capabilities:
+  - name: skillweave-core
+    source: ./skills/skillweave-core
+  - name: skillweave-blueprint
+    source: ./skills/skillweave-blueprint
+  - name: skillweave-promptchain
+    source: ./skills/skillweave-promptchain
+
+dependencies:
+  pyyaml: ">=6.0"
+  jsonschema: ">=4.0"

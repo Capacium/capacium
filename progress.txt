@@ -58,3 +58,88 @@
 ### Notes
 - PyYAML is optional (yaml extra); without it YAML→JSON→regex fallback chain still works
 - Git repository initialized for version control
+
+---
+
+## 2026-04-23: Phase 2 — SkillWeave Adapter, PRD Sequence Generation & Validation
+
+### What was done
+- Created `adapters/opencode.py` — full OpenCode adapter implementing framework adapter pattern
+- Created `adapters/base.py` — abstract base class for all framework adapters
+- Generated PRD-derived execution sequences, complexity analysis, dependency graph, parallel opportunities, risk assessment, verification plan, and workflow recommendations under `prd/`
+- Validated and iterated on generated sequences to ensure correctness
+- Discovered and added missing `AdaptExecutePrompt`  to the SkillWeave adapter API
+- Verified all 49 existing tests continue to pass
+
+### Technical decisions
+- Framework adapters implement consistent `install`/`remove`/`list`/`verify` interface via ABC
+- OpenCode adapter maps Capacium capability kinds to OpenCode's skill-only model
+
+### Files created
+- `src/capacium/adapters/base.py` — FrameworkAdapter ABC
+- `src/capacium/adapters/opencode.py` — OpenCode adapter implementation
+- `prd/complexity-analysis.md`, `prd/dependency-graph.dot`
+- `prd/execution-sequences.yaml`, `prd/parallel-opportunities.json`
+- `prd/risk-assessment.md`, `prd/verification-plan.md`
+- `prd/workflow-recommendation.md`
+
+### Files modified
+- `src/capacium/adapters/__init__.py` — Updated imports
+- `src/capacium/cli.py` — Added import for adapters (existing import)
+
+### Notes
+- Extraction plan (docs/extraction-plan.md) tracks module mapping: SWPM `frameworks/opencode.py` → Capacium `adapters/opencode.py`
+- PRD sequence documents in `prd/` provide structured execution plans for remaining work
+
+---
+
+## 2026-04-23: Phase 2 — Full Implementation (5 Workstreams)
+
+### What was done
+- **WS-BUNDLE**: Bundle support for kind:bundle — recursive sub-cap installation, removal with reference counting, bundle fingerprinting, list/search --kind filtering, bundle member tracking via `bundle_members` table
+- **WS-ADAPTERS**: Claude Code (`adapters/claude_code.py`) + Gemini CLI (`adapters/gemini_cli.py`) framework adapters with adapter auto-selection based on manifest `frameworks:` field
+- **WS-LOCK**: Lock file system — `LockFile`/`LockEntry` dataclasses, `cap lock` command with `--update`, lock enforcement on install with `--no-lock` bypass
+- **WS-REGISTRY**: OpenAPI 3.0 spec (`specs/registry-openapi.yaml`), stdlib-only REST client (`registry_client.py`), `cap search --registry <url>`, `cap publish` stub
+- **Integration**: SkillWeave bundle (`bundles/skillweave/capability.yaml`), cross-workstream integration tests, AGENTS.md updated
+
+### Test results
+- **164 tests passing** (49 Phase 1 + 115 Phase 2)
+- No regressions, all existing tests continue to pass
+- New test files: test_bundle.py (20), test_adapters.py (28), test_lock.py (20), test_registry_client.py (11), test_publish.py (3), test_bundle_skillweave.py (14), test_integration_phase2.py (17)
+
+### Files created
+- `src/capacium/adapters/claude_code.py` — Claude Code framework adapter
+- `src/capacium/adapters/gemini_cli.py` — Gemini CLI framework adapter
+- `src/capacium/commands/lock.py` — Lock command (generate + enforce)
+- `src/capacium/commands/publish.py` — Publish command stub
+- `src/capacium/registry_client.py` — REST client for remote registry
+- `specs/registry-openapi.yaml` — OpenAPI 3.0 registry protocol spec
+- `bundles/skillweave/capability.yaml` — SkillWeave bundle manifest
+- 7 new test files
+
+### Files modified
+- `src/capacium/manifest.py` — Bundle capabilities section validation
+- `src/capacium/models.py` — LockFile, LockEntry dataclasses
+- `src/capacium/registry.py` — bundle_members table, reference counting
+- `src/capacium/fingerprint.py` — compute_bundle_fingerprint()
+- `src/capacium/cli.py` — lock + publish commands, --force on remove, --no-lock on install
+- `src/capacium/commands/install.py` — Bundle detection + recursive install, lock enforcement, adapter auto-selection
+- `src/capacium/commands/remove.py` — Bundle recursive remove + --force, adapter selection from registry
+- `src/capacium/commands/search.py` — --kind + --registry flags
+- `src/capacium/commands/verify.py` — Bundle sub-cap verification
+- `src/capacium/adapters/__init__.py` — Adapter registry (register_adapter, get_adapter, get_adapter_for_manifest)
+- `AGENTS.md` — Phase 2 patterns, all CLI commands documented
+- `README.md` — Added community files (CoC, contributing, security), Apache 2.0 license
+- `pyproject.toml` — MIT → Apache-2.0, author update
+- `LICENSE` — Apache 2.0 full text
+
+### CLI commands available
+```
+cap install, cap remove, cap list, cap search, cap verify, cap update, cap package, cap lock, cap publish
+```
+
+### Notes
+- All 5 Phase 2 workstreams implemented in a single session using parallel task agents
+- 4 workstreams executed in parallel (bundle, adapters, lock, registry) — no cross-dependencies
+- Integration phase (SkillWeave bundle, cross-stream tests, docs) executed sequentially after
+- Repo safety files added: CODE_OF_CONDUCT.md, CONTRIBUTING.md, SECURITY.md

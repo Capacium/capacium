@@ -34,3 +34,10 @@ def compute_fingerprint(directory: Path, exclude_patterns: Optional[List[str]] =
 def verify_fingerprint(directory: Path, expected_fingerprint: str) -> bool:
     actual = compute_fingerprint(directory)
     return actual == expected_fingerprint
+
+
+def compute_bundle_fingerprint(sub_cap_fingerprints: List[str]) -> str:
+    hasher = hashlib.sha256()
+    for fp in sorted(sub_cap_fingerprints):
+        hasher.update(fp.encode("utf-8"))
+    return hasher.hexdigest()

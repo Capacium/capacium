@@ -68,3 +68,65 @@ class Capability:
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
         return cls(**filtered)
+
+
+@dataclass
+class LockEntry:
+    name: str
+    version: str
+    fingerprint: str
+
+
+@dataclass
+class LockFile:
+    name: str
+    version: str
+    fingerprint: str
+    dependencies: List[LockEntry]
+    source: str
+    created_at: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "fingerprint": self.fingerprint,
+            "dependencies": [asdict(dep) for dep in self.dependencies],
+            "source": self.source,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LockFile":
+        deps = [LockEntry(**d) for d in data.get("dependencies", [])]
+        created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
+        return cls(
+            name=data["name"],
+            version=data["version"],
+            fingerprint=data["fingerprint"],
+            dependencies=deps,
+            source=data.get("source", ""),
+            created_at=created_at,
+        )
+
+    def save(self, path: Path) -> None:
+        try:
+            import yaml
+            with open(path, "w") as f:
+                yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+        except ImportError:
+            import json
+            with open(path, "w") as f:
+                json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, path: Path) -> "LockFile":
+        try:
+            import yaml
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except ImportError:
+            import json
+            with open(path) as f:
+                data = json.load(f)
+        return cls.from_dict(data)

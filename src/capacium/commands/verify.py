@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Optional
 from ..registry import Registry
-from ..fingerprint import compute_fingerprint
+from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
+from ..models import Kind
 
 
 def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False) -> bool:
@@ -15,27 +16,32 @@ def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False) 
 
         all_ok = True
         for cap in capabilities:
-            ok = _verify_single(cap.id, registry)
+            ok = _verify_single(cap, registry)
             if not ok:
                 all_ok = False
         return all_ok
 
     elif cap_spec:
-        return _verify_single(cap_spec, registry)
+        cap = registry.get_capability(cap_spec)
+        if cap is None:
+            print(f"Capability {cap_spec} not found.")
+            return False
+        return _verify_single(cap, registry)
 
     else:
         print("Error: specify a capability or --all")
         return False
 
 
-def _verify_single(cap_spec: str, registry: Registry) -> bool:
-    cap = registry.get_capability(cap_spec)
-    if cap is None:
-        print(f"Capability {cap_spec} not found.")
-        return False
+def _verify_single(cap, registry: Registry) -> bool:
+    if cap.kind == Kind.BUNDLE:
+        return _verify_bundle(cap, registry)
+    return _verify_regular(cap, registry)
 
+
+def _verify_regular(cap, registry: Registry) -> bool:
     if not cap.install_path or not cap.install_path.exists():
-        print(f"ERROR: Install path for {cap_spec} does not exist: {cap.install_path}")
+        print(f"ERROR: Install path for {cap.id}@{cap.version} does not exist: {cap.install_path}")
         return False
 
     actual = compute_fingerprint(cap.install_path, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json"])
@@ -47,3 +53,41 @@ def _verify_single(cap_spec: str, registry: Registry) -> bool:
         print(f"  expected: {cap.fingerprint}")
         print(f"  actual:   {actual}")
         return False
+
+
+def _verify_bundle(cap, registry: Registry) -> bool:
+    bundle_id = f"{cap.owner}/{cap.name}@{cap.version}"
+    member_ids = registry.get_bundle_members(bundle_id)
+
+    print(f"Verifying bundle {cap.id}@{cap.version} ({len(member_ids)} sub-capabilities)")
+
+    all_ok = True
+
+    sub_fingerprints = []
+    for member_id in member_ids:
+        parts = member_id.split("@", 1)
+        member_cap_id = parts[0]
+        member_version = parts[1] if len(parts) > 1 else None
+
+        member_cap = registry.get_capability(member_cap_id, member_version)
+        if member_cap is None:
+            print(f"  MISSING: {member_id} (not in registry)")
+            all_ok = False
+            continue
+
+        ok = _verify_single(member_cap, registry)
+        if not ok:
+            all_ok = False
+        sub_fingerprints.append(member_cap.fingerprint)
+
+    expected_bundle_fp = compute_bundle_fingerprint(sub_fingerprints)
+    if expected_bundle_fp != cap.fingerprint:
+        print(f"TAMPERED: {cap.id}@{cap.version} (bundle fingerprint mismatch)")
+        print(f"  expected (from sub-caps): {expected_bundle_fp}")
+        print(f"  stored:                   {cap.fingerprint}")
+        all_ok = False
+
+    if all_ok:
+        print(f"VERIFIED: {cap.id}@{cap.version}")
+
+    return all_ok

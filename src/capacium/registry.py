@@ -53,6 +53,14 @@ class Registry:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_owner_name ON capabilities (owner, name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fingerprint ON capabilities (fingerprint)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_kind ON capabilities (kind)")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS bundle_members (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bundle_id TEXT NOT NULL,
+                    member_id TEXT NOT NULL,
+                    UNIQUE(bundle_id, member_id)
+                )
+            """)
             conn.commit()
 
     def _migrate_old_schema(self):
@@ -190,4 +198,40 @@ class Registry:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM capabilities")
+            return cursor.fetchone()[0]
+
+    def add_bundle_member(self, bundle_id: str, member_id: str) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO bundle_members (bundle_id, member_id) VALUES (?, ?)",
+                (bundle_id, member_id)
+            )
+            conn.commit()
+
+    def get_bundle_members(self, bundle_id: str) -> List[str]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT member_id FROM bundle_members WHERE bundle_id = ?",
+                (bundle_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def remove_bundle_members(self, bundle_id: str) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM bundle_members WHERE bundle_id = ?",
+                (bundle_id,)
+            )
+            conn.commit()
+
+    def get_reference_count(self, member_id: str) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM bundle_members WHERE member_id = ?",
+                (member_id,)
+            )
             return cursor.fetchone()[0]

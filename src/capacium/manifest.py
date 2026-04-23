@@ -31,6 +31,18 @@ class Manifest:
         o = self.owner or "global"
         return f"{o}/{self.name}"
 
+    def validate(self) -> List[str]:
+        errors = []
+        if self.kind == "bundle":
+            if not self.capabilities:
+                errors.append("Bundle manifest must define at least one capability in the 'capabilities' section")
+            for i, entry in enumerate(self.capabilities):
+                if "name" not in entry:
+                    errors.append(f"capabilities[{i}]: missing required 'name' field")
+                if "source" not in entry:
+                    errors.append(f"capabilities[{i}]: missing required 'source' field")
+        return errors
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Manifest":
         kind_raw = data.pop("kind", None)
@@ -72,6 +84,15 @@ class Manifest:
         data = {}
         for match in re.finditer(r'^\s*(\w+)\s*:\s*(.+?)\s*$', text, re.MULTILINE):
             data[match.group(1)] = match.group(2).strip("\"'")
+        return cls.from_dict(data)
+
+    @classmethod
+    def loads(cls, text: str) -> "Manifest":
+        try:
+            import yaml
+            data = yaml.safe_load(text)
+        except ImportError:
+            data = json.loads(text)
         return cls.from_dict(data)
 
     @classmethod
