@@ -8,9 +8,9 @@ version = "0.1.0"
 description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
 readme = "README.md"
 authors = [
-    {name = "SkillWeave Team"},
+    {name = "typelicious"},
 ]
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

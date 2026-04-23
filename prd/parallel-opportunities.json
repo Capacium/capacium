@@ -1,0 +1,69 @@
+{
+  "sequence_id": "CAP-P2-001",
+  "generated": "2026-04-23T12:00:00Z",
+  "description": "Identified parallel execution opportunities for Capacium Phase 2",
+  "maximum_parallel_lanes": 4,
+  "estimated_wall_clock_minutes": 205,
+  "estimated_speedup_vs_sequential": 2.95,
+  "opportunities": [
+    {
+      "id": "PAR-001",
+      "name": "Phase 2 workstreams parallel execution",
+      "description": "4 workstreams (BUNDLE, ADAPTERS, LOCK, REGISTRY) have no cross-dependencies and can run in parallel after PHASE-INIT completes.",
+      "type": "fully_parallel",
+      "tasks": ["BUNDLE-001", "BUNDLE-002", "BUNDLE-003", "BUNDLE-004", "ADAPTER-001", "ADAPTER-002", "ADAPTER-003", "LOCK-001", "LOCK-002", "LOCK-003", "REGISTRY-001", "REGISTRY-002", "REGISTRY-003"],
+      "sequential_minutes": 425,
+      "parallel_minutes": 130,
+      "savings_minutes": 295
+    },
+    {
+      "id": "PAR-002",
+      "name": "Adapter tasks within WS-ADAPTERS",
+      "description": "ADAPTER-001 (Claude Code) and ADAPTER-002 (Gemini CLI) can be written in parallel since they are independent implementations of the same interface.",
+      "type": "partially_parallel",
+      "tasks": ["ADAPTER-001", "ADAPTER-002"],
+      "sequential_minutes": 70,
+      "parallel_minutes": 45,
+      "savings_minutes": 25,
+      "merge_task": "ADAPTER-003"
+    },
+    {
+      "id": "PAR-003",
+      "name": "Bundle tasks within WS-BUNDLE",
+      "description": "BUNDLE-003 (removal) and BUNDLE-004 (list/search/fingerprint) can start after BUNDLE-001 (manifest) without waiting for BUNDLE-002 (install).",
+      "type": "partially_parallel",
+      "tasks": ["BUNDLE-003", "BUNDLE-004"],
+      "sequential_minutes": 55,
+      "parallel_minutes": 30,
+      "savings_minutes": 25,
+      "note": "BUNDLE-002 remains on critical path; parallel tasks have some float"
+    },
+    {
+      "id": "PAR-004",
+      "name": "SWBUNDLE + integration prep",
+      "description": "SWBUNDLE-002 (E2E verify) and INTEG-002 (docs) can run in parallel since they touch different systems.",
+      "type": "fully_parallel",
+      "tasks": ["SWBUNDLE-002", "INTEG-002"],
+      "sequential_minutes": 40,
+      "parallel_minutes": 25,
+      "savings_minutes": 15
+    },
+    {
+      "id": "PAR-005",
+      "name": "Registry design then build",
+      "description": "REGISTRY-001 (OpenAPI spec) and REGISTRY-002 (REST client) are sequential within the stream. No further parallelism within WS-REGISTRY.",
+      "type": "sequential_stream",
+      "tasks": ["REGISTRY-001", "REGISTRY-002", "REGISTRY-003"],
+      "sequential_minutes": 110,
+      "parallel_minutes": 110,
+      "savings_minutes": 0
+    }
+  ],
+  "critical_path": ["INIT-001", "INIT-002", "BUNDLE-001", "BUNDLE-002", "SWBUNDLE-001", "SWBUNDLE-002", "INTEG-001", "INTEG-002"],
+  "critical_path_minutes": 205,
+  "bottlenecks": [
+    "BUNDLE-002 (recursive installation) — on critical path, blocks SWBUNDLE",
+    "INTEG-001 (cross-stream tests) — must wait for all 4 workstreams + SWBUNDLE"
+  ],
+  "recommendation": "Execute all 4 workstreams in parallel (PAR-001). Within WS-ADAPTERS, parallelize ADAPTER-001 and ADAPTER-002 (PAR-002). Within WS-BUNDLE, parallelize BUNDLE-003 and BUNDLE-004 after BUNDLE-001 completes (PAR-003)."
+}

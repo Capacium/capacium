@@ -1,0 +1,114 @@
+digraph CapaciumPhase2 {
+  rankdir=TB;
+  compound=true;
+  label="Capacium Phase 2 — Dependency Graph";
+  fontsize=16;
+  labelloc=t;
+  pad=0.5;
+
+  // Styles
+  node [style=filled, fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // Phase nodes
+  subgraph cluster_phase_init {
+    label="PHASE-INIT (Preparation & Foundation Review)";
+    style=dashed;
+    color=gray70;
+    bgcolor=lightyellow;
+    INIT_001 [label="INIT-001\nVerify Phase 1", fillcolor="#FFFACD"];
+    INIT_002 [label="INIT-002\nMap Phase 2 Changes", fillcolor="#FFFACD"];
+  }
+
+  // Workstream 1: Bundle
+  subgraph cluster_ws_bundle {
+    label="WS-BUNDLE (Bundle Support)";
+    style=dashed;
+    color=gray70;
+    bgcolor=lightcyan;
+    BUNDLE_001 [label="BUNDLE-001\nExtend manifest", fillcolor="#E0FFFF"];
+    BUNDLE_002 [label="BUNDLE-002\nRecursive install", fillcolor="#E0FFFF"];
+    BUNDLE_003 [label="BUNDLE-003\nBundle removal", fillcolor="#E0FFFF"];
+    BUNDLE_004 [label="BUNDLE-004\nList/Search/Fingerprint", fillcolor="#E0FFFF"];
+    BUNDLE_001 -> BUNDLE_002;
+    BUNDLE_001 -> BUNDLE_003;
+    BUNDLE_001 -> BUNDLE_004;
+  }
+
+  // Workstream 2: Adapters
+  subgraph cluster_ws_adapters {
+    label="WS-ADAPTERS (Framework Adapters)";
+    style=dashed;
+    color=gray70;
+    bgcolor=lightpink;
+    ADAPTER_001 [label="ADAPTER-001\nClaude Code adapter", fillcolor="#FFE4E1"];
+    ADAPTER_002 [label="ADAPTER-002\nGemini CLI adapter", fillcolor="#FFE4E1"];
+    ADAPTER_003 [label="ADAPTER-003\nAuto-selection + tests", fillcolor="#FFE4E1"];
+    ADAPTER_001 -> ADAPTER_003;
+    ADAPTER_002 -> ADAPTER_003;
+  }
+
+  // Workstream 3: Lock
+  subgraph cluster_ws_lock {
+    label="WS-LOCK (Lock File)";
+    style=dashed;
+    color=gray70;
+    bgcolor=lightgreen;
+    LOCK_001 [label="LOCK-001\nLock file design", fillcolor="#E8FFE8"];
+    LOCK_002 [label="LOCK-002\ncap lock command", fillcolor="#E8FFE8"];
+    LOCK_003 [label="LOCK-003\nLock enforcement", fillcolor="#E8FFE8"];
+    LOCK_001 -> LOCK_002;
+    LOCK_002 -> LOCK_003;
+  }
+
+  // Workstream 4: Registry
+  subgraph cluster_ws_registry {
+    label="WS-REGISTRY (Remote Registry)";
+    style=dashed;
+    color=gray70;
+    bgcolor=lavender;
+    REGISTRY_001 [label="REGISTRY-001\nOpenAPI spec", fillcolor="#E6E6FA"];
+    REGISTRY_002 [label="REGISTRY-002\nREST client", fillcolor="#E6E6FA"];
+    REGISTRY_003 [label="REGISTRY-003\n--registry + publish", fillcolor="#E6E6FA"];
+    REGISTRY_001 -> REGISTRY_002;
+    REGISTRY_002 -> REGISTRY_003;
+  }
+
+  // Integration phase
+  subgraph cluster_phase_integration {
+    label="PHASE-INTEGRATION (Integration)";
+    style=dashed;
+    color=gray70;
+    bgcolor=mistyrose;
+    SWBUNDLE_001 [label="SWBUNDLE-001\nSkillWeave bundle", fillcolor="#FFDAB9"];
+    SWBUNDLE_002 [label="SWBUNDLE-002\nVerify bundle E2E", fillcolor="#FFDAB9"];
+    INTEG_001 [label="INTEG-001\nCross-stream tests", fillcolor="#FFDAB9"];
+    INTEG_002 [label="INTEG-002\nDocumentation", fillcolor="#FFDAB9"];
+    SWBUNDLE_001 -> SWBUNDLE_002;
+  }
+
+  // Dependencies
+  INIT_001 -> INIT_002 [style=dashed, color=gray60, label="sequential"];
+  INIT_002 -> BUNDLE_001 [color=blue, label="depends"];
+  INIT_002 -> ADAPTER_001 [color=blue, label="depends"];
+  INIT_002 -> ADAPTER_002 [color=blue, label="depends"];
+  INIT_002 -> LOCK_001 [color=blue, label="depends"];
+  INIT_002 -> REGISTRY_001 [color=blue, label="depends"];
+
+  // Integration depends on all 4 workstreams
+  BUNDLE_004 -> SWBUNDLE_001 [color=red, label="critical dep"];
+  BUNDLE_004 -> INTEG_001 [color=blue, label="depends"];
+  ADAPTER_003 -> INTEG_001 [color=blue, label="depends"];
+  LOCK_003 -> INTEG_001 [color=blue, label="depends"];
+  REGISTRY_003 -> INTEG_001 [color=blue, label="depends"];
+  SWBUNDLE_002 -> INTEG_001 [color=blue, label="depends"];
+  INTEG_001 -> INTEG_002 [style=dashed, color=gray60, label="sequential"];
+
+  // Parallel annotation
+  subgraph cluster_parallel {
+    label="PARALLEL EXECUTION";
+    style=dotted;
+    color=green;
+    fontcolor=green;
+  }
+}
