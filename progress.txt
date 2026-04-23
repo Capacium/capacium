@@ -1,0 +1,60 @@
+# Capacium — Progress Log
+
+## 2026-04-23: PRD & Extraction Plan Created
+
+### What was done
+- Created repository directory structure: src/capacium/, tests/, docs/, prd/, specs/
+- Generated PRD (prd.md) following skillweave-blueprint template
+  - Incorporated 4 strategic documents: positioning, communication, operations, market analysis
+  - Incorporated full SWPM codebase analysis (16 Python files)
+  - Defined 7 CLI commands: install, remove, list, update, search, verify, package
+  - Defined 6 capability kinds: skill, bundle, tool, prompt, template, workflow
+  - Architected module structure mirroring SWPM with generalization
+- Generated prd.json following skillweave-blueprint schema
+- Generated extraction plan (docs/extraction-plan.md)
+
+### Technical decisions
+- Zero external dependencies for core functionality (stdlib only)
+- YAML over JSON for manifest (capability.yaml)
+- Framework adapter pattern with abstract base class
+- SQLite registry with kind + framework columns
+- SHA-256 fingerprinting (unchanged from SWPM)
+- Bundle kind supports recursive sub-cap installation
+
+---
+
+## 2026-04-23: Phase 1 — Manifest Generalization, Utils, Tests, Bug Fixes
+
+### What was done
+- Removed `spec.py`, created `manifest.py` with YAML-first loading (YAML→JSON→regex fallback)
+- Created `utils/config.py` — config paths, load/save/get_config with defaults
+- Created `utils/errors.py` — custom exception hierarchy (CapaciumError + 5 subclasses)
+- Fixed verify_all bug: `cap.name` → `cap.id` in `commands/verify.py` (correct owner/name lookup)
+- Made `commands/update.py` fully functional (recomputes fingerprint, detects changes, re-installs)
+- Ported `pyproject.toml` from SWPM with updated project metadata
+- Wrote comprehensive test suite: 49 tests across 7 test files
+
+### Test results
+- All 49 tests passing
+- models (5), manifest (10), registry (10), fingerprint (5), versioning (7), config (6), conftest fixtures
+- PyYAML installed as optional dependency for YAML manifest support
+
+### Files created
+- `src/capacium/manifest.py` — Generalized manifest (YAML/JSON/legacy .skillpkg.json)
+- `src/capacium/utils/config.py` — Config loading utility
+- `src/capacium/utils/errors.py` — Error types and exit codes
+- `tests/conftest.py` — Test fixtures (tmp_home, sample_capability_dir, sample_bundle_dir)
+- `tests/test_models.py`, `test_manifest.py`, `test_registry.py`, `test_fingerprint.py`, `test_versioning.py`, `test_config.py`
+
+### Files modified
+- `src/capacium/models.py` — Fixed from_dict for missing version default
+- `src/capacium/commands/verify.py` — verify_all bug fix
+- `src/capacium/commands/update.py` — Full update implementation
+- `src/capacium/commands/package.py` — Updated import spec→manifest
+
+### Files removed
+- `src/capacium/spec.py` — Replaced by manifest.py
+
+### Notes
+- PyYAML is optional (yaml extra); without it YAML→JSON→regex fallback chain still works
+- Git repository initialized for version control

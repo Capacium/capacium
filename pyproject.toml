@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capacium"
+version = "0.1.0"
+description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
+readme = "README.md"
+authors = [
+    {name = "SkillWeave Team"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+]
+yaml = [
+    "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/typelicious/capacium"
+Repository = "https://github.com/typelicious/capacium"
+Issues = "https://github.com/typelicious/capacium/issues"
+
+[project.scripts]
+cap = "capacium.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["capacium*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
