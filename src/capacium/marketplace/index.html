@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Capacium Marketplace</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="header">
+  <div class="header-inner">
+    <div class="brand">
+      <span class="brand-icon">&#9889;</span>
+      <div>
+        <h1 class="brand-name">Capacium</h1>
+        <span class="brand-tagline">Marketplace</span>
+      </div>
+    </div>
+    <div class="header-controls">
+      <div class="search-wrap">
+        <input type="text" id="search-input" class="search-input" placeholder="Search capabilities..." autocomplete="off">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+  <aside class="sidebar">
+    <section class="filter-section">
+      <h3 class="filter-heading">Kind</h3>
+      <div class="filter-chips" id="kind-filters">
+        <button class="chip active" data-filter="kind" data-value="">All</button>
+        <button class="chip" data-filter="kind" data-value="skill">Skill</button>
+        <button class="chip" data-filter="kind" data-value="bundle">Bundle</button>
+        <button class="chip" data-filter="kind" data-value="tool">Tool</button>
+        <button class="chip" data-filter="kind" data-value="prompt">Prompt</button>
+        <button class="chip" data-filter="kind" data-value="template">Template</button>
+        <button class="chip" data-filter="kind" data-value="workflow">Workflow</button>
+      </div>
+    </section>
+    <section class="filter-section">
+      <h3 class="filter-heading">Framework</h3>
+      <div class="filter-chips" id="framework-filters">
+        <button class="chip active" data-filter="framework" data-value="">All</button>
+        <button class="chip" data-filter="framework" data-value="opencode">OpenCode</button>
+        <button class="chip" data-filter="framework" data-value="claude-code">Claude Code</button>
+        <button class="chip" data-filter="framework" data-value="gemini-cli">Gemini CLI</button>
+      </div>
+    </section>
+  </aside>
+
+  <section class="content">
+    <div class="content-header">
+      <h2 class="content-title">Capabilities</h2>
+      <span class="result-count" id="result-count">0</span>
+    </div>
+    <div class="card-grid" id="card-grid">
+      <div class="loading">Loading capabilities...</div>
+    </div>
+  </section>
+</main>
+
+<div class="modal-overlay" id="detail-modal">
+  <div class="modal">
+    <button class="modal-close" id="modal-close">&times;</button>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

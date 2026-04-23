@@ -88,6 +88,13 @@ src/capacium/
 - Framework field declares target frameworks (optional, NULL = agnostic)
 - Dependencies are version-constrained (semver range)
 
+### Releases
+- Naming convention: `Capacium vX.Y.Z` (e.g., `Capacium v1.0.0`, `Capacium v2.5.1`)
+- `X.Y.Z` follows semantic versioning (MAJOR.MINOR.PATCH)
+- Git tags use the same format: `vX.Y.Z` (e.g., `v1.0.0`)
+- Changelog entries reference the full name: `Capacium vX.Y.Z`
+- Pre-release suffixes: `Capacium vX.Y.Z-alpha.N`, `Capacium vX.Y.Z-beta.N`, `Capacium vX.Y.Z-rc.N`
+
 ### Exit Codes
 - 0: Success
 - 1: User error (invalid input, missing args)

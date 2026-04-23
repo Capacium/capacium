@@ -1,12 +1,22 @@
+import base64
 from pathlib import Path
 from typing import Optional
 from ..registry import Registry
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..models import Kind
+from ..signing import load_public_key, verify, list_keys
 
 
-def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False) -> bool:
+def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False,
+                      verify_signature: Optional[str] = None) -> bool:
     registry = Registry()
+
+    if verify_signature and not verify_all and cap_spec:
+        cap = registry.get_capability(cap_spec)
+        if cap is None:
+            print(f"Capability {cap_spec} not found.")
+            return False
+        return _verify_signature(cap, registry, verify_signature)
 
     if verify_all:
         capabilities = registry.list_capabilities()
@@ -16,7 +26,13 @@ def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False) 
 
         all_ok = True
         for cap in capabilities:
-            ok = _verify_single(cap, registry)
+            if verify_signature:
+                sig = registry.get_signature(cap.owner, cap.name, cap.version, verify_signature)
+                if sig is None:
+                    continue
+                ok = _verify_signature(cap, registry, verify_signature)
+            else:
+                ok = _verify_single(cap, registry)
             if not ok:
                 all_ok = False
         return all_ok
@@ -30,6 +46,48 @@ def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False) 
 
     else:
         print("Error: specify a capability or --all")
+        return False
+
+
+def _verify_signature(cap, registry: Registry, key_name: str) -> bool:
+    sig_record = registry.get_signature(cap.owner, cap.name, cap.version, key_name)
+    if sig_record is None:
+        print(f"NO SIGNATURE: {cap.id}@{cap.version}")
+        return False
+
+    pubkey = load_public_key(key_name)
+    if pubkey is None:
+        print(f"Public key '{key_name}' not found.")
+        return False
+
+    if cap.kind == Kind.BUNDLE:
+        bundle_id = f"{cap.owner}/{cap.name}@{cap.version}"
+        member_ids = registry.get_bundle_members(bundle_id)
+        sub_fingerprints = []
+        for member_id in member_ids:
+            parts = member_id.split("@", 1)
+            member_cap_id = parts[0]
+            member_version = parts[1] if len(parts) > 1 else None
+            member_cap = registry.get_capability(member_cap_id, member_version)
+            if member_cap is None:
+                sub_fingerprints.append("UNKNOWN")
+            else:
+                sub_fingerprints.append(member_cap.fingerprint)
+        fingerprint = compute_bundle_fingerprint(sub_fingerprints)
+    else:
+        fingerprint = compute_fingerprint(
+            cap.install_path,
+            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"]
+        )
+
+    sig_bytes = base64.b64decode(sig_record["signature"])
+    fingerprint_bytes = fingerprint.encode("utf-8")
+
+    if verify(pubkey, sig_bytes, fingerprint_bytes):
+        print(f"SIGNATURE VERIFIED: {cap.id}@{cap.version} (key: {key_name})")
+        return True
+    else:
+        print(f"SIGNATURE INVALID: {cap.id}@{cap.version} (key: {key_name})")
         return False
 
 

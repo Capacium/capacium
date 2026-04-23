@@ -61,6 +61,19 @@ class Registry:
                     UNIQUE(bundle_id, member_id)
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS signatures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cap_owner TEXT NOT NULL,
+                    cap_name TEXT NOT NULL,
+                    cap_version TEXT NOT NULL,
+                    key_name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(cap_owner, cap_name, cap_version, key_name)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_sig_cap ON signatures (cap_owner, cap_name, cap_version)")
             conn.commit()
 
     def _migrate_old_schema(self):
@@ -235,3 +248,53 @@ class Registry:
                 (member_id,)
             )
             return cursor.fetchone()[0]
+
+    def store_signature(self, owner: str, name: str, version: str, key_name: str, signature: str) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO signatures (cap_owner, cap_name, cap_version, key_name, signature)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (owner, name, version, key_name, signature))
+                conn.commit()
+                return True
+            except sqlite3.Error:
+                return False
+
+    def get_signature(self, owner: str, name: str, version: str, key_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if key_name:
+                cursor.execute("""
+                    SELECT * FROM signatures WHERE cap_owner = ? AND cap_name = ? AND cap_version = ? AND key_name = ?
+                    ORDER BY created_at DESC LIMIT 1
+                """, (owner, name, version, key_name))
+            else:
+                cursor.execute("""
+                    SELECT * FROM signatures WHERE cap_owner = ? AND cap_name = ? AND cap_version = ?
+                    ORDER BY id DESC LIMIT 1
+                """, (owner, name, version))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_signatures_by_key(self, key_name: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM signatures WHERE key_name = ? ORDER BY created_at DESC",
+                (key_name,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def remove_signature(self, owner: str, name: str, version: str, key_name: str) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM signatures WHERE cap_owner = ? AND cap_name = ? AND cap_version = ? AND key_name = ?",
+                (owner, name, version, key_name)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
