@@ -24,6 +24,7 @@ class Manifest:
     dependencies: Dict[str, str] = field(default_factory=dict)
     capabilities: List[Dict[str, str]] = field(default_factory=list)
     checksums: Dict[str, str] = field(default_factory=dict)
+    mcp: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -40,13 +41,33 @@ class Manifest:
                     errors.append(f"capabilities[{i}]: missing required 'name' field")
                 if "source" not in entry:
                     errors.append(f"capabilities[{i}]: missing required 'source' field")
+        if self.kind == "mcp-server":
+            if not self.mcp:
+                errors.append("MCP-server manifest should define an 'mcp' section with transport and client details")
+            else:
+                if "transport" not in self.mcp:
+                    errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
+                if "supported_clients" not in self.mcp:
+                    errors.append("mcp section: missing recommended 'supported_clients' field")
         return errors
+
+    def get_mcp_metadata(self) -> Dict[str, Any]:
+        """Return MCP metadata dict if this is an mcp-server manifest, else empty dict."""
+        if self.kind != "mcp-server" or not self.mcp:
+            return {}
+        return dict(self.mcp)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Manifest":
         kind_raw = data.pop("kind", None)
         data["kind"] = kind_raw if isinstance(kind_raw, str) else "skill"
-        return cls(**data)
+        # Ensure mcp section is a dict
+        if "mcp" in data and not isinstance(data["mcp"], dict):
+            data["mcp"] = {}
+        # Filter out unknown keys to prevent TypeError
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

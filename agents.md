@@ -11,7 +11,7 @@ Capacium is a Capability Packaging System for AI agent capabilities. It was extr
 - CLI: `cap` (not `swpm`)
 - Manifest: `capability.yaml` (not `.skillpkg.json`)
 - Model: `Capability` (not `SkillPackage`)
-- Kind: `Kind.SKILL`, `Kind.BUNDLE`, `Kind.TOOL`, `Kind.PROMPT`, `Kind.TEMPLATE`, `Kind.WORKFLOW`
+- Kind: `Kind.SKILL`, `Kind.BUNDLE`, `Kind.TOOL`, `Kind.PROMPT`, `Kind.TEMPLATE`, `Kind.WORKFLOW`, `Kind.MCP_SERVER`, `Kind.CONNECTOR_PACK`
 
 ### Directory
 - Config: `~/.capacium/`
@@ -59,11 +59,32 @@ src/capacium/
 │   ├── list_capabilities.py
 │   ├── update.py
 │   ├── search.py
-│   ├── verify.py        # Supports bundle verification (sub-cap fingerprint traversal)
+│   ├── verify.py        # Supports bundle verification
 │   ├── lock.py          # Lock file generation + enforcement
 │   ├── package.py
-│   └── publish.py       # Stub for registry publication
-├── adapters/
+│   ├── publish.py       # Stub for registry publication
+│   ├── info.py          # V2: Full listing details
+│   ├── claim.py         # V2: Publisher claims
+│   ├── exchange.py      # V2: Exchange subcommands (search, categories, tags)
+│   ├── trust.py         # V2: Trust state management
+│   └── crawl.py         # V2: Crawler management
+├── exchange/            # V2: Exchange Core
+│   ├── models.py        # Listing, Publisher, Taxonomy, ClaimRequest
+│   ├── listing.py       # CRUD operations for Exchange listings
+│   ├── trust.py         # TrustState machine & history
+│   ├── taxonomy.py      # Categories & Tags manager
+│   ├── search.py        # Faceted search engine
+│   ├── collection.py    # Curated collections
+│   └── publisher.py     # Publisher profiles & verification workflow
+├── crawler/             # V2: Crawler Engine
+│   ├── models.py        # CrawlSource, CrawlJob, CrawlFinding
+│   ├── engine.py        # Pipeline orchestrator
+│   ├── sources/         # Source integrations (e.g. github.py)
+│   ├── normalizer.py    # Metadata normalizer
+│   ├── classifier.py    # Taxonomy & Kind inference
+│   ├── dedup.py         # Similarity matching
+│   └── claim_prep.py    # Owner detection
+├── migrations/          # Schema migrations
 │   ├── base.py          # FrameworkAdapter ABC
 │   ├── opencode.py      # OpenCode adapter
 │   ├── claude_code.py   # Claude Code adapter
@@ -82,13 +103,14 @@ src/capacium/
 - Testing: pytest with coverage
 
 ### Manifest (capability.yaml)
-- Kind is required (one of: skill, bundle, tool, prompt, template, workflow)
+- Kind is required (one of: skill, bundle, tool, prompt, template, workflow, mcp-server, connector-pack)
 - Version is required (semver: MAJOR.MINOR.PATCH)
 - Name is required (kebab-case recommended)
 - Framework field declares target frameworks (optional, NULL = agnostic)
 - Dependencies are version-constrained (semver range)
 
 ### Releases
+- Language requirement: All release notes and changelogs MUST be written in English.
 - Naming convention: `Capacium vX.Y.Z` (e.g., `Capacium v1.0.0`, `Capacium v2.5.1`)
 - `X.Y.Z` follows semantic versioning (MAJOR.MINOR.PATCH)
 - Git tags use the same format: `vX.Y.Z` (e.g., `v1.0.0`)
@@ -138,13 +160,42 @@ src/capacium/
 - Falls back to `opencode` for unknown/empty frameworks
 - Custom adapters can be registered via `register_adapter()`
 
-## Phase 2 Completion Status
+## V2 Exchange & Crawler Architecture
+
+### Exchange Core
+- Represents capabilities as `Listing` domain models with rich metadata.
+- Managed via `ListingStore`, `PublisherStore`, `TaxonomyStore`, `CollectionStore`.
+- Strict multi-dimensional Trust State Machine (`TrustMachine`):
+  `discovered` → `indexed` → `claimed` → `verified` → `audited`.
+- Faceted search SQL engine with semantic ranking (`ExchangeSearch`).
+- Adds 11 new SQLite tables managed by standard migrations (`v2_exchange_crawler.py`).
+
+### Crawler Subsystem
+- Pipeline: Source (GitHub) → Fetch → Normalize → Classify → Dedup → Findings → Claim Prep.
+- Uses purely stdlib for network (`urllib`) with automatic rate limit backoff.
+- Can infer capability kind (`mcp-server`, `tool`, etc.) based on topics and names.
+- Can promote valid findings directly into the Exchange as `discovered` listings.
+
+### V2 CLI & API
+- Native `cap exchange`, `cap crawl`, `cap trust`, `cap info`, `cap claim` commands.
+- Expanded `cap search` with flags like `--category`, `--trust`, `--mcp-client`.
+- REST API mounted at `/v2/` mapping CRUD+List operations directly to Exchange Core.
+
+## Phase 1 Completion Status
 
 - **WS-BUNDLE** (complete): Bundle manifest validation, bundle fingerprint, registry operations, bundle member tracking
 - **WS-ADAPTERS** (complete): Claude Code + Gemini CLI adapters, adapter auto-selection, custom adapter registry
 - **WS-LOCK** (complete): Lock file generation, lock enforcement, dependency pinning, --no-lock bypass
 - **WS-REGISTRY** (complete): OpenAPI spec, REST client (search, get, list_versions, download)
 - **INTEGRATION** (complete): Cross-workstream tests, SkillWeave bundle structure, AGENTS.md updated
+
+## V2 Completion Status
+- Finished Phase 1 (Foundation): Kind enums, TrustState enum, DB migrations.
+- Finished Phase 2 (Exchange): Core stores and managers.
+- Finished Phase 3 (Crawler): Crawl pipeline and promotion.
+- Finished Phase 4 (CLI): Cap V2 CLI subcommands.
+- Finished Phase 5 (API): OpenAPI V2 spec and V2 REST routes.
+- Finished Phase 6 (Tests): 83 new tests bringing total to 296 passing unit/integration tests.
 
 ## Extraction Status
 

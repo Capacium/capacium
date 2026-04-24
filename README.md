@@ -11,25 +11,36 @@ Capability-native packaging for the AI agent era.
 
 **One capability package, any agent framework.**
 
-Capacium defines a standard manifest format (`capability.yaml`), a CLI (`cap`) for package management, and a trust model based on SHA-256 fingerprinting and Ed25519 signing. Framework adapters bridge the gap between the package format and where capabilities actually run — OpenCode, Claude Code, Gemini CLI, Cursor, and Continue.dev.
+Capacium defines a standard manifest format (`capability.yaml`), a CLI (`cap`) for package management, and a trust model based on SHA-256 fingerprinting and Ed25519 signing. Framework adapters bridge the gap between the package format and where capabilities actually run — OpenCode, Claude Code, Gemini CLI, Cursor, and Continue.dev. Capacium V2 introduces native MCP (Model Context Protocol) Server support.
 
-Works fully offline from local paths; a registry adds discovery, trust, and distribution when needed.
+Works fully offline from local paths. The V2 Exchange layer adds an open discovery exchange with taxonomy, multidimensional trust states (discovered → audited), and crawler-based capability discovery.
 
 ## Installation
 
+### 1. Python Global (Recommended)
+You can install Capacium globally in an isolated environment using `pipx`.
+
 ```bash
-# From PyPI (once published)
-pip install capacium
+pipx install git+https://github.com/Capacium/capacium.git@v0.5.0
 
-# From GitHub (works now)
-pip install git+https://github.com/Capacium/capacium.git
+# Or with optional signing and YAML support:
+pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v0.5.0"
+```
 
-# Via Homebrew (requires custom tap)
+*(Note: PyPI publishing `pip install capacium` is pending organization approval and currently unavailable).*
+
+### 2. Standalone Binaries
+If you don't use Python, you can download standalone executables directly from the [GitHub Releases page](https://github.com/Capacium/capacium/releases). Extract the archive and place `cap` in your `$PATH`.
+
+### 3. Docker (GHCR)
+Run Capacium safely in a container with your directories mounted:
+```bash
+docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:0.5.0
+```
+
+### 4. macOS / Linux (Homebrew)
+```bash
 brew install capacium/tap/capacium
-
-# With optional signing support
-pip install capacium[yaml]  # Enable YAML lock files
-pip install capacium[signing]  # Enable Ed25519 signing
 ```
 
 ### Quickstart
@@ -47,8 +58,14 @@ cap verify --all
 # Package for distribution
 cap package ./my-skill --output my-skill.tar.gz
 
-# Search the registry
-cap search code-review
+# Search the exchange
+cap search code-review --category developer-tools
+
+# Print full MCP & Listing details
+cap info anthropic/mcp-fs
+
+# Manage trust states (admin)
+cap trust history anthropic/mcp-fs
 
 # Start the marketplace web UI
 cap marketplace
@@ -85,17 +102,20 @@ cap sign my-skill --key mykey
 | `prompt` | Reusable prompt template | System prompts, instructions |
 | `template` | Project/code template | Skill scaffold, adapter template |
 | `workflow` | Multi-step agent workflow | CI pipeline, data chain |
+| `mcp-server` | MCP Server (V2) | MCP filesystem, db-connector |
+| `connector-pack` | Tool/Service integration (V2) | Slack, GitHub, Jira connector pack |
 
 ## Features
 
 - **Agent-agnostic** — Same package works across OpenCode, Claude Code, Gemini CLI, Cursor, Continue.dev
-- **Six capability kinds** — Skills, bundles, tools, prompts, templates, workflows as first-class types
+- **First-class MCP Support** — Deploy and discover MCP servers as native capabilities.
+- **Eight capability kinds** — Skills, bundles, tools, prompts, templates, workflows, mcp-servers, connectors.
 - **Manifest-first** — Standard `capability.yaml` with metadata, dependencies, and framework targets
-- **Trust & Governance** — SHA-256 fingerprinting + Ed25519 signing for integrity and authenticity
+- **Trust & Governance** — Multi-dimensional Trust State Machine (discovered, indexed, claimed, verified, audited).
 - **Registry-optional** — Works fully offline; remote registry adds discovery and distribution
+- **Crawler Subsystem** — Automated capability discovery and claim requests from GitHub.
 - **Lock files** — `capability.lock` pins exact versions and fingerprints for reproducible installs
-- **Zero external deps (core)** — Uses only Python stdlib (argparse, sqlite3, hashlib)
-- **Web marketplace** — Built-in browser UI for browsing and searching capabilities
+- **Zero external deps (core)** — Uses only Python stdlib (argparse, sqlite3, hashlib, urllib)
 
 ## Comparison
 

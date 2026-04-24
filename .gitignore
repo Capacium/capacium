@@ -12,3 +12,4 @@ build/
 *.db
 .capacium/
 .DS_Store
+.skillweave/

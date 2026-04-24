@@ -12,6 +12,45 @@ class Kind(Enum):
     PROMPT = "prompt"
     TEMPLATE = "template"
     WORKFLOW = "workflow"
+    MCP_SERVER = "mcp-server"
+    CONNECTOR_PACK = "connector-pack"
+
+
+class TrustState(Enum):
+    DISCOVERED = "discovered"
+    INDEXED = "indexed"
+    CLAIMED = "claimed"
+    VERIFIED = "verified"
+    AUDITED = "audited"
+
+    @classmethod
+    def ordering(cls) -> list:
+        """Return trust states in ascending order of trust."""
+        return [cls.DISCOVERED, cls.INDEXED, cls.CLAIMED, cls.VERIFIED, cls.AUDITED]
+
+    def __ge__(self, other: "TrustState") -> bool:
+        if not isinstance(other, TrustState):
+            return NotImplemented
+        order = self.ordering()
+        return order.index(self) >= order.index(other)
+
+    def __gt__(self, other: "TrustState") -> bool:
+        if not isinstance(other, TrustState):
+            return NotImplemented
+        order = self.ordering()
+        return order.index(self) > order.index(other)
+
+    def __le__(self, other: "TrustState") -> bool:
+        if not isinstance(other, TrustState):
+            return NotImplemented
+        order = self.ordering()
+        return order.index(self) <= order.index(other)
+
+    def __lt__(self, other: "TrustState") -> bool:
+        if not isinstance(other, TrustState):
+            return NotImplemented
+        order = self.ordering()
+        return order.index(self) < order.index(other)
 
 
 @dataclass

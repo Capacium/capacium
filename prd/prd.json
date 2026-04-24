@@ -1,0 +1,559 @@
+{
+  "projectName": "Capacium Core V2 — MCP-Server, Exchange, Crawler",
+  "version": "2.0.0",
+  "status": "draft",
+  "created_at": "2026-04-24",
+  "execution_recommendation": {
+    "mode": "complex",
+    "reason": "30 tasks, 8+ hours total, complex cross-module dependencies, new subsystems, schema migrations, 3 workstreams converging on shared domain model",
+    "suggested_workflow": "ralph-loop-overnight",
+    "estimated_iterations": 45,
+    "parallel_opportunities": 8
+  },
+  "tasks": [
+    {
+      "id": "ARCH-001",
+      "title": "Extend Kind enum with MCP_SERVER",
+      "description": "Add MCP_SERVER = 'mcp-server' to the Kind enum in models.py. Update any Kind-validation code in manifest.py and registry.py to accept the new value. Ensure backward compatibility with existing 6 kinds.",
+      "acceptanceCriteria": [
+        "Kind.MCP_SERVER exists with value 'mcp-server'",
+        "Manifest with kind: mcp-server parses without error",
+        "Registry accepts and stores capabilities with kind='mcp-server'",
+        "Existing 213 tests pass unchanged",
+        "cap search --kind mcp-server returns only MCP-server capabilities"
+      ],
+      "priority": "high",
+      "estimatedEffort": "2",
+      "dependsOn": [],
+      "type": "infrastructure",
+      "passes": false
+    },
+    {
+      "id": "ARCH-002",
+      "title": "Add TrustState enum to models.py",
+      "description": "Create TrustState enum with values: discovered, indexed, claimed, verified, audited. Add to models.py alongside Kind.",
+      "acceptanceCriteria": [
+        "TrustState enum exists with 5 values",
+        "TrustState values serialize to/from strings correctly",
+        "Enum is importable from capacium.models"
+      ],
+      "priority": "high",
+      "estimatedEffort": "1",
+      "dependsOn": [],
+      "type": "infrastructure",
+      "passes": false
+    },
+    {
+      "id": "ARCH-003",
+      "title": "Create exchange/models.py with core dataclasses",
+      "description": "Create the exchange/ package with models.py containing: Listing, MCPMetadata, Publisher, Category, Subcategory, TagCount, Collection, ClaimRequest, VerificationRecord, TrustTransition, SearchQuery dataclasses. All with to_dict/from_dict serialization.",
+      "acceptanceCriteria": [
+        "All 10+ dataclasses defined with type annotations",
+        "to_dict() and from_dict() work for all entities",
+        "MCPMetadata is nullable on Listing (only for mcp-server type)",
+        "SearchQuery supports all 15+ facets",
+        "Unit tests for serialization round-trips pass"
+      ],
+      "priority": "high",
+      "estimatedEffort": "4",
+      "dependsOn": ["ARCH-001", "ARCH-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "DB-001",
+      "title": "SQLite schema migration for V2 tables",
+      "description": "Create migrations/ package with v2_exchange_crawler.py. Implement schema creation for: listings, publishers, categories, subcategories, tag_counts, collections, crawl_sources, crawl_jobs, crawl_findings, claim_requests, verification_records. All with proper indexes. Migration must be idempotent (CREATE TABLE IF NOT EXISTS).",
+      "acceptanceCriteria": [
+        "All 11 new tables created on fresh DB",
+        "Migration runs idempotently (no error on second run)",
+        "All indexes created (≥12 indexes)",
+        "Existing capabilities/bundle_members/signatures tables untouched",
+        "Foreign keys reference correct tables",
+        "Migration runs automatically on Registry init"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["ARCH-003"],
+      "type": "infrastructure",
+      "passes": false
+    },
+    {
+      "id": "DB-002",
+      "title": "Seed V1 taxonomy data",
+      "description": "Create a taxonomy seeder that inserts the 10 V1 top-level categories and initial subcategories into the categories and subcategories tables. Run as part of migration if tables are empty.",
+      "acceptanceCriteria": [
+        "10 categories inserted with correct slugs and display names",
+        "≥10 subcategories inserted for key categories",
+        "Seeder is idempotent (INSERT OR IGNORE)",
+        "Categories retrievable via SQL query",
+        "Sort order is defined"
+      ],
+      "priority": "high",
+      "estimatedEffort": "1",
+      "dependsOn": ["DB-001"],
+      "type": "infrastructure",
+      "passes": false
+    },
+    {
+      "id": "FEAT-001",
+      "title": "Implement exchange/listing.py — Listing CRUD",
+      "description": "Create listing.py in exchange/ with ListingStore class. Methods: create_listing, get_listing, get_listing_by_name, update_listing, delete_listing, list_listings. All operations go through SQLite via the registry connection pattern.",
+      "acceptanceCriteria": [
+        "Create listing with all mandatory fields succeeds",
+        "Get listing by ID returns correct data",
+        "Get listing by canonical_name returns correct data",
+        "Update listing modifies updated_at timestamp",
+        "Delete listing removes from DB",
+        "list_listings returns all listings with pagination",
+        "MCPMetadata stored/retrieved as JSON blob correctly"
+      ],
+      "priority": "high",
+      "estimatedEffort": "4",
+      "dependsOn": ["ARCH-003", "DB-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "FEAT-002",
+      "title": "Implement exchange/trust.py — TrustState machine",
+      "description": "Create trust.py with TrustMachine class. Enforce valid state transitions (discovered→indexed→claimed→verified→audited, plus demotion paths). Record all transitions in trust_history. Validate entry criteria per state.",
+      "acceptanceCriteria": [
+        "Forward transitions succeed (5 transitions)",
+        "Invalid transitions raise TrustTransitionError",
+        "Demotion paths work (verified→claimed, audited→verified)",
+        "Each transition recorded in trust_history with timestamp and reason",
+        "Entry criteria checked: indexed requires all mandatory fields",
+        "Entry criteria checked: claimed requires publisher_id",
+        "Unit tests cover all valid and invalid transitions"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["ARCH-003", "FEAT-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "FEAT-003",
+      "title": "Implement exchange/taxonomy.py — Category/Tag management",
+      "description": "Create taxonomy.py with TaxonomyStore class. Methods: list_categories, get_category, list_subcategories, add_tag, remove_tag, list_tags_by_count, increment_tag_count, decrement_tag_count.",
+      "acceptanceCriteria": [
+        "list_categories returns all seeded categories",
+        "get_category returns category with its subcategories",
+        "Tag count incremented when listing gets new tag",
+        "Tag count decremented when listing loses tag",
+        "list_tags_by_count returns tags sorted by popularity",
+        "Subcategories correctly linked to parent categories"
+      ],
+      "priority": "high",
+      "estimatedEffort": "2",
+      "dependsOn": ["DB-001", "DB-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "FEAT-004",
+      "title": "Implement exchange/search.py — Faceted search engine",
+      "description": "Create search.py with ExchangeSearch class. Accept SearchQuery, build dynamic SQL WHERE clauses for all facets. Support full-text search on name+description, type/category/trust/tag/publisher/mcp-client filtering, sorting, pagination.",
+      "acceptanceCriteria": [
+        "Text search matches on canonical_name and short_description",
+        "Filter by package_type returns only matching types",
+        "Filter by category returns correct listings",
+        "Filter by trust_state returns correct listings",
+        "Filter by min_trust_state uses state ordering",
+        "Filter by tag uses JSON array contains",
+        "Filter by mcp_client searches within mcp_metadata JSON",
+        "Multiple filters combine with AND semantics",
+        "Pagination (limit/offset) works correctly",
+        "Sorting by relevance, name, trust, updated works",
+        "Performance: <100ms for 1000 listings with 3 filters"
+      ],
+      "priority": "high",
+      "estimatedEffort": "5",
+      "dependsOn": ["FEAT-001", "FEAT-003"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "FEAT-005",
+      "title": "Implement exchange/publisher.py — Publisher + Claim logic",
+      "description": "Create publisher.py with PublisherStore class and claim/verify workflow. Methods: create_publisher, get_publisher, submit_claim, get_claim, verify_claim (check repo-file or DNS proof), approve_claim, reject_claim.",
+      "acceptanceCriteria": [
+        "Publisher created with slug, display_name, proof",
+        "submit_claim creates ClaimRequest in pending state",
+        "verify_claim checks repo-file proof (mock HTTP)",
+        "Approved claim transitions listing from indexed to claimed",
+        "Verified claim transitions listing from claimed to verified",
+        "Rejected claim stays in current state",
+        "Publisher.verified updates on successful verification"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "4",
+      "dependsOn": ["FEAT-001", "FEAT-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "FEAT-006",
+      "title": "Implement exchange/collection.py — Collection management",
+      "description": "Create collection.py with CollectionStore class. Methods: create_collection, get_collection, add_listing_to_collection, remove_listing_from_collection, list_collections.",
+      "acceptanceCriteria": [
+        "Collection created with slug and display_name",
+        "Listings added/removed from collection",
+        "Get collection returns ordered listing IDs",
+        "list_collections returns all collections"
+      ],
+      "priority": "low",
+      "estimatedEffort": "2",
+      "dependsOn": ["FEAT-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-001",
+      "title": "Extend cap search with type/category/trust/tag filters",
+      "description": "Add --type, --category, --trust, --min-trust, --tag, --mcp-client, --publisher, --sort, --json flags to the existing cap search command. When searching the local exchange index (not just installed capabilities), use ExchangeSearch.",
+      "acceptanceCriteria": [
+        "cap search --type mcp-server returns only MCP listings",
+        "cap search --category developer-tools filters by category",
+        "cap search --trust verified filters by trust state",
+        "cap search --tag filesystem filters by tag",
+        "cap search --mcp-client cursor filters MCP by client",
+        "cap search --json outputs JSON array",
+        "Multiple filters can be combined",
+        "Backward compatible: cap search <query> without flags still works"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["FEAT-004"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-002",
+      "title": "Implement cap info command",
+      "description": "Create commands/info.py. Accepts capability name, looks up in listings table (or falls back to capabilities table for installed-only). Displays full metadata including trust state, publisher, MCP details, install status.",
+      "acceptanceCriteria": [
+        "cap info <name> displays all listing fields",
+        "MCP-specific fields shown only for mcp-server type",
+        "Trust state shown with visual indicator (✓ for verified+)",
+        "Publisher shown with verification status",
+        "Falls back to installed capability info if no listing exists",
+        "cap info nonexistent shows 'not found' error"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["FEAT-001", "FEAT-004"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-003",
+      "title": "Implement cap claim command",
+      "description": "Create commands/claim.py. Submits a claim request for a listing. Creates publisher if needed. Generates verification token and instructs user to place file/DNS record.",
+      "acceptanceCriteria": [
+        "cap claim <name> prompts for publisher info if not existing",
+        "Generates unique verification token",
+        "Instructs user on repo-file or DNS proof method",
+        "Creates ClaimRequest in pending state",
+        "cap claim <name> --verify triggers proof validation"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["FEAT-005"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-004",
+      "title": "Implement cap exchange subcommands",
+      "description": "Create commands/exchange.py with subcommands: cap exchange search (alias for enhanced search), cap exchange categories (list taxonomy), cap exchange tags (list popular tags).",
+      "acceptanceCriteria": [
+        "cap exchange search works like enhanced cap search",
+        "cap exchange categories lists all 10 categories with subcategories",
+        "cap exchange tags lists top-N tags with counts",
+        "cap exchange tags --limit 20 limits output"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "2",
+      "dependsOn": ["FEAT-003", "FEAT-004"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-005",
+      "title": "Implement cap trust promote/history commands",
+      "description": "Create commands/trust.py with: cap trust promote <name> <state> (admin operation to advance trust), cap trust history <name> (show trust transitions).",
+      "acceptanceCriteria": [
+        "cap trust promote advances trust state with validation",
+        "cap trust promote with invalid transition shows error",
+        "cap trust history shows all transitions with timestamps",
+        "Operations require --admin flag or env var for safety"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "2",
+      "dependsOn": ["FEAT-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-001",
+      "title": "Create crawler/models.py with crawler dataclasses",
+      "description": "Create the crawler/ package with models.py containing: CrawlSource, CrawlJob, CrawlFinding dataclasses with serialization.",
+      "acceptanceCriteria": [
+        "All 3 dataclasses defined with type annotations",
+        "to_dict/from_dict serialization works",
+        "CrawlFinding.status supports: raw, normalized, duplicate, promoted, rejected",
+        "CrawlJob.status supports: pending, running, completed, failed"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "2",
+      "dependsOn": ["ARCH-003"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-002",
+      "title": "Implement crawler/engine.py — Crawl orchestrator",
+      "description": "Create engine.py with CrawlEngine class. Methods: run_crawl(source_id), run_all_sources(), get_job_status(job_id). Orchestrates: fetch → normalize → classify → dedup → create findings.",
+      "acceptanceCriteria": [
+        "run_crawl creates a CrawlJob and runs pipeline",
+        "Job status updates through pending → running → completed/failed",
+        "Findings count accurately tracked",
+        "Errors captured in job.errors list",
+        "run_all_sources processes enabled sources sequentially"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "4",
+      "dependsOn": ["CRAWL-001", "CRAWL-003", "CRAWL-004", "CRAWL-005"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-003",
+      "title": "Implement crawler/sources/github.py — GitHub source",
+      "description": "Create GitHub source fetcher. Uses GitHub Search API (stdlib urllib) to discover repos by topic, keyword, and language. Extracts repo metadata: name, description, owner, topics, language, stars, license.",
+      "acceptanceCriteria": [
+        "Searches GitHub API with configurable query",
+        "Handles rate limiting with backoff",
+        "Extracts: name, description, owner, topics, language, stars, license, default_branch",
+        "Respects source config for search terms",
+        "Works without GITHUB_TOKEN (public search), faster with token",
+        "Returns list of raw metadata dicts"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "4",
+      "dependsOn": ["CRAWL-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-004",
+      "title": "Implement crawler/normalizer.py + classifier.py",
+      "description": "Create normalizer (standardizes metadata fields, cleans text, extracts structured data) and classifier (infers package_type from signals, assigns primary_category and tags).",
+      "acceptanceCriteria": [
+        "Normalizer standardizes names to kebab-case",
+        "Normalizer truncates descriptions to 280 chars",
+        "Normalizer extracts license from SPDX identifiers",
+        "Classifier infers mcp-server from repo topics/name containing 'mcp'",
+        "Classifier infers skill from SKILL.md presence",
+        "Classifier assigns category from keyword matching",
+        "Classifier suggests tags from repo topics and keywords"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["CRAWL-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-005",
+      "title": "Implement crawler/dedup.py — Deduplication engine",
+      "description": "Create dedup.py with Deduplicator class. Implements: URL canonicalization (normalize GH URLs), name matching (fuzzy), canonical source selection, alias linking.",
+      "acceptanceCriteria": [
+        "GitHub URL variants normalized to canonical form",
+        "github.com/user/repo.git → github.com/user/repo",
+        "github.com/user/repo/tree/main → github.com/user/repo",
+        "Duplicate findings linked to existing listing via canonical_match_id",
+        "similarity_score computed for name matches",
+        "Source precedence: capability.yaml > primary org > most stars"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["CRAWL-001", "FEAT-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CRAWL-006",
+      "title": "Implement crawler/claim_prep.py — Claim/verify preparation",
+      "description": "Create claim_prep.py with ClaimPreparator class. Detects potential owners from GitHub repo metadata, extracts contact hints (homepage URL, profile URL, email from commits), flags high-confidence claim candidates.",
+      "acceptanceCriteria": [
+        "Owner detection extracts GitHub org/user as detected_owner",
+        "Contact hints extracted from repo homepage, owner profile",
+        "Claim candidates flagged when owner confidence is high",
+        "Results stored on CrawlFinding.detected_owner and contact_hints"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "2",
+      "dependsOn": ["CRAWL-001"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "CLI-006",
+      "title": "Implement cap crawl subcommands",
+      "description": "Create commands/crawl.py with: cap crawl run [source], cap crawl sources (list/add), cap crawl findings [job-id], cap crawl promote <finding-id>.",
+      "acceptanceCriteria": [
+        "cap crawl run triggers crawl for specified source",
+        "cap crawl run --all triggers crawl for all enabled sources",
+        "cap crawl sources lists configured sources",
+        "cap crawl findings lists findings for a job with status",
+        "cap crawl promote creates listing from finding"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["CRAWL-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "API-001",
+      "title": "Add /listings endpoint to registry server",
+      "description": "Extend registry_server.py with GET /v1/listings endpoint. Accepts all SearchQuery parameters. Returns paginated listing results with full metadata.",
+      "acceptanceCriteria": [
+        "GET /v1/listings returns all listings",
+        "Query parameters filter results (type, category, trust, tag, etc.)",
+        "Pagination via limit/offset works",
+        "Response format matches CapabilityListResponse pattern",
+        "MCP metadata included for mcp-server listings"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["FEAT-004"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "API-002",
+      "title": "Add /categories, /tags, /publishers API endpoints",
+      "description": "Extend registry_server.py with taxonomy and publisher endpoints.",
+      "acceptanceCriteria": [
+        "GET /v1/categories returns all categories with subcategories",
+        "GET /v1/tags returns tags with counts, sortable",
+        "GET /v1/publishers returns publisher list",
+        "GET /v1/publishers/{slug} returns publisher detail"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "2",
+      "dependsOn": ["FEAT-003", "FEAT-005"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "API-003",
+      "title": "Add /claims and /crawl API endpoints",
+      "description": "Extend registry_server.py with claim submission and crawl management endpoints.",
+      "acceptanceCriteria": [
+        "POST /v1/claims creates claim request",
+        "GET /v1/claims/{id} returns claim status",
+        "POST /v1/crawl/jobs starts crawl job",
+        "GET /v1/crawl/jobs/{id} returns job with findings summary",
+        "POST /v1/crawl/findings/{id}/promote promotes finding"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["FEAT-005", "CRAWL-002"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "API-004",
+      "title": "Update OpenAPI spec for V2 endpoints",
+      "description": "Extend specs/registry-openapi.yaml with all new endpoints, schemas (Listing, MCPMetadata, Publisher, Category, SearchQuery, CrawlJob, ClaimRequest), and updated Kind enum.",
+      "acceptanceCriteria": [
+        "OpenAPI spec includes all new endpoints",
+        "Listing schema includes all mandatory and optional fields",
+        "MCPMetadata schema defined",
+        "Kind enum includes mcp-server",
+        "Spec validates without errors"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["API-001", "API-002", "API-003"],
+      "type": "documentation",
+      "passes": false
+    },
+    {
+      "id": "FEAT-007",
+      "title": "MCP manifest validation and mcp_metadata extraction",
+      "description": "Extend manifest.py to validate mcp-server manifests and extract MCPMetadata from the 'mcp' section of capability.yaml.",
+      "acceptanceCriteria": [
+        "Manifest with kind=mcp-server and mcp section parses to MCPMetadata",
+        "mcp-server without mcp section generates validation warning",
+        "supported_clients, transport, runtime fields extracted",
+        "Unknown mcp fields are ignored (forward compatibility)",
+        "Non-mcp-server kinds ignore mcp section"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["ARCH-001", "ARCH-003"],
+      "type": "feature",
+      "passes": false
+    },
+    {
+      "id": "TEST-001",
+      "title": "Unit tests for exchange models and trust machine",
+      "description": "Write comprehensive tests for all exchange dataclasses, serialization, and TrustState machine transitions.",
+      "acceptanceCriteria": [
+        "All dataclass to_dict/from_dict round-trips tested",
+        "All valid trust transitions tested",
+        "All invalid trust transitions tested (expect error)",
+        "MCPMetadata null handling tested",
+        "SearchQuery construction tested",
+        "≥95% coverage for exchange/models.py and exchange/trust.py"
+      ],
+      "priority": "high",
+      "estimatedEffort": "3",
+      "dependsOn": ["ARCH-003", "FEAT-002"],
+      "type": "testing",
+      "passes": false
+    },
+    {
+      "id": "TEST-002",
+      "title": "Integration tests for listing CRUD, search, and crawl pipeline",
+      "description": "Write integration tests that exercise: listing creation → search → crawl finding → promote → claim → verify flow end-to-end.",
+      "acceptanceCriteria": [
+        "Listing CRUD integration test with real SQLite",
+        "Faceted search with 5+ filters test",
+        "Crawl pipeline integration with mock GitHub API",
+        "Finding promotion to listing test",
+        "Claim → verify flow test",
+        "Schema migration idempotency test",
+        "Regression: all 213 existing tests still pass"
+      ],
+      "priority": "high",
+      "estimatedEffort": "5",
+      "dependsOn": ["FEAT-004", "CRAWL-002", "FEAT-005"],
+      "type": "testing",
+      "passes": false
+    },
+    {
+      "id": "DOC-001",
+      "title": "Update documentation and agents.md for V2",
+      "description": "Update docs/cli-reference.md with new commands, docs/registry.md with new endpoints, docs/manifest.md with mcp section. Update agents.md with V2 architecture, new module layout, and conventions.",
+      "acceptanceCriteria": [
+        "CLI reference covers all new commands",
+        "Registry docs cover all new API endpoints",
+        "Manifest docs cover mcp section",
+        "agents.md reflects V2 module architecture",
+        "README.md updated with V2 feature highlights"
+      ],
+      "priority": "medium",
+      "estimatedEffort": "3",
+      "dependsOn": ["CLI-001", "CLI-002", "API-004"],
+      "type": "documentation",
+      "passes": false
+    }
+  ]
+}

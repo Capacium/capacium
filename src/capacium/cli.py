@@ -12,7 +12,7 @@ def main():
     parser.add_argument(
         "-v", "--version",
         action="version",
-        version="%(prog)s 0.4.0"
+        version="%(prog)s 0.5.0"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -31,12 +31,21 @@ def main():
     remove_parser.add_argument("--force", action="store_true", help="Force removal including sub-capabilities with dependents")
 
     list_parser = subparsers.add_parser("list", help="List installed capabilities")
-    list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow)")
+    list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
 
     search_parser = subparsers.add_parser("search", help="Search for capabilities")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--kind", help="Filter by kind")
     search_parser.add_argument("--registry", help="Remote registry URL to search")
+    search_parser.add_argument("--category", help="Filter by category slug")
+    search_parser.add_argument("--trust", help="Filter by trust state")
+    search_parser.add_argument("--min-trust", help="Filter by minimum trust state")
+    search_parser.add_argument("--tag", action="append", help="Filter by tag (repeatable)")
+    search_parser.add_argument("--mcp-client", help="Filter by MCP client compatibility")
+    search_parser.add_argument("--publisher", help="Filter by publisher ID")
+    search_parser.add_argument("--sort", choices=["relevance", "name", "trust", "updated"], default="relevance")
+    search_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    search_parser.add_argument("--limit", type=int, default=50, help="Max results")
 
     verify_parser = subparsers.add_parser("verify", help="Verify capability fingerprint")
     verify_parser.add_argument("capability", nargs="?", help="Capability to verify (omit for --all)")
@@ -58,6 +67,8 @@ def main():
     marketplace_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
     marketplace_parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
     marketplace_parser.add_argument("--open", action="store_true", help="Open browser automatically")
+
+    # V2 Platform Commands (info, claim, exchange, trust, crawl) have been extracted to Capacium V3 Platform Services.
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -92,7 +103,14 @@ def main():
 
         elif args.command == "search":
             from .commands.search import search_capabilities
-            search_capabilities(args.query, kind=args.kind, registry_url=args.registry)
+            search_capabilities(
+                args.query, kind=args.kind, registry_url=args.registry,
+                category=args.category, trust=args.trust,
+                min_trust=getattr(args, 'min_trust', None),
+                tag=args.tag, mcp_client=getattr(args, 'mcp_client', None),
+                publisher=args.publisher, sort=args.sort,
+                json_output=args.json, limit=args.limit,
+            )
             sys.exit(0)
 
         elif args.command == "verify":
@@ -121,9 +139,8 @@ def main():
             success = publish_capability(Path(args.path))
             sys.exit(0 if success else 1)
 
-        elif args.command == "marketplace":
-            from .commands.marketplace import serve_marketplace
-            serve_marketplace(host=args.host, port=args.port, open_browser=args.open)
+# Platform subcommands (marketplace, info, claim, exchange, trust, crawl)
+        # have been extracted to Capacium V3 Platform Services.
 
         else:
             parser.print_help()
@@ -139,3 +156,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

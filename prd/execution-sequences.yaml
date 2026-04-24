@@ -1,0 +1,658 @@
+# Capacium Core V2 — Execution Sequences
+
+**Generated from:** `prd/prd.json`  
+**Sequence Type:** `build` (development/implementation)  
+**Execution Mode:** `ralph_overnight` (complex, 30 tasks, 8+ hours)  
+**Generated:** 2026-04-24  
+
+---
+
+## Metadata
+
+| Field | Value |
+|-------|-------|
+| Sequence ID | `CAPV2-EXE-001` |
+| Version | `1.0.0` |
+| Mode | `build / ralph_overnight` |
+| Total Tasks | 30 |
+| Estimated Duration | 8–12 hours |
+| Parallel Opportunities | 8 lanes |
+| Critical Path Length | 7 tasks |
+| Checkpoint Interval | After each phase |
+
+---
+
+## Objective
+
+Execute the Capacium Core V2 development program: extend the existing v0.4.1 codebase with MCP-Server support, Exchange Core (Listing, Taxonomy, Trust, Search, Publisher), and Crawler subsystem. All work confined to the `src/capacium/` source tree, `tests/`, `docs/`, and `specs/` directories. No external dependencies added to core.
+
+---
+
+## Success Criteria (Binary)
+
+| ID | Criterion |
+|----|-----------|
+| SC-1 | `Kind.MCP_SERVER` exists and is accepted in manifests and registry |
+| SC-2 | `TrustState` enum with 5 states enforces valid transitions |
+| SC-3 | Listings table stores ≥1 listing with full metadata |
+| SC-4 | Faceted search returns correct results for ≥5 simultaneous filters |
+| SC-5 | Crawler GitHub source produces normalized findings from mock API |
+| SC-6 | Deduplicator detects URL aliases as duplicates |
+| SC-7 | Claim/verify flow transitions listing through trust states |
+| SC-8 | `cap search --type mcp-server` returns only MCP listings |
+| SC-9 | `cap info <name>` outputs full listing with MCP metadata |
+| SC-10 | All 213 existing tests continue to pass |
+| SC-11 | ≥90% test coverage on new modules |
+| SC-12 | OpenAPI spec validates without errors |
+
+---
+
+## Execution Phases
+
+### Phase 0: Pre-Flight Validation
+
+**Purpose:** Ensure baseline is clean before any changes.
+
+```yaml
+- id: "PRE-001"
+  task: "Run existing test suite, verify 213 tests pass"
+  command: "cd /Users/andrelange/Documents/repositories/github/capacium && PYTHONPATH=src python -m pytest tests/ -v --tb=short"
+  expected: "213 passed"
+  gate: true  # Block if fails
+```
+
+---
+
+### Phase 1: Foundation (Parallel Lane A + B)
+
+**Purpose:** Core models, enums, and database schema — everything else depends on these.
+
+```yaml
+phase: "foundation"
+parallel: true
+checkpoint: true
+
+lane_a:
+  - id: "ARCH-001"
+    task: "Extend Kind enum with MCP_SERVER"
+    file: "src/capacium/models.py"
+    depends_on: []
+    capabilities: ["code_generation"]
+    verification:
+      - "Kind.MCP_SERVER.value == 'mcp-server'"
+      - "Existing Kind values unchanged"
+      - "213 existing tests pass"
+
+  - id: "ARCH-002"
+    task: "Add TrustState enum"
+    file: "src/capacium/models.py"
+    depends_on: []
+    capabilities: ["code_generation"]
+    verification:
+      - "TrustState has 5 values"
+      - "TrustState.DISCOVERED.value == 'discovered'"
+
+lane_b:
+  - id: "FEAT-007"
+    task: "MCP manifest validation"
+    file: "src/capacium/manifest.py"
+    depends_on: ["ARCH-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Manifest with kind=mcp-server parses"
+      - "MCPMetadata extracted from mcp section"
+
+sync_point: "ARCH-001 + ARCH-002 complete → unlock Phase 1c"
+
+lane_c:
+  - id: "ARCH-003"
+    task: "Create exchange/models.py with all dataclasses"
+    files:
+      - "src/capacium/exchange/__init__.py"
+      - "src/capacium/exchange/models.py"
+    depends_on: ["ARCH-001", "ARCH-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "All 10+ dataclasses importable"
+      - "to_dict/from_dict round-trip for each dataclass"
+      - "MCPMetadata nullable on Listing"
+
+  - id: "DB-001"
+    task: "SQLite schema migration"
+    files:
+      - "src/capacium/migrations/__init__.py"
+      - "src/capacium/migrations/v2_exchange_crawler.py"
+    depends_on: ["ARCH-003"]
+    capabilities: ["code_generation", "infrastructure"]
+    verification:
+      - "11 new tables created"
+      - "Idempotent (run twice, no error)"
+      - "Existing tables untouched"
+
+  - id: "DB-002"
+    task: "Seed V1 taxonomy"
+    files:
+      - "src/capacium/migrations/v2_exchange_crawler.py"
+    depends_on: ["DB-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "10 categories in categories table"
+      - "≥10 subcategories in subcategories table"
+```
+
+**Phase 1 Checkpoint:** All enums, models, migration, taxonomy seed complete. Run tests.
+
+---
+
+### Phase 2: Exchange Core (Parallel Lanes D + E + F)
+
+**Purpose:** Listing CRUD, Trust machine, Taxonomy, Search — the Exchange subsystem.
+
+```yaml
+phase: "exchange-core"
+parallel: true
+depends_on: ["foundation"]
+checkpoint: true
+
+lane_d:
+  - id: "FEAT-001"
+    task: "Listing CRUD (exchange/listing.py)"
+    file: "src/capacium/exchange/listing.py"
+    depends_on: ["ARCH-003", "DB-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Create/read/update/delete listing"
+      - "MCPMetadata stored as JSON blob"
+      - "Pagination works"
+
+  - id: "FEAT-002"
+    task: "TrustState machine (exchange/trust.py)"
+    file: "src/capacium/exchange/trust.py"
+    depends_on: ["ARCH-003", "FEAT-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "All 5 forward transitions work"
+      - "Invalid transitions raise error"
+      - "Trust history recorded"
+
+lane_e:
+  - id: "FEAT-003"
+    task: "Taxonomy store (exchange/taxonomy.py)"
+    file: "src/capacium/exchange/taxonomy.py"
+    depends_on: ["DB-001", "DB-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "list_categories returns 10 categories"
+      - "Tag counts increment/decrement"
+
+lane_f:
+  - id: "FEAT-004"
+    task: "Faceted search engine (exchange/search.py)"
+    file: "src/capacium/exchange/search.py"
+    depends_on: ["FEAT-001", "FEAT-003"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Text search on name + description"
+      - "5+ filter facets work simultaneously"
+      - "Sorting and pagination"
+
+  - id: "FEAT-005"
+    task: "Publisher + Claim logic (exchange/publisher.py)"
+    file: "src/capacium/exchange/publisher.py"
+    depends_on: ["FEAT-001", "FEAT-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Publisher CRUD works"
+      - "Claim submission creates pending request"
+      - "Claim approval transitions trust state"
+
+  - id: "FEAT-006"
+    task: "Collection management (exchange/collection.py)"
+    file: "src/capacium/exchange/collection.py"
+    depends_on: ["FEAT-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Collection CRUD works"
+      - "Listings linkable to collections"
+```
+
+**Phase 2 Checkpoint:** Full Exchange subsystem operational. Run unit tests.
+
+---
+
+### Phase 3: Crawler Subsystem (Parallel Lanes G + H)
+
+**Purpose:** Build the Crawler pipeline — sources, normalization, dedup, claim prep.
+
+```yaml
+phase: "crawler"
+parallel: true
+depends_on: ["exchange-core"]
+checkpoint: true
+
+lane_g:
+  - id: "CRAWL-001"
+    task: "Crawler models"
+    files:
+      - "src/capacium/crawler/__init__.py"
+      - "src/capacium/crawler/models.py"
+    depends_on: ["ARCH-003"]
+    capabilities: ["code_generation"]
+    verification:
+      - "CrawlSource, CrawlJob, CrawlFinding dataclasses defined"
+      - "Serialization works"
+
+  - id: "CRAWL-003"
+    task: "GitHub source fetcher"
+    files:
+      - "src/capacium/crawler/sources/__init__.py"
+      - "src/capacium/crawler/sources/github.py"
+    depends_on: ["CRAWL-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "GitHub API search returns metadata dicts"
+      - "Rate limiting handled"
+      - "Works with mock responses"
+
+  - id: "CRAWL-004"
+    task: "Normalizer + Classifier"
+    files:
+      - "src/capacium/crawler/normalizer.py"
+      - "src/capacium/crawler/classifier.py"
+    depends_on: ["CRAWL-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Names normalized to kebab-case"
+      - "MCP type inferred from topics"
+      - "Categories assigned from keywords"
+
+lane_h:
+  - id: "CRAWL-005"
+    task: "Deduplication engine"
+    file: "src/capacium/crawler/dedup.py"
+    depends_on: ["CRAWL-001", "FEAT-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "GitHub URL normalization works"
+      - "Duplicates linked to canonical"
+      - "Source precedence applied"
+
+  - id: "CRAWL-006"
+    task: "Claim preparation"
+    file: "src/capacium/crawler/claim_prep.py"
+    depends_on: ["CRAWL-001"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Owner detection from GitHub metadata"
+      - "Contact hints extracted"
+
+sync_point: "All CRAWL tasks → CRAWL-002"
+
+  - id: "CRAWL-002"
+    task: "Crawl orchestrator (engine.py)"
+    file: "src/capacium/crawler/engine.py"
+    depends_on: ["CRAWL-001", "CRAWL-003", "CRAWL-004", "CRAWL-005"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Full pipeline: fetch → normalize → classify → dedup → findings"
+      - "Job status tracking works"
+      - "Error handling robust"
+```
+
+**Phase 3 Checkpoint:** Crawler pipeline produces findings from mock GitHub data. Run tests.
+
+---
+
+### Phase 4: CLI Commands (Parallel Lanes I + J)
+
+**Purpose:** Wire up all new subsystems to CLI commands.
+
+```yaml
+phase: "cli-commands"
+parallel: true
+depends_on: ["exchange-core", "crawler"]
+checkpoint: true
+
+lane_i:
+  - id: "CLI-001"
+    task: "Extend cap search with filters"
+    files:
+      - "src/capacium/commands/search.py"
+      - "src/capacium/cli.py"
+    depends_on: ["FEAT-004"]
+    capabilities: ["code_generation"]
+    verification:
+      - "--type, --category, --trust, --tag, --mcp-client work"
+      - "Backward compatible: plain search still works"
+
+  - id: "CLI-002"
+    task: "Implement cap info"
+    files:
+      - "src/capacium/commands/info.py"
+      - "src/capacium/cli.py"
+    depends_on: ["FEAT-001", "FEAT-004"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Full listing output with MCP details"
+      - "Fallback to installed capability"
+
+  - id: "CLI-004"
+    task: "Implement cap exchange subcommands"
+    files:
+      - "src/capacium/commands/exchange.py"
+      - "src/capacium/cli.py"
+    depends_on: ["FEAT-003", "FEAT-004"]
+    capabilities: ["code_generation"]
+    verification:
+      - "cap exchange categories, tags, search work"
+
+lane_j:
+  - id: "CLI-003"
+    task: "Implement cap claim"
+    files:
+      - "src/capacium/commands/claim.py"
+      - "src/capacium/cli.py"
+    depends_on: ["FEAT-005"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Claim submission with token generation"
+      - "Verify flag triggers proof check"
+
+  - id: "CLI-005"
+    task: "Implement cap trust promote/history"
+    files:
+      - "src/capacium/commands/trust.py"
+      - "src/capacium/cli.py"
+    depends_on: ["FEAT-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Trust promotion with validation"
+      - "History display with timestamps"
+
+  - id: "CLI-006"
+    task: "Implement cap crawl subcommands"
+    files:
+      - "src/capacium/commands/crawl.py"
+      - "src/capacium/cli.py"
+    depends_on: ["CRAWL-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "cap crawl run, sources, findings, promote work"
+```
+
+**Phase 4 Checkpoint:** All CLI commands functional. Full CLI integration test.
+
+---
+
+### Phase 5: API & Spec (Sequential)
+
+**Purpose:** Extend registry server and update OpenAPI spec.
+
+```yaml
+phase: "api"
+parallel: false
+depends_on: ["cli-commands"]
+checkpoint: true
+
+steps:
+  - id: "API-001"
+    task: "Add /listings endpoint"
+    file: "src/capacium/registry_server.py"
+    depends_on: ["FEAT-004"]
+    capabilities: ["code_generation"]
+    verification:
+      - "GET /v1/listings with query params works"
+      - "Response includes MCP metadata"
+
+  - id: "API-002"
+    task: "Add /categories, /tags, /publishers endpoints"
+    file: "src/capacium/registry_server.py"
+    depends_on: ["FEAT-003", "FEAT-005"]
+    capabilities: ["code_generation"]
+    verification:
+      - "All endpoints return correct data"
+
+  - id: "API-003"
+    task: "Add /claims and /crawl endpoints"
+    file: "src/capacium/registry_server.py"
+    depends_on: ["FEAT-005", "CRAWL-002"]
+    capabilities: ["code_generation"]
+    verification:
+      - "Claim submission via API works"
+      - "Crawl job management via API works"
+
+  - id: "API-004"
+    task: "Update OpenAPI spec"
+    file: "specs/registry-openapi.yaml"
+    depends_on: ["API-001", "API-002", "API-003"]
+    capabilities: ["code_generation", "review"]
+    verification:
+      - "Spec validates with openapi-spec-validator"
+      - "All new endpoints documented"
+```
+
+**Phase 5 Checkpoint:** API complete. Run API integration tests.
+
+---
+
+### Phase 6: Testing & Quality (Parallel)
+
+**Purpose:** Comprehensive test coverage and regression validation.
+
+```yaml
+phase: "testing"
+parallel: true
+depends_on: ["api"]
+checkpoint: true
+
+lane_k:
+  - id: "TEST-001"
+    task: "Unit tests for exchange models and trust"
+    files:
+      - "tests/test_exchange_models.py"
+      - "tests/test_trust.py"
+    depends_on: ["ARCH-003", "FEAT-002"]
+    capabilities: ["testing"]
+    verification:
+      - "≥95% coverage on exchange/models.py"
+      - "≥95% coverage on exchange/trust.py"
+      - "All serialization round-trips tested"
+
+lane_l:
+  - id: "TEST-002"
+    task: "Integration tests — full pipeline"
+    files:
+      - "tests/test_exchange_integration.py"
+      - "tests/test_crawler_integration.py"
+      - "tests/test_v2_regression.py"
+    depends_on: ["FEAT-004", "CRAWL-002", "FEAT-005"]
+    capabilities: ["testing"]
+    verification:
+      - "Listing CRUD integration test"
+      - "Faceted search with 5+ filters"
+      - "Crawl → find → promote → claim → verify flow"
+      - "Schema migration idempotency"
+      - "All 213 existing tests pass"
+```
+
+**Phase 6 Checkpoint:** Full test suite (old + new) green. Coverage ≥90% on new code.
+
+---
+
+### Phase 7: Documentation & Finalization (Sequential)
+
+**Purpose:** Update all documentation, bump version.
+
+```yaml
+phase: "documentation"
+parallel: false
+depends_on: ["testing"]
+checkpoint: false
+
+steps:
+  - id: "DOC-001"
+    task: "Update docs and agents.md"
+    files:
+      - "docs/cli-reference.md"
+      - "docs/registry.md"
+      - "docs/manifest.md"
+      - "agents.md"
+      - "README.md"
+    depends_on: ["CLI-001", "CLI-002", "API-004"]
+    capabilities: ["code_generation", "review"]
+    verification:
+      - "All new commands documented"
+      - "All new API endpoints documented"
+      - "MCP manifest section documented"
+      - "agents.md reflects V2"
+```
+
+---
+
+## Dependency Graph
+
+```mermaid
+graph TD
+    PRE001["PRE-001: Baseline Tests"] --> ARCH001
+    PRE001 --> ARCH002
+    
+    ARCH001["ARCH-001: Kind.MCP_SERVER"] --> ARCH003
+    ARCH001 --> FEAT007["FEAT-007: MCP Manifest"]
+    ARCH002["ARCH-002: TrustState"] --> ARCH003
+    
+    ARCH003["ARCH-003: Exchange Models"] --> DB001
+    ARCH003 --> CRAWL001
+    
+    DB001["DB-001: Schema Migration"] --> DB002
+    DB001 --> FEAT001
+    DB001 --> FEAT003
+    DB002["DB-002: Taxonomy Seed"] --> FEAT003
+    
+    FEAT001["FEAT-001: Listing CRUD"] --> FEAT002
+    FEAT001 --> FEAT004
+    FEAT001 --> FEAT005
+    FEAT001 --> FEAT006
+    FEAT001 --> CRAWL005
+    
+    FEAT002["FEAT-002: Trust Machine"] --> FEAT005
+    FEAT002 --> CLI005
+    
+    FEAT003["FEAT-003: Taxonomy"] --> FEAT004
+    FEAT003 --> CLI004
+    
+    FEAT004["FEAT-004: Search Engine"] --> CLI001
+    FEAT004 --> CLI002
+    FEAT004 --> API001
+    
+    FEAT005["FEAT-005: Publisher/Claim"] --> CLI003
+    FEAT005 --> API002
+    FEAT005 --> API003
+    
+    FEAT006["FEAT-006: Collections"] 
+    
+    CRAWL001["CRAWL-001: Crawler Models"] --> CRAWL003
+    CRAWL001 --> CRAWL004
+    CRAWL001 --> CRAWL005
+    CRAWL001 --> CRAWL006
+    
+    CRAWL003["CRAWL-003: GitHub Source"] --> CRAWL002
+    CRAWL004["CRAWL-004: Normalizer"] --> CRAWL002
+    CRAWL005["CRAWL-005: Dedup"] --> CRAWL002
+    CRAWL006["CRAWL-006: Claim Prep"] --> CRAWL002
+    
+    CRAWL002["CRAWL-002: Engine"] --> CLI006
+    CRAWL002 --> API003
+    
+    CLI001["CLI-001: Search Filters"]
+    CLI002["CLI-002: cap info"]
+    CLI003["CLI-003: cap claim"]
+    CLI004["CLI-004: cap exchange"]
+    CLI005["CLI-005: cap trust"]
+    CLI006["CLI-006: cap crawl"]
+    
+    API001["API-001: /listings"] --> API004
+    API002["API-002: /categories,tags,publishers"] --> API004
+    API003["API-003: /claims,crawl"] --> API004
+    API004["API-004: OpenAPI Spec"]
+    
+    FEAT002 --> TEST001
+    ARCH003 --> TEST001["TEST-001: Unit Tests"]
+    FEAT004 --> TEST002["TEST-002: Integration Tests"]
+    CRAWL002 --> TEST002
+    FEAT005 --> TEST002
+    
+    CLI001 --> DOC001["DOC-001: Documentation"]
+    CLI002 --> DOC001
+    API004 --> DOC001
+```
+
+---
+
+## Critical Path
+
+The longest dependency chain determines minimum execution time:
+
+```
+PRE-001 → ARCH-001 → ARCH-003 → DB-001 → FEAT-001 → FEAT-004 → CLI-001 → API-001 → API-004 → TEST-002 → DOC-001
+```
+
+**11 sequential tasks** on the critical path. Parallel lanes reduce total wall time significantly.
+
+---
+
+## Agent Capability Assignments
+
+| Capability | Tasks |
+|-----------|-------|
+| `code_generation` | ARCH-001, ARCH-002, ARCH-003, DB-001, DB-002, FEAT-001–007, CRAWL-001–006, CLI-001–006, API-001–004 |
+| `testing` | TEST-001, TEST-002 |
+| `review` | API-004, DOC-001 |
+| `infrastructure` | DB-001, PRE-001 |
+
+---
+
+## Failure Handling
+
+| Failure | Recovery |
+|---------|----------|
+| Existing tests break after Kind change | Revert ARCH-001, check Kind string comparison in tests |
+| SQLite migration fails on existing DB | Check for column name conflicts, test with fresh DB |
+| GitHub API rate limit during crawl test | Use mock responses, add backoff in source |
+| Search performance degradation | Add FTS5 virtual table, optimize index usage |
+| Trust transition edge case | Add missing transition to TrustState machine, add test |
+
+---
+
+## Memory System
+
+### progress.txt
+
+```
+## Project: Capacium Core V2
+## Created: 2026-04-24
+## Status: Planning
+
+### Phase Status
+- [ ] Phase 0: Pre-Flight
+- [ ] Phase 1: Foundation
+- [ ] Phase 2: Exchange Core
+- [ ] Phase 3: Crawler
+- [ ] Phase 4: CLI Commands
+- [ ] Phase 5: API & Spec
+- [ ] Phase 6: Testing
+- [ ] Phase 7: Documentation
+
+### Key Decisions
+[Will be populated during execution]
+
+### Learnings & Patterns
+[Will accumulate during execution]
+```
+
+### agents.md Supplement
+
+V2 patterns to add after completion:
+- Exchange subsystem patterns (Listing lifecycle)
+- Crawler source adapter pattern
+- Trust state machine conventions
+- JSON blob storage pattern for nullable metadata

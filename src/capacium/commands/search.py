@@ -1,10 +1,15 @@
-from typing import Optional
+from typing import List, Optional
 from ..registry import Registry
 from ..models import Kind
 from ..registry_client import RegistryClient
 
 
-def search_capabilities(query: str, kind: Optional[str] = None, registry_url: Optional[str] = None):
+def search_capabilities(query: str, kind: Optional[str] = None, registry_url: Optional[str] = None,
+                        category: Optional[str] = None, trust: Optional[str] = None,
+                        min_trust: Optional[str] = None, tag: Optional[List[str]] = None,
+                        mcp_client: Optional[str] = None, publisher: Optional[str] = None,
+                        sort: Optional[str] = None, json_output: bool = False,
+                        limit: int = 50):
     if registry_url:
         client = RegistryClient()
         try:
@@ -27,6 +32,11 @@ def search_capabilities(query: str, kind: Optional[str] = None, registry_url: Op
                 print(f"    fingerprint: {r.fingerprint[:8]}...")
             print()
         return
+
+    has_exchange_filters = any([category, trust, min_trust, tag, mcp_client, publisher])
+    if has_exchange_filters or (kind and kind == "mcp-server"):
+        print("Note: Advanced exchange filters require querying a remote V2 Exchange API.")
+        # Fall through to local registry search or network search if URL provided
 
     registry = Registry()
     kind_enum = None

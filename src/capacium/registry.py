@@ -13,6 +13,7 @@ class Registry:
         self.db_path = db_path
         self._init_db()
         self._migrate_old_schema()
+        self._run_v2_migration()
 
     @contextmanager
     def _get_connection(self):
@@ -99,6 +100,16 @@ class Registry:
                 cursor.execute("DROP TABLE skills")
 
             conn.commit()
+
+    def _run_v2_migration(self):
+        """Run V2 Exchange & Crawler schema migration (idempotent)."""
+        try:
+            from .migrations.v2_exchange_crawler import run_migration
+            with self._get_connection() as conn:
+                run_migration(conn)
+        except Exception:
+            # Migration is optional — don't break existing functionality
+            pass
 
     def add_capability(self, cap: Capability) -> bool:
         with self._get_connection() as conn:

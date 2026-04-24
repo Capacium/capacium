@@ -14,7 +14,7 @@ class TestKind:
 
     def test_all_kinds_covered(self):
         kinds = set(k.value for k in Kind)
-        expected = {"skill", "bundle", "tool", "prompt", "template", "workflow"}
+        expected = {"skill", "bundle", "tool", "prompt", "template", "workflow", "mcp-server", "connector-pack"}
         assert kinds == expected
 
 
