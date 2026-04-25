@@ -331,7 +331,10 @@ class TestDoctor:
 
         out = capsys.readouterr().out
         assert "uv" in out
-        assert "brew install uv" in out
+        # The doctor pulls the install hint from Runtime.install_hint_for()
+        # which is platform-aware; assert that *some* install line is shown
+        # rather than pinning to a single platform's package manager.
+        assert "install:" in out
 
 
 # ──────────────────────────────────────────────────────────────────────────
