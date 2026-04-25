@@ -76,7 +76,7 @@ jobs:
             --prerelease \
             --notes "## Capacium v${{ inputs.version }} RC ${{ steps.next_rc.outputs.rc_number }}
 
-        **Pre-release** — not for production use.
+          **Pre-release** — not for production use.
 
-        ### Changes since last release
-        ${{ steps.changelog.outputs.log }}"
+          ### Changes since last release
+          ${{ steps.changelog.outputs.log }}"
