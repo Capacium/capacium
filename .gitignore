@@ -13,3 +13,7 @@ build/
 .capacium/
 .DS_Store
 .skillweave/
+.codenomad/
+prd/
+specs/
+*.db
