@@ -15,6 +15,17 @@ class VersionManager:
             if version:
                 return version
 
+        for manifest_name in ("capability.yaml", "capability.yml", "capability.json"):
+            manifest_path = directory / manifest_name
+            if manifest_path.exists():
+                try:
+                    from .manifest import Manifest
+                    manifest = Manifest.load(manifest_path)
+                    if manifest.version:
+                        return manifest.version
+                except Exception:
+                    pass
+
         try:
             result = subprocess.run(
                 ["git", "describe", "--tags", "--abbrev=0"],

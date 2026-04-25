@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-04-25
+
+### Fixed
+- `cap --version` now reads from package metadata via `importlib.metadata`
+  instead of a hardcoded string, so it stays in sync with the installed
+  release across upgrades.
+- `cap install` now respects the `version:` field declared in
+  `capability.yaml`. Previously `VersionManager.detect_version()` only
+  consulted `.capacium-version`, git tags, `package.json`, `pyproject.toml`,
+  and `setup.py`, falling through to the `1.0.0` default — even when the
+  capability's own manifest declared a different version.
+- Made one `cap doctor` test platform-agnostic (was pinned to a macOS-only
+  `brew install` install hint).
+
 ## [0.7.0] - 2026-04-25
 
 ### Added
