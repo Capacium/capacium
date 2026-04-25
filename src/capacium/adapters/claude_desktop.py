@@ -7,7 +7,6 @@ Config: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
 import platform
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any, List
 
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
@@ -34,7 +33,7 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
             return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        print(f"Claude Desktop does not support skill symlinking. Use 'mcp-server' kind instead.")
+        print("Claude Desktop does not support skill symlinking. Use 'mcp-server' kind instead.")
         return False
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:

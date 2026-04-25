@@ -4,9 +4,6 @@ Tests verify JSON/TOML roundtrip safety: inject → verify → remove → verify
 Ensures no data destruction on patch/unpatch operations.
 """
 import json
-import shutil
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

@@ -9,7 +9,6 @@ import pytest
 from capacium.manifest import Manifest
 from capacium.runtimes import (
     RUNTIMES,
-    Runtime,
     RuntimeResolver,
     RuntimeStatus,
     format_failure_report,

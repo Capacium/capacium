@@ -38,7 +38,7 @@ class _StubMcpAdapter(FrameworkAdapter):
         entry = McpConfigPatcher.build_mcp_entry(cap_name, package_dir, mcp_meta)
 
         print(f"\n  [{self.CLIENT_NAME}] MCP server packaged at: {package_dir}")
-        print(f"  To connect manually, use this server entry:")
+        print("  To connect manually, use this server entry:")
         for k, v in entry.items():
             print(f"    {k}: {v}")
         print()
@@ -78,7 +78,7 @@ class McpRemoteAdapter(_StubMcpAdapter):
         mcp_meta = manifest.get_mcp_metadata()
 
         url = mcp_meta.get("url", f"http://localhost:3000/{cap_name}")
-        print(f"\n  [mcp-remote] Connect to this server with:")
+        print("\n  [mcp-remote] Connect to this server with:")
         print(f"    npx mcp-remote {url}")
         print()
         return True
