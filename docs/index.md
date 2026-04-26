@@ -15,6 +15,7 @@ Capacium is a capability-native packaging system for AI agent ecosystems. It def
 | [Lock Files](lockfile.md) | Dependency pinning and integrity |
 | [Framework Adapters](adapters.md) | Cross-framework installation |
 | [Runtimes](runtimes.md) | Host runtime resolver, `cap doctor`, `cap runtimes` |
+| [Publishing](publishing.md) | Full lifecycle: dev → CI → Exchange publish |
 | [Registry](registry.md) | Local SQLite registry and remote API |
 
 ## Architecture

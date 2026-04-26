@@ -99,6 +99,7 @@ cap sign my-skill --key mykey
 | [Lock Files](docs/lockfile.md) | Dependency pinning |
 | [Framework Adapters](docs/adapters.md) | Cross-framework installation |
 | [Runtimes](docs/runtimes.md) | Host runtime resolver, `cap doctor`, `cap runtimes` |
+| [Publishing](docs/publishing.md) | Full lifecycle: dev → CI → Exchange publish |
 | [Registry](docs/registry.md) | Local and remote registry |
 | [API Spec](specs/registry-openapi.yaml) | Remote registry protocol |
 
