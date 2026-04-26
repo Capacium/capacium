@@ -125,6 +125,8 @@ src/capacium/
 - Git tags use the same format: `vX.Y.Z` (e.g., `v1.0.0`)
 - Changelog entries reference the full name: `Capacium vX.Y.Z`
 - Pre-release suffixes: `Capacium vX.Y.Z-alpha.N`, `Capacium vX.Y.Z-beta.N`, `Capacium vX.Y.Z-rc.N`
+- **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics (e.g., MemPalace, ICM, personal tools, local setup details). The prerelease workflow filters these automatically.
+- **Version bump before release**: `pyproject.toml` version MUST be bumped to the target release version *before* triggering the prerelease workflow. The `prerelease.yml` validate-pyproject-version step enforces this. `cap -v` reads from `importlib.metadata.version("capacium")` derived from `pyproject.toml` — if the bump comes after the release, `cap -v` will show the old version.
 
 ### Exit Codes
 - 0: Success
@@ -247,6 +249,15 @@ Core → Exchange → Crawler / Bridge (no reverse imports). Action and App depe
 - Finished Phase 4 (CLI): Cap V2 CLI subcommands.
 - Finished Phase 5 (API): OpenAPI V2 spec and V2 REST routes.
 - Finished Phase 6 (Tests): 83 new tests bringing total to 296 passing unit/integration tests.
+
+## Docs
+
+| Doc | Description |
+|-----|-------------|
+| `docs/getting-started.md` | Installation, quickstart, first capability |
+| `docs/manifest.md` | `capability.yaml` reference |
+| `docs/publishing.md` | Full dev → CI → Exchange publish lifecycle |
+| `docs/repo-topology.md` | Multi-repo dependency graph |
 
 ## Extraction Status
 
