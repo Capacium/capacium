@@ -56,6 +56,8 @@ jobs:
           else
             LOG=$(git log --oneline --no-decorate "${LAST_TAG}..HEAD")
           fi
+          # Filter out non-Capacium-core references (MemPalace, ICM, personal tools, etc.)
+          LOG=$(echo "$LOG" | grep -iv 'mempalace\|icm\|memPalace' || true)
           echo "log<<EOF" >> "$GITHUB_OUTPUT"
           echo "$LOG" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
