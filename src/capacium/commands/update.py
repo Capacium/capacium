@@ -1,7 +1,9 @@
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
 from ..registry import Registry
 from ..versioning import VersionManager
@@ -9,7 +11,8 @@ from ..fingerprint import compute_fingerprint
 from ..manifest import Manifest
 from ..adapters import get_adapters_for_manifest
 from ..models import Kind
-from ..commands.install import _preflight_runtimes
+from ..registry_client import RegistryClient, RegistryClientError
+from ..commands.install import _preflight_runtimes, install_capability
 
 
 FINGERPRINT_EXCLUDES = [
@@ -20,6 +23,78 @@ FINGERPRINT_EXCLUDES = [
     ".capacium-meta.json",
     "capability.lock",
 ]
+
+
+def _parse_version(v: str) -> tuple:
+    parts = []
+    for p in v.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(p)
+    return tuple(parts)
+
+
+def _fetch_git_tags(install_path: Path) -> List[str]:
+    try:
+        result = subprocess.run(
+            ["git", "fetch", "--tags", "--prune"],
+            cwd=install_path,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return []
+        result = subprocess.run(
+            ["git", "tag", "--list", "--sort=-v:refname"],
+            cwd=install_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        tags = []
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            tag = line[1:] if line.startswith("v") else line
+            if VersionManager.is_valid_version(tag):
+                tags.append(tag)
+        return tags
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+
+def _check_for_newer_version(cap_id: str, current_version: str, install_path: Optional[Path]) -> bool:
+    if install_path and (install_path / ".git").exists():
+        tags = _fetch_git_tags(install_path)
+        if tags:
+            latest = max(tags, key=_parse_version)
+            if _parse_version(latest) > _parse_version(current_version):
+                print(f"  Newer version {latest} found via git tags.")
+                print(f"  Installing {cap_id}@{latest}...")
+                return install_capability(f"{cap_id}@{latest}")
+
+    client = RegistryClient()
+    try:
+        results = client.search(cap_id.replace("/", " "))
+    except RegistryClientError:
+        return False
+
+    candidates = [r for r in results if f"{r.owner}/{r.name}" == cap_id]
+    if not candidates:
+        return False
+
+    latest = max(candidates, key=lambda r: _parse_version(r.version))
+    if _parse_version(latest.version) <= _parse_version(current_version):
+        return False
+
+    print(f"  Newer version {latest.version} found in registry.")
+    print(f"  Installing {cap_id}@{latest.version}...")
+    return install_capability(f"{cap_id}@{latest.version}")
 
 
 def update_capability(
@@ -70,6 +145,10 @@ def update_capability(
     registry.update_capability(cap)
 
     print(f"Updated {cap_label}")
+
+    if version_spec in ("latest", "stable"):
+        _check_for_newer_version(cap_id, cap.version, cap.install_path)
+
     return True
 
 

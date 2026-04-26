@@ -1,4 +1,6 @@
 import json
+import subprocess
+from pathlib import Path
 
 
 def test_update_reconciles_unique_unqualified_mcp_name(tmp_home, tmp_path):
@@ -62,3 +64,37 @@ def test_update_reports_ambiguous_unqualified_name(tmp_home, tmp_path, capsys):
     assert "ambiguous" in out
     assert "alice/shared" in out
     assert "bob/shared" in out
+
+
+def test_parse_version_orders_correctly():
+    from capacium.commands.update import _parse_version
+    assert _parse_version("1.0.0") < _parse_version("2.0.0")
+    assert _parse_version("0.5.1") < _parse_version("0.5.6")
+    assert _parse_version("0.9.9") < _parse_version("1.0.0")
+    assert _parse_version("0.5.6") > _parse_version("0.5.1")
+    assert _parse_version("1.0.0") == _parse_version("1.0.0")
+
+
+def test_fetch_git_tags_finds_newer_tags(tmp_path):
+    source = tmp_path / "test-cap"
+    source.mkdir()
+    (source / "capability.yaml").write_text("kind: skill\nname: test-cap\nversion: 1.0.0\n")
+    subprocess.run(["git", "init"], cwd=source, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=source, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=source, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=source, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=source, capture_output=True)
+    subprocess.run(["git", "tag", "v1.0.0"], cwd=source, capture_output=True)
+    subprocess.run(["git", "tag", "v2.0.0"], cwd=source, capture_output=True)
+
+    from capacium.commands.update import _fetch_git_tags
+    tags = _fetch_git_tags(source)
+    assert "1.0.0" in tags
+    assert "2.0.0" in tags
+
+
+def test_fetch_git_tags_no_git_dir(tmp_path):
+    source = tmp_path / "no-git"
+    source.mkdir()
+    from capacium.commands.update import _fetch_git_tags
+    assert _fetch_git_tags(source) == []
