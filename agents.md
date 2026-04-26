@@ -120,7 +120,7 @@ src/capacium/
 
 ### Agent Metadata (.cap-meta.json)
 - Written by `cap install` / `cap update` into the install directory
-- Fields: `name`, `version`, `fingerprint`, `installed_at`
+- Fields: `name`, `owner`, `version`, `kind`, `fingerprint`, `installed_at`
 - Agents can read it via framework symlink, e.g.: `~/.opencode/skills/<name>/.cap-meta.json`
 - Namespaced as `.cap-*` to signal Capacium ownership
 - Does NOT modify original capability files

@@ -112,7 +112,9 @@ class StorageManager:
         meta_path = cap.install_path / ".cap-meta.json"
         data = {
             "name": cap.name,
+            "owner": cap.owner,
             "version": cap.version,
+            "kind": cap.kind.value,
             "fingerprint": cap.fingerprint,
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else "",
         }
