@@ -107,16 +107,13 @@ class StorageManager:
 
     @staticmethod
     def write_meta(cap: Capability) -> None:
-        meta_dir = Path.home() / ".capacium" / "meta" / cap.owner
-        meta_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = meta_dir / f"{cap.name}.json"
+        if not cap.install_path:
+            return
+        meta_path = cap.install_path / ".cap-meta.json"
         data = {
             "name": cap.name,
-            "owner": cap.owner,
             "version": cap.version,
-            "kind": cap.kind.value,
             "fingerprint": cap.fingerprint,
-            "install_path": str(cap.install_path) if cap.install_path else "",
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else "",
         }
         meta_path.write_text(json.dumps(data, indent=2) + "\n")
