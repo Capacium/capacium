@@ -38,6 +38,17 @@ jobs:
       - name: Test with pytest
         run: python -m pytest tests/ -v --tb=short --cov=src/capacium
 
+      - name: Validate pyproject.toml version
+        run: |
+          VERSION="${{ inputs.version }}"
+          PYPROJ_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
+          if [ "$PYPROJ_VERSION" != "$VERSION" ]; then
+            echo "ERROR: pyproject.toml version is ${PYPROJ_VERSION}, but release version is ${VERSION}. Bump pyproject.toml first, then retry."
+            echo "  Run: sed -i '' 's/version = \"${PYPROJ_VERSION}\"/version = \"${VERSION}\"/' pyproject.toml"
+            exit 1
+          fi
+          echo "pyproject.toml version matches v${VERSION}."
+
       - name: Validate README version references
         run: |
           VERSION="${{ inputs.version }}"
