@@ -21,10 +21,10 @@ Works fully offline from local paths. The V2 Exchange layer adds an open discove
 You can install Capacium globally in an isolated environment using `pipx`.
 
 ```bash
-pipx install git+https://github.com/Capacium/capacium.git@v0.7.6
+pipx install git+https://github.com/Capacium/capacium.git@v0.7.7
 
 # Or with optional signing and YAML support:
-pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v0.7.6"
+pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v0.7.7"
 ```
 
 *(Note: PyPI publishing `pip install capacium` is pending organization approval and currently unavailable).*
@@ -35,7 +35,7 @@ If you don't use Python, you can download standalone executables directly from t
 ### 3. Docker (GHCR)
 Run Capacium safely in a container with your directories mounted:
 ```bash
-docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:0.7.6
+docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:0.7.7
 ```
 
 ### 4. macOS / Linux (Homebrew)
