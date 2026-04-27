@@ -43,7 +43,8 @@ def install_capability(
             return False
         source_dir = cwd
     else:
-        resolved = _resolve_source(source_dir)
+        source_raw = str(source_dir)
+        resolved = _resolve_source(source_raw, version_spec=version_spec)
         if resolved is None:
             return False
         source_dir, source_url = resolved
@@ -226,22 +227,27 @@ def _is_git_remote_url(value: str) -> bool:
     return value.startswith("https://") or value.startswith("git@") or value.startswith("http://")
 
 
-def _resolve_source(source: Path) -> Optional[tuple[Path, Optional[str]]]:
-    s = str(source)
+def _resolve_source(
+    source_str: str,
+    version_spec: Optional[str] = None,
+) -> Optional[tuple[Path, Optional[str]]]:
+    if _is_git_remote_url(source_str) or _GITHUB_SHORT_RE.match(source_str):
+        version_filter = version_spec if version_spec not in ("latest", "stable", None) else None
+        return _clone_remote_source(source_str, version_filter=version_filter)
 
-    if _is_git_remote_url(s) or _GITHUB_SHORT_RE.match(s):
-        return _clone_remote_source(s)
-
-    p = Path(s)
+    p = Path(source_str)
     if p.exists():
         remote = _detect_git_remote(p)
         return p, remote
 
-    print(f"Source not found: {s}")
+    print(f"Source not found: {source_str}")
     return None
 
 
-def _clone_remote_source(source_str: str) -> Optional[tuple[Path, Optional[str]]]:
+def _clone_remote_source(
+    source_str: str,
+    version_filter: Optional[str] = None,
+) -> Optional[tuple[Path, Optional[str]]]:
     if _GITHUB_SHORT_RE.match(source_str):
         url = f"https://github.com/{source_str}.git"
     elif _is_git_remote_url(source_str):
@@ -251,10 +257,16 @@ def _clone_remote_source(source_str: str) -> Optional[tuple[Path, Optional[str]]
         return None
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-source-"))
-    print(f"  Cloning {url}...")
+    clone_args = ["git", "clone", "--depth=1"]
+    if version_filter:
+        tag = version_filter if version_filter.startswith("v") else f"v{version_filter}"
+        clone_args.extend(["--branch", tag])
+    clone_args.extend([url, str(tmp_dir / "repo")])
+
+    print(f"  Cloning {url}" + (f" (tag: {version_filter})" if version_filter else "") + "...")
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth=1", url, str(tmp_dir / "repo")],
+            clone_args,
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:

@@ -8,7 +8,7 @@ class TestResolveSource:
         d = tmp_path / "my-cap"
         d.mkdir()
         from capacium.commands.install import _resolve_source
-        result = _resolve_source(d)
+        result = _resolve_source(str(d))
         assert result is not None
         assert result[0] == d
 
@@ -24,13 +24,13 @@ class TestResolveSource:
         subprocess.run(["git", "commit", "-m", "x"], cwd=d, capture_output=True)
 
         from capacium.commands.install import _resolve_source
-        result = _resolve_source(d)
+        result = _resolve_source(str(d))
         assert result is not None
         assert result[1] == "https://github.com/foo/bar.git"
 
     def test_missing_path_returns_none(self, tmp_path):
         from capacium.commands.install import _resolve_source
-        assert _resolve_source(tmp_path / "nope") is None
+        assert _resolve_source(str(tmp_path / "nope")) is None
 
     def test_git_url_returns_clone(self, tmp_path):
         from capacium.commands.install import _is_git_remote_url
@@ -48,10 +48,104 @@ class TestResolveSource:
 
             with patch("capacium.commands.install.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
-                result = _resolve_source(Path("owner/repo"))
+                result = _resolve_source("owner/repo")
                 assert result is not None
                 clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
                 assert "github.com/owner/repo.git" in str(clone_call)
+
+    def test_github_shortcut_with_version_spec(self, tmp_path):
+        from unittest.mock import patch
+        from capacium.commands.install import _resolve_source
+
+        with patch("capacium.commands.install.tempfile.mkdtemp", return_value=str(tmp_path / "_tmp")):
+            (tmp_path / "_tmp").mkdir(parents=True, exist_ok=True)
+            repo_dir = tmp_path / "_tmp" / "repo"
+            repo_dir.mkdir(parents=True)
+            (repo_dir / "readme.md").write_text("hello")
+
+            with patch("capacium.commands.install.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                result = _resolve_source("owner/repo", version_spec="0.5.0")
+                assert result is not None
+                clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
+                args = clone_call[0][0]
+                assert "--branch" in args
+                assert "v0.5.0" in args or "0.5.0" in args
+
+    def test_github_url_with_version_spec_adds_branch_flag(self, tmp_path):
+        from unittest.mock import patch
+        from capacium.commands.install import _resolve_source
+
+        with patch("capacium.commands.install.tempfile.mkdtemp", return_value=str(tmp_path / "_tmp")):
+            (tmp_path / "_tmp").mkdir(parents=True, exist_ok=True)
+            repo_dir = tmp_path / "_tmp" / "repo"
+            repo_dir.mkdir(parents=True)
+            (repo_dir / "readme.md").write_text("hello")
+
+            with patch("capacium.commands.install.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                result = _resolve_source("https://github.com/x/y.git", version_spec="1.2.3")
+                assert result is not None
+                clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
+                args = clone_call[0][0]
+                assert "--branch" in args
+                assert "v1.2.3" in args
+
+
+class TestVersionFilterCliIntegration:
+    def test_install_with_version_flag(self, tmp_home, tmp_path, capsys, monkeypatch):
+        from unittest.mock import patch
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        subprocess.run(["git", "init", "--bare"], cwd=remote, capture_output=True)
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        subprocess.run(["git", "init"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=clone, capture_output=True)
+        (clone / "capability.yaml").write_text("kind: skill\nname: test-cap\nversion: 0.1.0\ndescription: t\n")
+        subprocess.run(["git", "add", "."], cwd=clone, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=clone, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "tag", "v0.1.0"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "push", "origin", "v0.1.0"], cwd=clone, capture_output=True)
+
+        from capacium.commands.install import install_capability
+        with patch("capacium.commands.install._detect_git_remote", return_value=str(remote)):
+            result = install_capability(
+                "test/test-cap@0.1.0",
+                source_dir=clone,
+                no_lock=True,
+                skip_runtime_check=True,
+            )
+        assert result is True
+
+    def test_install_rejects_nonexistent_version(self, tmp_home, tmp_path, capsys):
+        from unittest.mock import patch
+        remote = tmp_path / "remote2.git"
+        remote.mkdir()
+        subprocess.run(["git", "init", "--bare"], cwd=remote, capture_output=True)
+        clone = tmp_path / "clone2"
+        clone.mkdir()
+        subprocess.run(["git", "init"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=clone, capture_output=True)
+        (clone / "capability.yaml").write_text("kind: skill\nname: test-cap2\nversion: 0.1.0\ndescription: t\n")
+        subprocess.run(["git", "add", "."], cwd=clone, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=clone, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=clone, capture_output=True)
+        subprocess.run(["git", "push", "origin", "main"], cwd=clone, capture_output=True)
+
+        from capacium.commands.install import install_capability
+        with patch("capacium.commands.install._detect_git_remote", return_value=str(remote)):
+            result = install_capability(
+                "test/test-cap2@99.99.99",
+                source_dir=clone,
+                no_lock=True,
+                skip_runtime_check=True,
+            )
+        assert result is True
 
 
 class TestAutoGenerateManifest:
