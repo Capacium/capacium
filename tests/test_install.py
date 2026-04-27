@@ -1,6 +1,4 @@
-import pytest
 import subprocess
-from pathlib import Path
 
 
 class TestResolveSource:
