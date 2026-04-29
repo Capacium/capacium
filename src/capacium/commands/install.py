@@ -10,14 +10,13 @@ from ..registry import Registry
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..manifest import Manifest
-from ..adapters import get_adapters_for_manifest
 from ..models import Capability, Kind
 from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
     infer_required_runtimes,
 )
-from ..framework_detector import resolve_frameworks, FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
+from ..framework_detector import resolve_frameworks, create_framework_symlinks
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 

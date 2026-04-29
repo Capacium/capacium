@@ -4,7 +4,6 @@ from typing import Optional
 from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
-from ..models import Kind
 
 
 def init_config(
@@ -27,7 +26,7 @@ def init_config(
     else:
         default_registry = existing.get("registry", "http://localhost:8000")
         config["registry"] = _prompt_with_default(
-            f"Registry URL", default_registry
+            "Registry URL", default_registry
         )
 
     if trust_level:
@@ -122,7 +121,7 @@ def init_skill() -> bool:
     manifest.author = _prompt_with_default("Author", "").strip()
 
     output_path = Path.cwd() / "capability.yaml"
-    print(f"\n  About to create:\n")
+    print("\n  About to create:\n")
     print(f"    {output_path}")
     print()
 
@@ -166,10 +165,10 @@ def init_skill() -> bool:
     else:
         print("\n\u2705 Manifest validated successfully.")
 
-    print(f"\n  Next steps:")
-    print(f"    $ cap validate")
-    print(f"    $ cap package .")
-    print(f"    $ cap registry publish")
+    print("\n  Next steps:")
+    print("    $ cap validate")
+    print("    $ cap package .")
+    print("    $ cap registry publish")
     print()
     return True
 
@@ -181,7 +180,7 @@ def _prompt_required(prompt_text: str, default: str) -> str:
             value = default
         if value:
             return value
-        print(f"  This field is required.")
+        print("  This field is required.")
 
 
 def _prompt_with_default(prompt_text: str, default: str) -> str:
@@ -197,16 +196,16 @@ def _prompt_frameworks() -> list:
     detected = sorted(detect_active_frameworks())
     if detected:
         print(f"  Detected: {', '.join(detected)}")
-        use_detected = input(f"  Use detected frameworks? (Y/n): ").strip().lower()
+        use_detected = input("  Use detected frameworks? (Y/n): ").strip().lower()
         if use_detected in ("", "y", "yes"):
             return detected
 
-    print(f"\n  Available frameworks:")
+    print("\n  Available frameworks:")
     for i, fw in enumerate(sorted(FRAMEWORK_DETECTORS.keys()), 1):
         print(f"    {i}. {fw}")
-    print(f"    0. None (agnostic)")
+    print("    0. None (agnostic)")
     print()
-    choice = input(f"  Select frameworks (comma-separated numbers): ").strip()
+    choice = input("  Select frameworks (comma-separated numbers): ").strip()
     if not choice or choice == "0":
         return []
 

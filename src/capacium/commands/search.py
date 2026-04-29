@@ -1,8 +1,7 @@
-import shutil
 from typing import List, Optional
 from ..registry import Registry
 from ..models import Kind
-from ..registry_client import RegistryClient, RegistryResult, RegistryDetail, RegistryClientError
+from ..registry_client import RegistryClient, RegistryResult, RegistryClientError
 from ..utils.config import get_registry_url
 
 
@@ -58,8 +57,8 @@ def _format_result_card(r: RegistryResult, install_cmd: str, info_cmd: str) -> s
         lines.append(runtime_str)
     if tags_str:
         lines.append(tags_str)
-    lines.append(f""
-                 f"")
+    lines.append(""
+                 "")
     lines.append(f"   $ {install_cmd}")
     lines.append(f"   $ {info_cmd}")
     return "\n".join(lines)
@@ -145,12 +144,12 @@ def cap_info(cap_spec: str, registry_url: Optional[str] = None):
             print(f"  ... and {len(detail.versions) - 10} more")
 
     if detail.dependencies:
-        print(f"  Dependencies:")
+        print("  Dependencies:")
         for dep_name, dep_version in detail.dependencies.items():
             print(f"    \u2022 {dep_name}: {dep_version}")
 
     if detail.runtimes:
-        print(f"  Runtimes:")
+        print("  Runtimes:")
         for r_name, r_version in detail.runtimes.items():
             print(f"    \u2022 {r_name}: {r_version}")
 
@@ -191,7 +190,6 @@ def _search_local(query: str, kind: Optional[str] = None):
         print(f"No capabilities matching '{query}'.")
         return
 
-    term_width = shutil.get_terminal_size((80, 20)).columns
     print(f"Found {len(capabilities)} capability(ies) matching '{query}':\n")
     for cap in capabilities:
         cap_id = f"{cap.owner}/{cap.name}"
