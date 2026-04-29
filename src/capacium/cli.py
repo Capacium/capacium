@@ -105,8 +105,6 @@ def main():
     )
     runtimes_install_parser.add_argument("name", help="Runtime name (e.g. uv, node, python)")
 
-    # V2 Platform Commands (info, claim, exchange, trust, crawl) have been extracted to Capacium V3 Platform Services.
-
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
@@ -202,9 +200,6 @@ def main():
             else:
                 runtimes_parser.print_help()
                 sys.exit(1)
-
-# Platform subcommands (marketplace, info, claim, exchange, trust, crawl)
-        # have been extracted to Capacium V3 Platform Services.
 
         else:
             parser.print_help()

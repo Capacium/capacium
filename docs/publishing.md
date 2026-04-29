@@ -19,7 +19,7 @@ This guide walks you through the complete lifecycle of publishing a capability (
 │                                       │                         │
 │  4. GitHub App syncs to Exchange ─────┤ auto-publish            │
 │                                       │                         │
-│  5. cap claim ────────────────────────┤ publisher verification  │
+│  5. Publisher verification ───────────┤ publisher verification  │
 │                                       │                         │
 │  6. Available via cap install ────────┤ distribution            │
 │                                                                 │
@@ -160,15 +160,9 @@ Your capability is now discoverable:
 cap search my-capability
 ```
 
-## Step 4: Claim Your Publisher Identity
+## Step 4: Verify Your Publisher Identity
 
-When the GitHub App first discovers your capability, it's listed with trust state `discovered`. To verify your ownership and progress to `claimed`, use the `cap claim` command.
-
-```bash
-cap claim my-org/my-repo
-```
-
-This verifies that you have push access to the repository containing the manifest and upgrades the trust state from `discovered` to `claimed`.
+When the GitHub App first discovers your capability, it's listed with trust state `discovered`. Ownership verification and trust state progression are managed by the Exchange layer (see `capacium-exchange` repo).
 
 Trust state progression:
 
@@ -208,8 +202,8 @@ cap install my-org/my-capability --registry https://exchange.capacium.xyz
 | Local check | `cap package` | Capacium CLI | Developer |
 | CI validation | Validate Action | [capacium-action-validate](https://github.com/Capacium/capacium-action-validate) | CI |
 | Exchange sync | GitHub App webhook | [capacium-github-app](https://github.com/Capacium/capacium-github-app) | Auto |
-| Publisher claim | `cap claim` | Capacium CLI | Publisher |
-| Trust audit | `cap trust` | Capacium CLI | Exchange admin |
+| Publisher verification | Exchange API | capacium-exchange | Publisher |
+| Trust audit | Exchange API | capacium-exchange | Exchange admin |
 | Distribution | `cap install` | Capacium CLI | End user |
 
 ## Badge Your README

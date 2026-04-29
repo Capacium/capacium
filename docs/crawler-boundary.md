@@ -9,7 +9,7 @@
 - Claim preparation: owner detection from repository metadata
 - Findings → Exchange promotion: converting crawl findings into `discovered` listings
 - Crawl scheduling: job management and pipeline orchestration
-- Crawl CLI subcommands: `cap crawl`
+- Crawl scheduling and pipeline orchestration
 
 ## Does NOT Belong
 - CLI packaging / install logic (`cap install`, `cap remove`, etc.)

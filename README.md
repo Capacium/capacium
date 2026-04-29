@@ -5,15 +5,15 @@
 [![Release](https://img.shields.io/github/v/release/Capacium/capacium?display_name=tag)](https://github.com/Capacium/capacium/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](./pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-298%20passing-green.svg)](./tests/)
+[![Tests](https://img.shields.io/badge/tests-320%20passing-green.svg)](./tests/)
 
 Capability-native packaging for the AI agent era.
 
 **One capability package, any agent framework.**
 
-Capacium defines a standard manifest format (`capability.yaml`), a CLI (`cap`) for package management, and a trust model based on SHA-256 fingerprinting and Ed25519 signing. Framework adapters bridge the gap between the package format and where capabilities actually run — OpenCode, Claude Code, Gemini CLI, Cursor, and Continue.dev. Capacium V2 introduces native MCP (Model Context Protocol) Server support.
+Capacium defines a standard manifest format (`capability.yaml`), a CLI (`cap`) for package management, and a trust model based on SHA-256 fingerprinting and Ed25519 signing. Framework adapters bridge the gap between the package format and where capabilities actually run — OpenCode, Claude Code, Gemini CLI, Cursor, and Continue.dev. Includes native MCP (Model Context Protocol) Server support.
 
-Works fully offline from local paths. The V2 Exchange layer adds an open discovery exchange with taxonomy, multidimensional trust states (discovered → audited), and crawler-based capability discovery.
+Works fully offline from local paths. The Exchange layer (separate repo) adds remote registry discovery with taxonomy, trust states, and crawler-based capability discovery.
 
 ## Installation
 
@@ -68,13 +68,7 @@ cap runtimes install uv
 cap package ./my-skill --output my-skill.tar.gz
 
 # Search the exchange
-cap search code-review --category developer-tools
-
-# Print full MCP & Listing details
-cap info anthropic/mcp-fs
-
-# Manage trust states (admin)
-cap trust history anthropic/mcp-fs
+cap search code-review
 
 # Start the marketplace web UI
 cap marketplace
@@ -113,8 +107,8 @@ cap sign my-skill --key mykey
 | `prompt` | Reusable prompt template | System prompts, instructions |
 | `template` | Project/code template | Skill scaffold, adapter template |
 | `workflow` | Multi-step agent workflow | CI pipeline, data chain |
-| `mcp-server` | MCP Server (V2) | MCP filesystem, db-connector |
-| `connector-pack` | Tool/Service integration (V2) | Slack, GitHub, Jira connector pack |
+| `mcp-server` | MCP Server | MCP filesystem, db-connector |
+| `connector-pack` | Tool/Service integration | Slack, GitHub, Jira connector pack |
 
 ## Features
 
@@ -122,10 +116,9 @@ cap sign my-skill --key mykey
 - **First-class MCP Support** — Deploy and discover MCP servers as native capabilities.
 - **Eight capability kinds** — Skills, bundles, tools, prompts, templates, workflows, mcp-servers, connectors.
 - **Manifest-first** — Standard `capability.yaml` with metadata, dependencies, and framework targets
-- **Trust & Governance** — Multi-dimensional Trust State Machine (discovered, indexed, claimed, verified, audited).
-- **Registry-optional** — Works fully offline; remote registry adds discovery and distribution
-- **Crawler Subsystem** — Automated capability discovery and claim requests from GitHub.
-- **Lock files** — `capability.lock` pins exact versions and fingerprints for reproducible installs
+- **Trust & Governance** — SHA-256 fingerprinting and Ed25519 signing for integrity verification.
+- **Registry-optional** — Works fully offline; remote registry adds discovery and distribution.
+- **Lock files** — `capability.lock` pins exact versions and fingerprints for reproducible installs.
 - **Zero external deps (core)** — Uses only Python stdlib (argparse, sqlite3, hashlib, urllib)
 
 ## Comparison

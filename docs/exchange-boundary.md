@@ -8,7 +8,7 @@
 - Taxonomy management: categories and tags
 - Faceted search engine (SQL-based with semantic ranking)
 - Curated collections
-- Exchange CLI subcommands: `cap exchange`, `cap search --category`, `cap search --trust`, `cap info`, `cap claim`
+- Exchange API endpoints (FastAPI routes)
 - Exchange REST API (OpenAPI spec at `/v2/`)
 - Publisher claims workflow
 - Exchange-level lock/migration schemas that are not core concerns

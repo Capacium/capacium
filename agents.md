@@ -2,16 +2,17 @@
 
 ## Project Overview
 
-Capacium is a Capability Packaging System for AI agent capabilities. It was extracted from SkillWeave's SWPM (SkillWeave Package Manager) and generalized from skill-only to multi-kind capability packaging.
+Capacium is a Capability Packaging System for AI agent capabilities. It defines a standard manifest format (`capability.yaml`), a CLI (`cap`) for package management, and a trust model based on SHA-256 fingerprinting and Ed25519 signing. Framework adapters bridge the gap between the package format and where capabilities actually run — OpenCode, Claude Code, Gemini CLI, Cursor, and Continue.dev.
+
+Works fully offline from local paths. The Exchange layer (separate repo: `Capacium/capacium-exchange`) adds remote registry discovery with taxonomy, trust states, and crawler-based capability discovery.
 
 ## Naming Conventions
 
 ### Code
-- Package: `capacium` (not `swpm`)
-- CLI: `cap` (not `swpm`)
-- Manifest: `capability.yaml` (not `.skillpkg.json`)
-- Model: `Capability` (not `SkillPackage`)
-- Kind: `Kind.SKILL`, `Kind.BUNDLE`, `Kind.TOOL`, `Kind.PROMPT`, `Kind.TEMPLATE`, `Kind.WORKFLOW`, `Kind.MCP_SERVER`, `Kind.CONNECTOR_PACK`
+- Package: `capacium`
+- CLI: `cap`
+- Manifest: `capability.yaml`
+- Model: `Capability`
 
 ### Directory
 - Config: `~/.capacium/`
@@ -25,10 +26,10 @@ Capacium is a Capability Packaging System for AI agent capabilities. It was extr
 |---------|----------|
 | `cap install` | Install capability from registry/path/git |
 | `cap install --no-lock` | Install without lock file enforcement |
-| `cap install --skip-runtime-check` | Skip the v0.7.0 host runtime pre-flight |
+| `cap install --skip-runtime-check` | Skip the runtime pre-flight |
 | `cap remove` | Remove installed capability |
 | `cap list` | List installed capabilities |
-| `cap list --kind` | Filter by kind (skill, bundle, tool, etc.) |
+| `cap list --kind` | Filter by kind |
 | `cap update` | Update capabilities |
 | `cap search` | Search registry for capabilities |
 | `cap search --kind` | Filter search results by kind |
@@ -36,13 +37,14 @@ Capacium is a Capability Packaging System for AI agent capabilities. It was extr
 | `cap verify` | Verify capability fingerprint |
 | `cap verify --all` | Verify all installed capabilities |
 | `cap doctor` | Check installed capabilities for missing host runtimes |
-| `cap runtimes list` | List known host runtimes (uv, node, …) and their state |
+| `cap runtimes list` | List known host runtimes and their state |
 | `cap runtimes install <name>` | Print install command for a runtime (does NOT run it) |
 | `cap lock` | Generate capability.lock for an installed capability |
 | `cap lock --update` | Refresh existing lock file |
 | `cap package` | Package capability for distribution |
-| `cap publish` | Publish capability to a registry (stub) |
+| `cap publish` | Publish capability to a registry |
 | `cap publish --registry` | Target registry URL for publishing |
+| `cap marketplace` | Start the marketplace web UI |
 
 ## Module Architecture
 
@@ -64,33 +66,14 @@ src/capacium/
 │   ├── list_capabilities.py
 │   ├── update.py
 │   ├── search.py
-│   ├── verify.py        # Supports bundle verification
-│   ├── lock.py          # Lock file generation + enforcement
+│   ├── verify.py
+│   ├── lock.py
 │   ├── package.py
-│   ├── publish.py       # Stub for registry publication
-│   ├── doctor.py        # v0.7.0: per-capability runtime health
-│   ├── runtimes_cmd.py  # v0.7.0: cap runtimes list / install hints
-│   ├── info.py          # V2: Full listing details
-│   ├── claim.py         # V2: Publisher claims
-│   ├── exchange.py      # V2: Exchange subcommands (search, categories, tags)
-│   ├── trust.py         # V2: Trust state management
-│   └── crawl.py         # V2: Crawler management
-├── exchange/            # V2: Exchange Core
-│   ├── models.py        # Listing, Publisher, Taxonomy, ClaimRequest
-│   ├── listing.py       # CRUD operations for Exchange listings
-│   ├── trust.py         # TrustState machine & history
-│   ├── taxonomy.py      # Categories & Tags manager
-│   ├── search.py        # Faceted search engine
-│   ├── collection.py    # Curated collections
-│   └── publisher.py     # Publisher profiles & verification workflow
-├── crawler/             # V2: Crawler Engine
-│   ├── models.py        # CrawlSource, CrawlJob, CrawlFinding
-│   ├── engine.py        # Pipeline orchestrator
-│   ├── sources/         # Source integrations (e.g. github.py)
-│   ├── normalizer.py    # Metadata normalizer
-│   ├── classifier.py    # Taxonomy & Kind inference
-│   ├── dedup.py         # Similarity matching
-│   └── claim_prep.py    # Owner detection
+│   ├── publish.py
+│   ├── doctor.py
+│   ├── runtimes_cmd.py
+│   ├── sign.py
+│   └── key.py
 ├── migrations/          # Schema migrations
 │   ├── base.py          # FrameworkAdapter ABC
 │   ├── opencode.py      # OpenCode adapter
@@ -115,7 +98,7 @@ src/capacium/
 - Name is required (kebab-case recommended)
 - Framework field declares target frameworks (optional, NULL = agnostic)
 - Dependencies are version-constrained (semver range)
-- Runtimes field (v0.7.0+) declares host-level runtime requirements
+- Runtimes field declares host-level runtime requirements
   (e.g. `uv: ">=0.4.0"`, `node: ">=20"`); validated pre-flight by `cap install`
 
 ### Agent Metadata (.cap-meta.json)
@@ -127,34 +110,21 @@ src/capacium/
 
 ### Releases
 - Language requirement: All release notes and changelogs MUST be written in English.
-- Naming convention: `Capacium vX.Y.Z` (e.g., `Capacium v1.0.0`, `Capacium v2.5.1`)
-- `X.Y.Z` follows semantic versioning (MAJOR.MINOR.PATCH)
-- Git tags use the same format: `vX.Y.Z` (e.g., `v1.0.0`)
-- Changelog entries reference the full name: `Capacium vX.Y.Z`
-- Pre-release suffixes: `Capacium vX.Y.Z-alpha.N`, `Capacium vX.Y.Z-beta.N`, `Capacium vX.Y.Z-rc.N`
-- **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics (e.g., MemPalace, ICM, personal tools, local setup details). The prerelease workflow filters these automatically.
-- **Version bump before release**: `pyproject.toml` version MUST be bumped to the target release version *before* triggering the prerelease workflow. The `prerelease.yml` validate-pyproject-version step enforces this. `cap -v` reads from `importlib.metadata.version("capacium")` derived from `pyproject.toml` — if the bump comes after the release, `cap -v` will show the old version.
+- Naming convention: `Capacium vX.Y.Z`
+- Git tags use `vX.Y.Z` format
+- **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
+- **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes
 - 0: Success
 - 1: User error (invalid input, missing args)
 - 2: System error (I/O, database, network)
 
-## Memory System
-
-### progress.txt
-- Updated per extraction/execution session
-- Contains: what was done, technical decisions, next steps
-
-### agents.md (this file)
-- Project-specific patterns and conventions
-- Updated when new patterns are established
-
 ## Bundle Support (Kind.BUNDLE)
 
 - Bundle manifests define sub-capabilities in the `capabilities` section with `name` and `source`
 - Validation ensures at least one capability entry, each with name and source
-- Bundle fingerprint is computed from ordered fingerprints of all sub-capabilities (order-independent)
+- Bundle fingerprint is computed from ordered fingerprints of all sub-capabilities
 - Bundle member tracking via `bundle_members` table in the registry
 - Bundle verification traverses all sub-cap fingerprints
 - Reference counting prevents removal of sub-capabilities with active dependents
@@ -172,24 +142,24 @@ src/capacium/
 
 ## Multi-Repo Topology
 
-Capacium is distributed across multiple public GitHub repos under the `Capacium` org. See `docs/repo-topology.md` for detailed dependency graph.
+Capacium is distributed across multiple repos under the `Capacium` org.
 
 | Repo | Domain | Stack | CI |
 |------|--------|-------|----|
 | `Capacium/capacium` | Core CLI, manifest, packaging | Python (stdlib) | pytest |
-| `Capacium/capacium-exchange` | Exchange API server | FastAPI / SQLAlchemy / PostgreSQL | pytest |
-| `Capacium/capacium-crawler` | Agent network discovery crawler | Python (stdlib, urllib) | pytest |
+| `Capacium/capacium-models` | Shared domain models | Python (stdlib) | pytest |
+| `Capacium/capacium-exchange` | Exchange API server | FastAPI / SQLAlchemy | pytest |
+| `Capacium/capacium-crawler` | Discovery crawler | Python (stdlib) | pytest |
 | `Capacium/capacium-bridge` | WordPress plugin | PHP | — |
 | `Capacium/homebrew-tap` | Homebrew formula | Ruby | test-bot |
-| `Capacium/capacium-action-validate` | GitHub Action manifest validation | Composite action (YAML + Python) | pytest |
+| `Capacium/capacium-action-validate` | GitHub Action manifest validation | Composite action | pytest |
 | `Capacium/capacium-github-app` | GitHub App webhook server | Python (stdlib, WSGI) | pytest |
+| `Capacium/envctl` | Environment variable manager | Bash | CI |
 
 ### Dependency Direction
-Core → Exchange → Crawler / Bridge (no reverse imports). Action and App depend on Core. Tap wraps Core binary.
-
-### Key Integration Repos
-- **capacium-action-validate**: GitHub Marketplace Action. Validates `capability.yaml` on CI: schema, fingerprint, linting. Outputs Exchange-ready metadata.
-- **capacium-github-app**: GitHub App webhook server. Syncs repos to Exchange on push/release. Derives claim signals from installation context.
+- `capacium-models` has zero dependencies — imported by exchange and crawler
+- Exchange and crawler depend on `capacium-models`, not on core
+- Action and App depend on Core. Tap wraps Core binary.
 
 ## Adapter System
 
@@ -199,74 +169,13 @@ Core → Exchange → Crawler / Bridge (no reverse imports). Action and App depe
 - Falls back to `opencode` for unknown/empty frameworks
 - Custom adapters can be registered via `register_adapter()`
 
-## Runtimes (v0.7.0+)
+## Runtimes
 
-- New `runtimes:` field on `capability.yaml` declares host-level requirements
-  (`uv`, `node`, `python`, `docker`, `pipx`, `go`, `bun`, `deno`).
-- Requirement syntax is intentionally minimal — `"*"`, `">=X.Y.Z"`, bare
-  `"X.Y.Z"` (treated as `">=X.Y.Z"`). Stdlib-only comparator; no `packaging` /
-  `semver` dependency.
-- Auto-inference from `mcp.command` when `runtimes:` is omitted: `uvx` → `uv`,
-  `npx` → `node`, `docker` → `docker`, `pipx` → `pipx`, `python(3)` → `python`,
-  `bun(x)` → `bun`, `deno` → `deno`.
-- `cap install` runs a pre-flight check; missing runtimes fail with exit code 1.
-  `--skip-runtime-check` bypasses.
-- `cap doctor` reports per-capability runtime health.
-- `cap runtimes list` / `cap runtimes install <name>` inspect or print install
-  hints (printing only — Capacium never executes package managers).
-- All implementation lives in `src/capacium/runtimes.py` (resolver),
-  `src/capacium/commands/doctor.py`, and
-  `src/capacium/commands/runtimes_cmd.py`.
-- The legacy `dependencies:` field is unchanged; it still expresses
-  capability-on-capability deps. Runtimes are deliberately separate.
-
-## V2 Exchange & Crawler Architecture
-
-### Exchange Core
-- Represents capabilities as `Listing` domain models with rich metadata.
-- Managed via `ListingStore`, `PublisherStore`, `TaxonomyStore`, `CollectionStore`.
-- Strict multi-dimensional Trust State Machine (`TrustMachine`):
-  `discovered` → `indexed` → `claimed` → `verified` → `audited`.
-- Faceted search SQL engine with semantic ranking (`ExchangeSearch`).
-- Adds 11 new SQLite tables managed by standard migrations (`v2_exchange_crawler.py`).
-
-### Crawler Subsystem
-- Pipeline: Source (GitHub) → Fetch → Normalize → Classify → Dedup → Findings → Claim Prep.
-- Uses purely stdlib for network (`urllib`) with automatic rate limit backoff.
-- Can infer capability kind (`mcp-server`, `tool`, etc.) based on topics and names.
-- Can promote valid findings directly into the Exchange as `discovered` listings.
-
-### V2 CLI & API
-- Native `cap exchange`, `cap crawl`, `cap trust`, `cap info`, `cap claim` commands.
-- Expanded `cap search` with flags like `--category`, `--trust`, `--mcp-client`.
-- REST API mounted at `/v2/` mapping CRUD+List operations directly to Exchange Core.
-
-## Phase 1 Completion Status
-
-- **WS-BUNDLE** (complete): Bundle manifest validation, bundle fingerprint, registry operations, bundle member tracking
-- **WS-ADAPTERS** (complete): Claude Code + Gemini CLI adapters, adapter auto-selection, custom adapter registry
-- **WS-LOCK** (complete): Lock file generation, lock enforcement, dependency pinning, --no-lock bypass
-- **WS-REGISTRY** (complete): OpenAPI spec, REST client (search, get, list_versions, download)
-- **INTEGRATION** (complete): Cross-workstream tests, SkillWeave bundle structure, AGENTS.md updated
-
-## V2 Completion Status
-- Finished Phase 1 (Foundation): Kind enums, TrustState enum, DB migrations.
-- Finished Phase 2 (Exchange): Core stores and managers.
-- Finished Phase 3 (Crawler): Crawl pipeline and promotion.
-- Finished Phase 4 (CLI): Cap V2 CLI subcommands.
-- Finished Phase 5 (API): OpenAPI V2 spec and V2 REST routes.
-- Finished Phase 6 (Tests): 83 new tests bringing total to 296 passing unit/integration tests.
-
-## Docs
-
-| Doc | Description |
-|-----|-------------|
-| `docs/getting-started.md` | Installation, quickstart, first capability |
-| `docs/manifest.md` | `capability.yaml` reference |
-| `docs/publishing.md` | Full dev → CI → Exchange publish lifecycle |
-| `docs/repo-topology.md` | Multi-repo dependency graph |
-
-## Extraction Status
-
-See prd/prd.md for full PRD and prd/prd.json for task list.
-See docs/extraction-plan.md for detailed extraction plan.
+- `runtimes:` field on `capability.yaml` declares host-level requirements
+  (`uv`, `node`, `python`, `docker`, `pipx`, `go`, `bun`, `deno`)
+- Requirement syntax: `"*"`, `">=X.Y.Z"`, bare `"X.Y.Z"` (treated as `">=X.Y.Z"`)
+- Stdlib-only comparator
+- Auto-inference from `mcp.command` when `runtimes:` is omitted
+- `cap install` runs a pre-flight check; `--skip-runtime-check` bypasses
+- `cap doctor` reports per-capability runtime health
+- `cap runtimes list` / `cap runtimes install <name>` inspect or print install hints
