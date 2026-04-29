@@ -29,6 +29,11 @@ def main():
         action="store_true",
         help="Skip the pre-flight runtime check (advanced)",
     )
+    install_parser.add_argument(
+        "--all-frameworks",
+        action="store_true",
+        help="Create symlinks in all detected framework directories",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -45,6 +50,7 @@ def main():
 
     list_parser = subparsers.add_parser("list", help="List installed capabilities")
     list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
+    list_parser.add_argument("--framework", help="Filter by framework (opencode, claude-code, cursor, etc.)")
 
     search_parser = subparsers.add_parser("search", help="Search for capabilities")
     search_parser.add_argument("query", help="Search query")
@@ -59,6 +65,23 @@ def main():
     search_parser.add_argument("--sort", choices=["relevance", "name", "trust", "updated"], default="relevance")
     search_parser.add_argument("--json", action="store_true", help="Output as JSON")
     search_parser.add_argument("--limit", type=int, default=50, help="Max results")
+    search_parser.add_argument("--framework", help="Filter by target framework (e.g. cursor, claude-code)")
+
+    info_parser = subparsers.add_parser("info", help="Show detailed information about a capability")
+    info_parser.add_argument("capability", help="Capability specification (owner/name)")
+    info_parser.add_argument("--registry", help="Remote registry URL")
+
+    init_parser = subparsers.add_parser("init", help="Initialize Capacium configuration or create a new capability")
+    init_sub = init_parser.add_subparsers(dest="init_command", help="Init subcommand")
+    init_sub.add_parser("skill", help="Create a new capability.yaml interactively")
+
+    registry_parser = subparsers.add_parser("registry", help="Manage Capacium registries")
+    registry_sub = registry_parser.add_subparsers(dest="registry_command", help="Registry subcommand")
+    registry_sub.add_parser("login", help="Authenticate with an Exchange registry")
+    registry_publish_parser = registry_sub.add_parser("publish", help="Publish a capability to a registry")
+    registry_publish_parser.add_argument("path", nargs="?", default=".", help="Path to capability directory (default: current directory)")
+    registry_publish_parser.add_argument("--registry", help="Target registry URL")
+    registry_sub.add_parser("status", help="Show connected registry information")
 
     verify_parser = subparsers.add_parser("verify", help="Verify capability fingerprint")
     verify_parser.add_argument("capability", nargs="?", help="Capability to verify (omit for --all)")
@@ -105,6 +128,27 @@ def main():
     )
     runtimes_install_parser.add_argument("name", help="Runtime name (e.g. uv, node, python)")
 
+    mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
+    mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
+    mcp_start_parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "stream"],
+        default="stdio",
+        help="Transport mode (default: stdio)",
+    )
+    mcp_start_parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Port for SSE/stream transport (default: 9999 sse, 9998 stream)",
+    )
+    mcp_start_parser.add_argument(
+        "--exchange-url",
+        default="",
+        help="Exchange API base URL",
+    )
+
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
@@ -123,6 +167,7 @@ def main():
                 source_dir,
                 no_lock=args.no_lock,
                 skip_runtime_check=getattr(args, "skip_runtime_check", False),
+                all_frameworks=getattr(args, "all_frameworks", False),
             )
             sys.exit(0 if success else 1)
 
@@ -142,7 +187,7 @@ def main():
 
         elif args.command == "list":
             from .commands.list_capabilities import list_capabilities
-            list_capabilities(kind=args.kind)
+            list_capabilities(kind=args.kind, framework=args.framework)
             sys.exit(0)
 
         elif args.command == "search":
@@ -154,8 +199,43 @@ def main():
                 tag=args.tag, mcp_client=getattr(args, 'mcp_client', None),
                 publisher=args.publisher, sort=args.sort,
                 json_output=args.json, limit=args.limit,
+                framework=getattr(args, 'framework', None),
             )
             sys.exit(0)
+
+        elif args.command == "info":
+            from .commands.search import cap_info
+            cap_info(args.capability, registry_url=args.registry)
+            sys.exit(0)
+
+        elif args.command == "init":
+            if getattr(args, "init_command", None) == "skill":
+                from .commands.init import init_skill
+                success = init_skill()
+                sys.exit(0 if success else 1)
+            else:
+                from .commands.init import init_config
+                success = init_config()
+                sys.exit(0 if success else 1)
+
+        elif args.command == "registry":
+            sub = getattr(args, "registry_command", None)
+            if sub == "login":
+                from .commands.registry_cmd import registry_login
+                success = registry_login()
+                sys.exit(0 if success else 1)
+            elif sub == "publish":
+                from .commands.registry_cmd import registry_publish
+                registry_arg = getattr(args, "registry", None)
+                success = registry_publish(Path(args.path), registry_url=registry_arg)
+                sys.exit(0 if success else 1)
+            elif sub == "status":
+                from .commands.registry_cmd import registry_status
+                success = registry_status()
+                sys.exit(0 if success else 1)
+            else:
+                registry_parser.print_help()
+                sys.exit(1)
 
         elif args.command == "verify":
             from .commands.verify import verify_capability
@@ -199,6 +279,28 @@ def main():
                 sys.exit(0 if success else 1)
             else:
                 runtimes_parser.print_help()
+                sys.exit(1)
+
+        elif args.command == "mcp":
+            try:
+                from capacium_crawler.mcp_server import main as mcp_main
+            except ImportError:
+                print("Error: capacium-crawler package not installed.")
+                print("  Install with: pip install capacium-crawler")
+                sys.exit(1)
+            sub = getattr(args, "mcp_command", None) or "start"
+            if sub == "start":
+                import_argv = ["capacium-mcp"]
+                if getattr(args, "transport", "stdio") != "stdio":
+                    import_argv.append(f"--transport={args.transport}")
+                if getattr(args, "port", 0):
+                    import_argv.append(f"--port={args.port}")
+                if getattr(args, "exchange_url", ""):
+                    import_argv.append(f"--exchange-url={args.exchange_url}")
+                sys.argv = import_argv
+                mcp_main()
+            else:
+                mcp_parser.print_help()
                 sys.exit(1)
 
         else:

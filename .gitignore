@@ -17,4 +17,6 @@ AGENTS.md
 .codenomad/
 prd/
 specs/
+src/capacium/marketplace/node_modules/
+src/capacium/marketplace/.next/
 *.db

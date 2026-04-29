@@ -1,7 +1,7 @@
 import json
 import shutil
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from .models import Capability
 
 
@@ -106,10 +106,11 @@ class StorageManager:
         return False
 
     @staticmethod
-    def write_meta(cap: Capability) -> None:
+    def write_meta(cap: Capability, frameworks: Optional[List[str]] = None) -> None:
         if not cap.install_path:
             return
         meta_path = cap.install_path / ".cap-meta.json"
+        framework_list = frameworks or ([cap.framework] if cap.framework else [])
         data = {
             "name": cap.name,
             "owner": cap.owner,
@@ -117,6 +118,7 @@ class StorageManager:
             "kind": cap.kind.value,
             "fingerprint": cap.fingerprint,
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else "",
+            "frameworks": framework_list,
         }
         meta_path.write_text(json.dumps(data, indent=2) + "\n")
 

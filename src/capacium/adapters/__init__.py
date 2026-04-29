@@ -17,6 +17,7 @@ from .chainlit import ChainlitAdapter
 from .cherry_studio import CherryStudioAdapter
 from .nextchat import NextChatAdapter
 from .desktop_commander import DesktopCommanderAdapter
+from .junie import JunieAdapter
 from .stub_adapters import LutraAdapter, SergeAdapter, NotebookLMAdapter, McpRemoteAdapter
 from .roo_code import RooCodeAdapter
 from .goose import GooseAdapter
@@ -98,6 +99,9 @@ register_adapter("roo-code", RooCodeAdapter)
 register_adapter("goose", GooseAdapter)
 register_adapter("aider", AiderAdapter)
 register_adapter("openclaw", OpenClawAdapter)
+
+# ── Tier 3c: Junie ──────────────────────────────────────────────────────
+register_adapter("junie", JunieAdapter)
 
 # ── Tier 4: Agent Flow Bridging ────────────────────────────────────────
 register_adapter("langchain", LangChainToolAdapter)

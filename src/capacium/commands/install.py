@@ -17,6 +17,7 @@ from ..runtimes import (
     format_failure_report,
     infer_required_runtimes,
 )
+from ..framework_detector import resolve_frameworks, FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 
@@ -26,6 +27,7 @@ def install_capability(
     source_dir: Optional[Path] = None,
     no_lock: bool = False,
     skip_runtime_check: bool = False,
+    all_frameworks: bool = False,
 ) -> bool:
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
@@ -68,14 +70,22 @@ def install_capability(
         if not _preflight_runtimes(source_manifest):
             return False
 
-    adapters = get_adapters_for_manifest(source_manifest)
-    frameworks = source_manifest.frameworks or ["opencode"]
+    resolved_frameworks = resolve_frameworks(
+        source_manifest.frameworks, all_frameworks=all_frameworks
+    )
 
-    for fw, adapter in zip(frameworks, adapters):
-        success = adapter.install_capability(cap_name, version, source_dir, owner=owner, kind=source_manifest.kind or "skill")
-        if not success:
-            print(f"Failed to install capability for {fw}.")
-            return False
+    installed_frameworks: set[str] = set()
+    for fw in resolved_frameworks:
+        if fw not in installed_frameworks:
+            installed_frameworks.add(fw)
+            try:
+                from ..adapters import get_adapter
+                adapter = get_adapter(fw)
+            except ValueError:
+                continue
+            success = adapter.install_capability(cap_name, version, source_dir, owner=owner, kind=source_manifest.kind or "skill")
+            if not success:
+                print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
 
     package_dir = storage.get_package_dir(cap_name, version, owner=owner)
     manifest = Manifest.detect_from_directory(package_dir)
@@ -92,7 +102,7 @@ def install_capability(
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
 
-    first_fw = (frameworks or ["opencode"])[0]
+    first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
     cap = Capability(
@@ -110,12 +120,26 @@ def install_capability(
 
     registry.add_capability(cap)
 
+    if all_frameworks:
+        kind_str = cap.kind.value
+        created = create_framework_symlinks(
+            package_dir=package_dir,
+            cap_name=cap_name,
+            owner=owner,
+            version=version,
+            kind=kind_str,
+            fingerprint=fingerprint,
+            frameworks=resolved_frameworks,
+        )
+        if created:
+            print(f"  Omni-symlinks created for: {', '.join(created)}")
+
     from .lock import enforce_lock
     if not enforce_lock(cap_id, no_lock=no_lock):
         print(f"Install aborted: lock enforcement failed for {cap_id}@{version}")
         return False
 
-    StorageManager.write_meta(cap)
+    StorageManager.write_meta(cap, frameworks=resolved_frameworks)
 
     print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
     return True
@@ -179,9 +203,13 @@ def _install_single_sub_cap(
     shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
-    adapters = get_adapters_for_manifest(sub_manifest)
-    frameworks = sub_manifest.frameworks or ["opencode"]
-    for fw, adapter in zip(frameworks, adapters):
+    sub_frameworks = resolve_frameworks(sub_manifest.frameworks)
+    for fw in sub_frameworks:
+        try:
+            from ..adapters import get_adapter
+            adapter = get_adapter(fw)
+        except ValueError:
+            continue
         adapter.install_capability(sub_name, version, source_path, owner=owner, kind=sub_manifest.kind or "skill")
 
     sub_errors = sub_manifest.validate()
@@ -197,7 +225,7 @@ def _install_single_sub_cap(
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
 
-    first_fw = (frameworks or ["opencode"])[0]
+    first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
     source_url = sub_manifest.repository or _detect_git_remote(source_path)
     capacity = Capability(
         owner=owner,
