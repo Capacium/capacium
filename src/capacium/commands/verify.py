@@ -4,6 +4,7 @@ from ..registry import Registry
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..models import Kind
 from ..signing import load_public_key, verify
+from ._resolve import resolve_cap_id
 
 
 def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False,
@@ -11,7 +12,8 @@ def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False,
     registry = Registry()
 
     if verify_signature and not verify_all and cap_spec:
-        cap = registry.get_capability(cap_spec)
+        cap_id = resolve_cap_id(cap_spec)
+        cap = registry.get_capability(cap_id)
         if cap is None:
             print(f"Capability {cap_spec} not found.")
             return False
@@ -37,7 +39,8 @@ def verify_capability(cap_spec: Optional[str] = None, verify_all: bool = False,
         return all_ok
 
     elif cap_spec:
-        cap = registry.get_capability(cap_spec)
+        cap_id = resolve_cap_id(cap_spec)
+        cap = registry.get_capability(cap_id)
         if cap is None:
             print(f"Capability {cap_spec} not found.")
             return False

@@ -41,6 +41,7 @@ def install_capability(
     # Resolve bare name (no owner prefix) via Exchange search
     # Skip when source/tarball/offline is provided — user brings their own
     if owner in ("", "global", "unknown", "any") and source_dir is None and from_tarball is None and not offline:
+        from ._resolve import _resolve_owner_via_search
         resolved = _resolve_owner_via_search(cap_name)
         if resolved is not None:
             owner = resolved
@@ -689,54 +690,6 @@ class PromptHandler:
         except (EOFError, KeyboardInterrupt):
             print()
             return default
-
-
-def _resolve_owner_via_search(cap_name: str) -> Optional[str]:
-    """Resolve a bare capability name to an owner via Exchange search.
-
-    Returns the owner string on success, None if the user aborts
-    or the registry is unreachable. If the registry is unreachable,
-    falls back to 'global' for backward compatibility.
-    """
-    from ..registry_client import RegistryClient, RegistryClientError
-
-    client = RegistryClient()
-    try:
-        results = client.search(cap_name, limit=20)
-    except (RegistryClientError, Exception) as e:
-        print(f"  Registry unavailable ({e}) — trying local.")
-        return None
-
-    exact = [r for r in results if r.name == cap_name]
-
-    if not exact:
-        print(f"  Capability '{cap_name}' not found in registry.")
-        print(f"  Hint: try 'cap search {cap_name}' to browse results.")
-        return None
-
-    if len(exact) == 1:
-        print(f"  Resolved: {exact[0].owner}/{exact[0].name}")
-        return exact[0].owner
-
-    print(f"\n  Multiple capabilities found for '{cap_name}':")
-    for i, r in enumerate(exact, 1):
-        desc = (r.description or "")[:60]
-        trust = r.trust or "discovered"
-        print(f"    {i}. {r.owner}/{r.name}  [{trust}]  {desc}")
-
-    print()
-    while True:
-        try:
-            choice = input(f"  Select [1-{len(exact)}]: ").strip()
-            idx = int(choice) - 1
-            if 0 <= idx < len(exact):
-                return exact[idx].owner
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return None
-        except ValueError:
-            pass
-        print(f"  Please enter 1-{len(exact)}.")
 
 
 def _force_remove_conflicting_link(cap_name: str, existing_owner: str) -> None:

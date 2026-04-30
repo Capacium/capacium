@@ -3,6 +3,7 @@ from ..registry import Registry
 from ..manifest import Manifest
 from ..fingerprint import compute_fingerprint
 from ..models import LockFile, LockEntry
+from ._resolve import resolve_cap_id
 
 
 LOCK_FILENAME = "capability.lock"
@@ -10,8 +11,8 @@ LOCK_FILENAME = "capability.lock"
 
 def lock_capability(cap_spec: str, update: bool = False) -> bool:
     registry = Registry()
-
-    cap = registry.get_capability(cap_spec)
+    cap_id = resolve_cap_id(cap_spec)
+    cap = registry.get_capability(cap_id)
     if cap is None:
         print(f"Capability {cap_spec} not found.")
         return False
@@ -64,7 +65,8 @@ def enforce_lock(cap_spec: str, no_lock: bool = False) -> bool:
         return True
 
     registry = Registry()
-    cap = registry.get_capability(cap_spec)
+    cap_id = resolve_cap_id(cap_spec)
+    cap = registry.get_capability(cap_id)
     if cap is None:
         return True
 

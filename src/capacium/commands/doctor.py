@@ -22,6 +22,7 @@ from ..runtimes import (
     RuntimeStatus,
     infer_required_runtimes,
 )
+from ._resolve import resolve_cap_id
 
 
 CHECK = "[ok]"
@@ -77,7 +78,8 @@ def _resolve_for(cap: Capability, resolver: RuntimeResolver) -> List[RuntimeStat
 def _select(registry: Registry, cap_spec: Optional[str]) -> Tuple[List[Capability], Optional[str]]:
     if cap_spec is None:
         return registry.list_capabilities(), None
-    cap = registry.get_capability(cap_spec)
+    cap_id = resolve_cap_id(cap_spec)
+    cap = registry.get_capability(cap_id)
     if cap is None:
         return [], f"Capability not found: {cap_spec}"
     return [cap], None

@@ -3,14 +3,15 @@ from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
 from ..adapters import get_adapter
+from ._resolve import resolve_cap_id
 
 
 def remove_capability(cap_spec: str, force: bool = False) -> bool:
-    spec = VersionManager.parse_version_spec(cap_spec)
+    cap_id = resolve_cap_id(cap_spec)
+    spec = VersionManager.parse_version_spec(cap_id)
     owner = spec["owner"]
     cap_name = spec["skill"]
     version_spec = spec["version"]
-    cap_id = f"{owner}/{cap_name}"
 
     registry = Registry()
     storage = StorageManager()

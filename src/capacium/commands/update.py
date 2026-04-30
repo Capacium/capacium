@@ -14,6 +14,7 @@ from ..adapters import get_adapters_for_manifest
 from ..models import Kind
 from ..registry_client import RegistryClient, RegistryClientError
 from ..commands.install import _preflight_runtimes, install_capability
+from ._resolve import resolve_cap_id
 
 
 FINGERPRINT_EXCLUDES = [
@@ -106,11 +107,10 @@ def update_capability(
     skip_runtime_check: bool = False,
 ) -> bool:
     registry = Registry()
-    spec = VersionManager.parse_version_spec(cap_spec)
-    owner = spec["owner"]
+    cap_id = resolve_cap_id(cap_spec)
+    spec = VersionManager.parse_version_spec(cap_id)
     cap_name = spec["skill"]
     version_spec = spec["version"]
-    cap_id = f"{owner}/{cap_name}"
 
     cap = _resolve_installed_capability(registry, cap_spec, cap_id, cap_name, version_spec)
     if cap is None:

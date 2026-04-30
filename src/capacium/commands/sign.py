@@ -3,11 +3,13 @@ from ..registry import Registry
 from ..signing import load_private_key, sign, list_keys
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..models import Kind
+from ._resolve import resolve_cap_id
 
 
 def sign_capability(cap_spec: str, key_name: str) -> bool:
     registry = Registry()
-    cap = registry.get_capability(cap_spec)
+    cap_id = resolve_cap_id(cap_spec)
+    cap = registry.get_capability(cap_id)
     if cap is None:
         print(f"Capability {cap_spec} not found.")
         return False
