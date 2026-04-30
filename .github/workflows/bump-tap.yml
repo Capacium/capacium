@@ -1,21 +1,17 @@
 name: Bump Homebrew Tap
 
 on:
-  workflow_run:
-    workflows: ["Build Standalone Binaries"]
-    types: [completed]
+  push:
+    tags:
+      - "v*.*.*"
 
 jobs:
   bump:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     steps:
       - name: Resolve tag
         id: tag
-        run: echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Fetch source tarball and compute SHA256
         id: hash
