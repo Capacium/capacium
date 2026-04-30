@@ -17,6 +17,19 @@ DEFAULT_USER_CONFIG: Dict[str, Any] = {
     "trust_level": "audited",
     "auto_update": "notify",
     "frameworks": [],
+    "preferred_frameworks": [],
+    "auto_overwrite": False,
+    "offline_mode": False,
+    "skip_runtime_check": False,
+}
+
+DEFAULT_APP_CONFIG: Dict[str, Any] = {
+    "preferred_frameworks": [],
+    "registry_url": "https://api.capacium.xyz/v2",
+    "auto_update_check": True,
+    "auto_overwrite": False,
+    "offline_mode": False,
+    "skip_runtime_check": False,
 }
 
 
@@ -80,24 +93,57 @@ def load_config() -> dict:
     if yaml_path.exists():
         data = _load_yaml_file(yaml_path)
         if data is not None:
-            return {**DEFAULT_CONFIG, **data}
+            return {**DEFAULT_APP_CONFIG, **data}
     json_path = get_config_dir() / "config.json"
     if json_path.exists():
         data = _load_json_file(json_path)
         if data is not None:
-            return {**DEFAULT_CONFIG, **data}
-    return dict(DEFAULT_CONFIG)
+            return {**DEFAULT_APP_CONFIG, **data}
+    return dict(DEFAULT_APP_CONFIG)
 
 
 def save_config(config: dict) -> None:
     get_config_dir().mkdir(parents=True, exist_ok=True)
-    merged = {**DEFAULT_CONFIG, **config}
+    merged = {**load_config(), **config}
     yaml_path = get_config_dir() / "config.yaml"
     _save_yaml_file(yaml_path, merged)
 
 
 def get_config(key: str, default: Any = None) -> Any:
     return load_config().get(key, default)
+
+
+class ConfigManager:
+    APP_FIELDS = (
+        "preferred_frameworks",
+        "registry_url",
+        "auto_update_check",
+        "auto_overwrite",
+        "offline_mode",
+        "skip_runtime_check",
+    )
+
+    @staticmethod
+    def load() -> Dict[str, Any]:
+        return load_config()
+
+    @staticmethod
+    def save(data: Dict[str, Any]) -> None:
+        save_config(data)
+
+    @staticmethod
+    def get(key: str, default: Any = None) -> Any:
+        return load_config().get(key, default)
+
+    @staticmethod
+    def set_value(key: str, value: Any) -> None:
+        current = load_config()
+        current[key] = value
+        save_config(current)
+
+    @staticmethod
+    def list_all() -> Dict[str, Any]:
+        return load_config()
 
 
 def load_user_config() -> Dict[str, Any]:

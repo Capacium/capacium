@@ -72,12 +72,25 @@ def detect_active_frameworks() -> Set[str]:
 def resolve_frameworks(
     manifest_frameworks: Optional[List[str]],
     all_frameworks: bool = False,
+    framework_filter: Optional[str] = None,
+    preferred_frameworks: Optional[List[str]] = None,
 ) -> List[str]:
+    if framework_filter:
+        fw = framework_filter.strip().lower()
+        if fw in FRAMEWORK_SKILLS_DIRS:
+            return [fw]
+        detected = sorted(detect_active_frameworks())
+        found = [d for d in detected if d == fw]
+        if found:
+            return found
+        return [fw]
     if all_frameworks:
         detected = sorted(detect_active_frameworks())
         if not detected:
             return ["opencode"]
         return detected
+    if preferred_frameworks:
+        return list(preferred_frameworks)
     if manifest_frameworks:
         return list(manifest_frameworks)
     detected = sorted(detect_active_frameworks())

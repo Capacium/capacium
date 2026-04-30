@@ -10,7 +10,7 @@ from ..registry import Registry
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..manifest import Manifest
-from ..models import Capability, Kind
+from ..models import Capability, ConflictResult, ConflictState, Kind
 from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
@@ -27,6 +27,11 @@ def install_capability(
     no_lock: bool = False,
     skip_runtime_check: bool = False,
     all_frameworks: bool = False,
+    offline: bool = False,
+    framework: Optional[str] = None,
+    force: bool = False,
+    from_tarball: Optional[str] = None,
+    yes: bool = False,
 ) -> bool:
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
@@ -36,6 +41,51 @@ def install_capability(
 
     storage = StorageManager()
     registry = Registry()
+
+    # ── Conflict detection ─────────────────────────────────────────
+    conflict = check_conflict(cap_name, owner, version_spec)
+    if conflict.state != ConflictState.NO_CONFLICT:
+        if conflict.state == ConflictState.ALREADY_INSTALLED:
+            print(f"  {conflict.message}")
+            return True
+        auto_skip = yes
+        if not auto_skip:
+            try:
+                from ..utils.config import ConfigManager
+                if ConfigManager.get("auto_overwrite", False):
+                    auto_skip = True
+            except Exception:
+                pass
+        if conflict.state == ConflictState.OWNER_MISMATCH:
+            print(f"  {conflict.message}")
+            print(f"  Existing owner: {conflict.existing_owner}")
+            if force:
+                print(f"  --force: overriding owner from '{conflict.existing_owner}' to '{owner}'")
+                _force_remove_conflicting_link(cap_name, conflict.existing_owner)
+            else:
+                print("  Use --force to override (will remove existing installation)")
+                return False
+        elif conflict.state == ConflictState.UNRECOGNIZED:
+            print(f"  {conflict.message}")
+            if auto_skip or PromptHandler.ask(
+                f"'{cap_name}' exists but was not installed via cap. Continue?",
+                default=False,
+            ):
+                print("  Proceeding with installation...")
+            else:
+                print("  Installation skipped.")
+                return False
+        elif conflict.state == ConflictState.VERSION_MISMATCH:
+            print(f"  {conflict.message}")
+            print(f"  Existing version: {conflict.existing_version}")
+            if auto_skip or PromptHandler.ask(
+                f"Upgrade '{cap_name}' from v{conflict.existing_version} to v{version_spec}?",
+                default=False,
+            ):
+                print("  Proceeding with installation...")
+            else:
+                print("  Installation skipped.")
+                return False
 
     # ── Check for updates vs registry if already installed ──────────
     existing = registry.get_capability(cap_id, version_spec)
@@ -52,7 +102,12 @@ def install_capability(
 
     # ── Resolve source ─────────────────────────────────────────────
     source_url = None
-    if source_dir is not None:
+    if from_tarball is not None:
+        resolved = _install_from_tarball(from_tarball, storage, cap_name, owner)
+        if resolved is None:
+            return False
+        source_dir, source_url = resolved
+    elif source_dir is not None:
         source_raw = str(source_dir)
         if _is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw):
             resolved = _resolve_source(source_raw, version_spec=version_spec)
@@ -61,6 +116,10 @@ def install_capability(
             source_dir, source_url = resolved
     else:
         # No --source flag: try registry fetch
+        if offline:
+            print("  Offline mode: registry fetch skipped.")
+            print("  Use --source to install from a local path.")
+            return False
         source_dir, source_url = _fetch_from_registry(
             cap_id=cap_id,
             cap_name=cap_name,
@@ -94,8 +153,8 @@ def install_capability(
         if not _preflight_runtimes(source_manifest):
             return False
 
-    resolved_frameworks = resolve_frameworks(
-        source_manifest.frameworks, all_frameworks=all_frameworks
+    resolved_frameworks = _resolve_install_frameworks(
+        source_manifest, all_frameworks=all_frameworks, framework_filter=framework
     )
 
     installed_frameworks: set[str] = set()
@@ -120,7 +179,7 @@ def install_capability(
 
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
-            manifest, owner, package_dir, registry, storage, no_lock
+            manifest, owner, package_dir, registry, storage, no_lock, force=force
         )
         fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
@@ -176,6 +235,7 @@ def _install_bundle_members(
     registry: Registry,
     storage: StorageManager,
     no_lock: bool,
+    force: bool = False,
 ) -> List[str]:
     sub_fingerprints = []
     bundle_id = f"{owner}/{manifest.name}@{manifest.version}"
@@ -194,7 +254,18 @@ def _install_bundle_members(
 
         existing = registry.get_capability(sub_cap_id, sub_version)
         if existing:
-            print(f"  Sub-capability {sub_cap_id}@{sub_version} already installed.")
+            bundle_conflict = _check_bundle_member_conflict(
+                registry, sub_cap_id, sub_version, bundle_id
+            )
+            if bundle_conflict:
+                if force:
+                    print(f"    --force: reassigning {sub_cap_id} from '{bundle_conflict}' to '{bundle_id}'")
+                else:
+                    print(f"    Sub-capability {sub_cap_id}@{sub_version} is already a member of bundle '{bundle_conflict}'.")
+                    print(f"    Use --force to reassign to '{bundle_id}'.")
+                    continue
+            else:
+                print(f"  Sub-capability {sub_cap_id}@{sub_version} already installed.")
             sub_fingerprints.append(existing.fingerprint)
             registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
             continue
@@ -487,7 +558,13 @@ def _fetch_from_registry(
     try:
         remote = client.get_detail(f"{owner}/{cap_name}")
     except Exception as e:
-        print(f"  Registry lookup failed: {e}")
+        msg = str(e).lower()
+        if "404" in msg or "not found" in msg:
+            print(f"  Capability '{cap_id}' not found in registry.")
+            print("  Publish it first via: cap registry publish")
+        else:
+            print(f"  Registry unavailable: {e}")
+            print("  Use --source to install from a local path, or --offline to skip network calls.")
         return None, None
 
     if remote is None:
@@ -496,11 +573,14 @@ def _fetch_from_registry(
 
     best_version = remote.version
     if version_spec not in ("latest", "stable", "") and version_spec != best_version:
-        # Version specified explicitly — check if available
         if version_spec in (remote.versions or []):
             best_version = version_spec
         else:
-            print(f"  Version {version_spec} not found in registry. Available: {', '.join(remote.versions or [best_version])}")
+            print(f"  Version {version_spec} not found in registry for {cap_id}.")
+            if remote.versions:
+                print(f"  Available versions: {', '.join(sorted(remote.versions))}")
+            else:
+                print(f"  Latest: {best_version}")
             return None, None
 
     cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
@@ -547,3 +627,193 @@ def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
         return None
 
     return tmp_dir / "repo"
+
+
+def _resolve_install_frameworks(
+    manifest: Manifest,
+    all_frameworks: bool = False,
+    framework_filter: Optional[str] = None,
+) -> List[str]:
+    preferred = None
+    from ..utils.config import ConfigManager
+    try:
+        from ..utils.config import ConfigManager
+        cfg = ConfigManager.load()
+        preferred = cfg.get("preferred_frameworks") or None
+    except Exception:
+        pass
+    return resolve_frameworks(
+        manifest.frameworks,
+        all_frameworks=all_frameworks,
+        framework_filter=framework_filter,
+        preferred_frameworks=preferred,
+    )
+
+
+class PromptHandler:
+    @staticmethod
+    def ask(prompt: str, default: bool = False) -> bool:
+        yes_str = "Y" if default else "y"
+        no_str = "N" if not default else "n"
+        choice = f"[{yes_str}/{no_str}]"
+        try:
+            answer = input(f"  {prompt} {choice} ").strip().lower()
+            if not answer:
+                return default
+            return answer in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+
+
+def _force_remove_conflicting_link(cap_name: str, existing_owner: str) -> None:
+    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+
+    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+        link_path = skills_dir / cap_name
+        if not link_path.exists():
+            continue
+        meta_path = link_path / ".cap-meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            import json as _json
+            meta = _json.loads(meta_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            continue
+        if meta.get("owner") == existing_owner:
+            print(f"  Removing old installation from {fw_name}...")
+            import shutil
+            shutil.rmtree(link_path, ignore_errors=True)
+            cap_id = f"{existing_owner}/{cap_name}"
+            try:
+                registry = Registry()
+                registry.remove_capability(cap_id)
+            except Exception:
+                pass
+
+
+def _check_bundle_member_conflict(
+    registry: Registry,
+    sub_cap_id: str,
+    sub_version: str,
+    requesting_bundle_id: str,
+) -> Optional[str]:
+    member_key = f"{sub_cap_id}@{sub_version}"
+    bundle_ids = registry.get_bundle_ids_for_member(member_key)
+    if not bundle_ids:
+        return None
+    for bundle_id in bundle_ids:
+        if bundle_id != requesting_bundle_id:
+            return bundle_id
+    return None
+
+
+def check_conflict(
+    cap_name: str,
+    owner: str,
+    version_spec: str,
+) -> ConflictResult:
+    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+
+    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+        link_path = skills_dir / cap_name
+        if not link_path.exists():
+            continue
+        meta_path = link_path / ".cap-meta.json"
+        if not meta_path.exists():
+            return ConflictResult(
+                state=ConflictState.UNRECOGNIZED,
+                existing_name=cap_name,
+                message=f"'{cap_name}' exists in {fw_name} but was not installed via cap.",
+            )
+        try:
+            import json as _json
+            meta = _json.loads(meta_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            return ConflictResult(
+                state=ConflictState.UNRECOGNIZED,
+                existing_name=cap_name,
+                message=f"'{cap_name}' exists in {fw_name} but .cap-meta.json is unreadable.",
+            )
+        meta_owner = meta.get("owner", "")
+        meta_version = meta.get("version", "")
+        meta_name = meta.get("name", cap_name)
+        if meta_owner != owner:
+            return ConflictResult(
+                state=ConflictState.OWNER_MISMATCH,
+                existing_owner=meta_owner,
+                existing_version=meta_version,
+                existing_name=meta_name,
+                message=f"'{cap_name}' in {fw_name} is owned by '{meta_owner}' (requested: '{owner}').",
+            )
+        if meta_name == cap_name and meta_version == version_spec:
+            return ConflictResult(
+                state=ConflictState.ALREADY_INSTALLED,
+                existing_owner=meta_owner,
+                existing_version=meta_version,
+                existing_name=meta_name,
+                message=f"'{cap_name}' v{meta_version} is already installed in {fw_name}.",
+            )
+        if meta_name == cap_name and meta_version != version_spec:
+            return ConflictResult(
+                state=ConflictState.VERSION_MISMATCH,
+                existing_owner=meta_owner,
+                existing_version=meta_version,
+                existing_name=meta_name,
+                message=f"'{cap_name}' v{meta_version} is installed in {fw_name}. Requested v{version_spec}.",
+            )
+    return ConflictResult(state=ConflictState.NO_CONFLICT)
+
+
+def _install_from_tarball(
+    tarball_path: str,
+    storage: StorageManager,
+    cap_name: str,
+    owner: str,
+) -> Optional[tuple[Path, Optional[str]]]:
+    import tarfile
+
+    archive = Path(tarball_path)
+    if not archive.exists():
+        print(f"  Tarball not found: {tarball_path}")
+        return None
+    if archive.suffix not in (".gz", ".tgz") or not str(archive).endswith((".tar.gz", ".tgz")):
+        print(f"  Expected .tar.gz file: {tarball_path}")
+        return None
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cap-tarball-"))
+    try:
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(tmp_dir)
+    except (tarfile.TarError, OSError) as e:
+        print(f"  Failed to extract tarball: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    entries = list(tmp_dir.iterdir())
+    if not entries:
+        print("  Tarball is empty")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    extract_dir = entries[0]
+    if len(entries) == 1 and extract_dir.is_dir():
+        source_dir = extract_dir
+    else:
+        source_dir = tmp_dir
+
+    manifest = Manifest.detect_from_directory(source_dir)
+    if manifest.name == source_dir.name and manifest.version == "1.0.0" and not (source_dir / "capability.yaml").exists():
+        print("  Tarball does not contain a valid capability (no capability.yaml)")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    package_dir = storage.get_package_dir(cap_name, manifest.version, owner=owner)
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
+    shutil.copytree(source_dir, package_dir)
+
+    source_url = manifest.repository or _detect_git_remote(package_dir)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return package_dir, source_url

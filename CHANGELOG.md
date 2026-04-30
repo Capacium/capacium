@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.9.0 — 2026-04-30
+
+### cap install — Edge Cases & Conflict Detection
+
+- **Config system**: `cap config` subcommand (list, set, get) backed by `ConfigManager` with YAML persistence at `~/.capacium/config.yaml`. Fields: `preferred_frameworks`, `registry_url`, `auto_update_check`, `auto_overwrite`, `offline_mode`, `skip_runtime_check`.
+- **Conflict detection**: `check_conflict()` returns `ConflictResult` with 5 states (`NO_CONFLICT`, `UNRECOGNIZED`, `OWNER_MISMATCH`, `VERSION_MISMATCH`, `ALREADY_INSTALLED`) by reading `.cap-meta.json` from framework directories.
+- **Interactive prompts**: `PromptHandler` asks y/N for unrecognized directories (C1) and version mismatches (C3). `--yes` flag bypasses all prompts. `auto_overwrite` config key also skips prompts.
+- **`--force` flag**: Overrides owner mismatch (C2) by unlinking the old installation from the framework directory and removing the registry entry before installing the new capability.
+- **`--framework` flag**: Restricts installation to a single framework (e.g. `claude-code`, `opencode`). Falls back to `preferred_frameworks` from config, then auto-detection.
+- **`--offline` flag**: Skips all registry calls. Requires `--source` or cached packages.
+- **`--from-tarball`**: Installs from a local `.tar.gz` file. Extracts to temp, validates manifest, copies to cache, and installs normally.
+- **`@version` spec**: `cap install owner/name@1.2.3` checks registry for version availability. Missing version prints available versions.
+- **Bundle member conflicts**: When a sub-capability is already a member of a different bundle, a warning is shown with both bundle names. `--force` reassigns.
+
+### Registry Improvements
+
+- **Graceful degradation**: Registry timeouts and connection errors now print helpful messages suggesting `--source` or `--offline`. 404 prints publish hint.
+- **Version listing**: `RegistryDetail.versions` field propagated through `_fetch_from_registry()`.
+- **Reverse bundle lookup**: `Registry.get_bundle_ids_for_member()` finds which bundle(s) a member belongs to.
+
+### Model Changes
+
+- `ConflictState` enum (5 states) and `ConflictResult` dataclass added to `models.py`.
+- `CapaciumError` base exception class and schema migration framework prepared.
+
 ## [Capacium v0.7.3] - 2026-04-26
 
 ### Fixed

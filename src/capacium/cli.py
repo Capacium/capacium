@@ -34,6 +34,29 @@ def main():
         action="store_true",
         help="Create symlinks in all detected framework directories",
     )
+    install_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip all network calls (use cached packages only)",
+    )
+    install_parser.add_argument(
+        "--framework",
+        help="Restrict installation to a specific framework (e.g. claude-code, opencode)",
+    )
+    install_parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip all interactive prompts",
+    )
+    install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force installation even if a different owner is detected",
+    )
+    install_parser.add_argument(
+        "--from-tarball",
+        help="Install from a local .tar.gz file",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -128,6 +151,15 @@ def main():
     )
     runtimes_install_parser.add_argument("name", help="Runtime name (e.g. uv, node, python)")
 
+    config_parser = subparsers.add_parser("config", help="View and manage Capacium configuration")
+    config_sub = config_parser.add_subparsers(dest="config_command", help="Config subcommand")
+    config_sub.add_parser("list", help="List all configuration values")
+    config_set_parser = config_sub.add_parser("set", help="Set a configuration value")
+    config_set_parser.add_argument("key", help="Configuration key")
+    config_set_parser.add_argument("value", help="Configuration value (valid JSON)")
+    config_get_parser = config_sub.add_parser("get", help="Get a configuration value")
+    config_get_parser.add_argument("key", help="Configuration key")
+
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
     mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
@@ -168,6 +200,11 @@ def main():
                 no_lock=args.no_lock,
                 skip_runtime_check=getattr(args, "skip_runtime_check", False),
                 all_frameworks=getattr(args, "all_frameworks", False),
+                offline=getattr(args, "offline", False),
+                framework=getattr(args, "framework", None),
+                force=getattr(args, "force", False),
+                from_tarball=getattr(args, "from_tarball", None),
+                yes=getattr(args, "yes", False),
             )
             sys.exit(0 if success else 1)
 
@@ -279,6 +316,34 @@ def main():
                 sys.exit(0 if success else 1)
             else:
                 runtimes_parser.print_help()
+                sys.exit(1)
+
+        elif args.command == "config":
+            from .utils.config import ConfigManager
+            import json as _json
+            sub = getattr(args, "config_command", None) or "list"
+            if sub == "list":
+                for key, value in ConfigManager.list_all().items():
+                    print(f"  {key}: {_json.dumps(value)}")
+                sys.exit(0)
+            elif sub == "get":
+                value = ConfigManager.get(args.key)
+                if value is None:
+                    print(f"  {args.key}: (not set)")
+                else:
+                    print(f"  {args.key}: {_json.dumps(value)}")
+                sys.exit(0)
+            elif sub == "set":
+                try:
+                    parsed = _json.loads(args.value)
+                except _json.JSONDecodeError:
+                    print("Error: value must be valid JSON")
+                    sys.exit(1)
+                ConfigManager.set_value(args.key, parsed)
+                print(f"  {args.key} = {_json.dumps(parsed)}")
+                sys.exit(0)
+            else:
+                config_parser.print_help()
                 sys.exit(1)
 
         elif args.command == "mcp":

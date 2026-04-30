@@ -5,6 +5,35 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 
 
+class ConflictState(Enum):
+    NO_CONFLICT = "no_conflict"
+    UNRECOGNIZED = "unrecognized"
+    OWNER_MISMATCH = "owner_mismatch"
+    VERSION_MISMATCH = "version_mismatch"
+    ALREADY_INSTALLED = "already_installed"
+
+
+@dataclass
+class ConflictResult:
+    state: ConflictState
+    existing_owner: str = ""
+    existing_version: str = ""
+    existing_name: str = ""
+    message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.state == ConflictState.NO_CONFLICT
+
+    @property
+    def blocks_install(self) -> bool:
+        return self.state == ConflictState.OWNER_MISMATCH
+
+    @property
+    def prompts_user(self) -> bool:
+        return self.state in (ConflictState.UNRECOGNIZED, ConflictState.VERSION_MISMATCH)
+
+
 class Kind(Enum):
     SKILL = "skill"
     BUNDLE = "bundle"

@@ -6,7 +6,7 @@ from capacium.utils.config import (
     load_config,
     save_config,
     get_config,
-    DEFAULT_CONFIG,
+    ConfigManager,
 )
 
 
@@ -22,16 +22,28 @@ class TestConfig:
 
     def test_load_config_defaults(self, tmp_home):
         config = load_config()
-        assert config["registry_path"] == DEFAULT_CONFIG["registry_path"]
+        assert config["registry_url"] == "https://api.capacium.xyz/v2"
+        assert config["auto_overwrite"] is False
+        assert config["preferred_frameworks"] == []
 
     def test_save_and_load_config(self, tmp_home):
-        save_config({"custom_key": "custom_value"})
+        save_config({"auto_overwrite": True})
         config = load_config()
-        assert config["custom_key"] == "custom_value"
-        assert config["registry_path"] == DEFAULT_CONFIG["registry_path"]
+        assert config["auto_overwrite"] is True
+        assert config["registry_url"] == "https://api.capacium.xyz/v2"
 
     def test_get_config(self, tmp_home):
-        save_config({"test_key": "test_value"})
-        assert get_config("test_key") == "test_value"
+        save_config({"auto_update_check": False})
+        assert get_config("auto_update_check") is False
         assert get_config("nonexistent") is None
         assert get_config("nonexistent", "default") == "default"
+
+    def test_config_manager_set_get(self, tmp_home):
+        ConfigManager.set_value("preferred_frameworks", ["claude-code"])
+        assert ConfigManager.get("preferred_frameworks") == ["claude-code"]
+
+    def test_config_manager_list_all(self, tmp_home):
+        all_config = ConfigManager.list_all()
+        assert "preferred_frameworks" in all_config
+        assert "registry_url" in all_config
+        assert isinstance(all_config, dict)

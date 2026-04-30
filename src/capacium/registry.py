@@ -275,6 +275,15 @@ class Registry:
             )
             return [row[0] for row in cursor.fetchall()]
 
+    def get_bundle_ids_for_member(self, member_id: str) -> List[str]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT bundle_id FROM bundle_members WHERE member_id = ?",
+                (member_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+
     def remove_bundle_members(self, bundle_id: str) -> None:
         with self._get_connection() as conn:
             cursor = conn.cursor()
