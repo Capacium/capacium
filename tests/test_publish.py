@@ -1,7 +1,6 @@
 """Tests for cap publish command."""
 
 import subprocess
-from pathlib import Path
 
 from capacium.commands.publish import publish_capability
 
