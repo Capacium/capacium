@@ -20,3 +20,10 @@ specs/
 src/capacium/marketplace/node_modules/
 src/capacium/marketplace/.next/
 *.db
+
+# Test adapter artifacts (generated in CWD by adapter tests)
+/.cursor/
+/.github/skills/
+/.claude/
+/.opencode/skills/
+/.gemini/skills/
