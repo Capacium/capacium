@@ -208,10 +208,18 @@ class RegistryClient:
         name: str,
         registry_url: Optional[str] = None,
     ) -> Optional[RegistryDetail]:
+        if "/" not in name:
+            results = self.search(name, registry_url=registry_url, limit=3)
+            for r in results:
+                if r.name == name:
+                    name = f"{r.owner}/{r.name}"
+                    break
+            else:
+                return None
         url = self._build_registry_url(f"/v1/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
         try:
             data = self._request(url)
-            return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclass_fields__})
+            return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclasses_fields__})
         except RegistryClientError as e:
             if "HTTP 404" in str(e):
                 return None
