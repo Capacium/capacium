@@ -1,0 +1,106 @@
+name: Pre-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 0.4.0) — appended as v{version}-rc.{N}"
+        required: true
+        type: string
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml cryptography pytest pytest-cov ruff
+          pip install -e .
+
+      - name: Lint with ruff
+        run: python -m ruff check .
+
+      - name: Test with pytest
+        run: python -m pytest tests/ -v --tb=short --cov=src/capacium
+
+      - name: Validate pyproject.toml version
+        run: |
+          VERSION="${{ inputs.version }}"
+          PYPROJ_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
+          if [ "$PYPROJ_VERSION" != "$VERSION" ]; then
+            echo "ERROR: pyproject.toml version is ${PYPROJ_VERSION}, but release version is ${VERSION}. Bump pyproject.toml first, then retry."
+            echo "  Run: sed -i '' 's/version = \"${PYPROJ_VERSION}\"/version = \"${VERSION}\"/' pyproject.toml"
+            exit 1
+          fi
+          echo "pyproject.toml version matches v${VERSION}."
+
+      - name: Validate README version references
+        run: |
+          VERSION="${{ inputs.version }}"
+          if ! grep -q "@v${VERSION}" README.md; then
+            echo "ERROR: README.md references are not updated to v${VERSION}. Please update all install examples before cutting a release."
+            echo "  Run: sed -i 's/@v[0-9.]*/@v${VERSION}/g' README.md"
+            echo "  Run: sed -i 's|ghcr.io/capacium/cap:[0-9.]*|ghcr.io/capacium/cap:${VERSION}|g' README.md"
+            exit 1
+          fi
+          echo "README version references match v${VERSION}."
+
+      - name: Determine next RC number
+        id: next_rc
+        run: |
+          PREFIX="${{ inputs.version }}"
+          EXISTING=$(git tag -l "v${PREFIX}-rc.*" | sed 's/.*-rc\.//' | sort -n | tail -1)
+          NEXT=$((EXISTING + 1))
+          echo "rc_number=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${PREFIX}-rc.${NEXT}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            LOG=$(git log --oneline --no-decorate HEAD)
+          else
+            LOG=$(git log --oneline --no-decorate "${LAST_TAG}..HEAD")
+          fi
+          # Filter out non-Capacium-core references (MemPalace, ICM, personal tools, etc.)
+          LOG=$(echo "$LOG" | grep -iv 'mempalace\|icm\|memPalace' || true)
+          echo "log<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        run: |
+          TAG="${{ steps.next_rc.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Pre-Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.next_rc.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "Capacium v${{ inputs.version }} RC ${{ steps.next_rc.outputs.rc_number }}" \
+            --prerelease \
+            --notes "## Capacium v${{ inputs.version }} RC ${{ steps.next_rc.outputs.rc_number }}
+
+          **Pre-release** — not for production use.
+
+          ### Changes since last release
+          ${{ steps.changelog.outputs.log }}"
