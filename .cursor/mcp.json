@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cap-needs-uv": {
+      "command": "uvx",
+      "args": [
+        "my-mcp"
+      ]
+    }
+  }
+}

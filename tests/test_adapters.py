@@ -153,16 +153,6 @@ class TestGeminiCLIAdapter:
         assert adapter.get_capability_metadata("nonexistent") is None
 
     def test_skills_dir_created(self, tmp_home, sample_capability_dir):
-        caps_dir = Path.home() / ".gemini" / "capabilities"
-        assert not caps_dir.exists()
-
-        adapter = GeminiCLIAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
-
-        assert caps_dir.exists()
-        assert caps_dir.is_dir()
-
-    def test_skills_dir_created(self, tmp_home, sample_capability_dir):
         skills_dir = Path.home() / ".gemini" / "skills"
         assert not skills_dir.exists()
 
