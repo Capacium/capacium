@@ -183,8 +183,11 @@ class RegistryClient:
         results = []
         for r in raw:
             r = dict(r)
+            canonical = r.get("canonical_name", "")
+            if "/" in canonical and "owner" not in r:
+                r["owner"], r["name"] = canonical.split("/", 1)
             r.setdefault("owner", r.get("owner", ""))
-            r.setdefault("name", r.get("name", "unknown"))
+            r.setdefault("name", r.get("name", canonical))
             r.setdefault("version", r.get("version", "0.0.0"))
             results.append(RegistryResult(**{k: v for k, v in r.items() if k in RegistryResult.__dataclass_fields__}))
         return results
