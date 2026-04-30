@@ -258,7 +258,7 @@ document.getElementById('submit-form').addEventListener('submit', async (e) => {
   }
   result.innerHTML = '<span style="color:#e3b341;">Submitting...</span>';
   try {
-    const res = await fetch('/v2/submit', {
+    const res = await fetch('/api/v2/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ github_url: url })
@@ -268,7 +268,7 @@ document.getElementById('submit-form').addEventListener('submit', async (e) => {
       result.innerHTML = `<span style="color:#e3b341;">Queued as ${data.job_id.slice(0,8)}... polling...</span>`;
       let attempts = 0;
       const poll = setInterval(async () => {
-        const statusRes = await fetch(`/v2/submit/${data.job_id}`);
+        const statusRes = await fetch(`/api/v2/submit/${data.job_id}`);
         const statusData = await statusRes.json();
         if (statusData.status === 'completed') {
           result.innerHTML = `<span style="color:#56d364;">Submitted: <strong>${statusData.canonical_name}</strong></span>`;
