@@ -616,7 +616,11 @@ def _fetch_from_registry(
 
 
 def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
-    """Clone a repository from URL into temp + return path."""
+    """Clone a repository from URL into temp + return path.
+
+    Clones the specific tag (v{version}). If the tag doesn't exist,
+    git clone falls back to HEAD — we detect this and return None.
+    """
     import tempfile
 
     tag = version if version.startswith("v") else f"v{version}"
@@ -628,14 +632,26 @@ def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
         result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             print(f"  Clone failed: {result.stderr.strip()}")
-            import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+
+        repo_dir = tmp_dir / "repo"
+        tag_result = subprocess.run(
+            ["git", "tag", "--points-at", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(repo_dir),
+        )
+        if tag not in (tag_result.stdout or "").splitlines():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            print(f"  Tag {tag} not found in repository.")
+            print(f"  Available tags: {', '.join((tag_result.stdout or '').splitlines()[:5])}")
             return None
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print(f"  Clone failed: {e}")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 
-    return tmp_dir / "repo"
+    return repo_dir
 
 
 def _resolve_install_frameworks(
