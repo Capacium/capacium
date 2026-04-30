@@ -15,7 +15,7 @@ class SymlinkManager:
 
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            if target.exists():
+            if target.exists() or target.is_symlink():
                 if target.is_symlink():
                     target.unlink()
                 elif target.is_dir():
