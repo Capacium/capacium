@@ -234,6 +234,8 @@ class RegistryClient:
             trust_history = data.get("trust_history")
             if trust_history and isinstance(trust_history, list):
                 data.setdefault("trust_breakdown", data.get("trust_breakdown", {}))
+            if not data.get("repository") and data.get("canonical_source_url"):
+                data["repository"] = data["canonical_source_url"]
             return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclass_fields__})
         except RegistryClientError as e:
             if "HTTP 404" in str(e):
