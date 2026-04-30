@@ -79,7 +79,14 @@ class StorageManager:
             if link_path.is_symlink():
                 link_path.unlink()
             else:
-                return False
+                import shutil
+                try:
+                    if link_path.is_dir():
+                        shutil.rmtree(link_path)
+                    else:
+                        link_path.unlink()
+                except OSError:
+                    return False
 
         try:
             link_path.symlink_to(source_dir, target_is_directory=True)
