@@ -127,7 +127,6 @@ class RegistryClient:
         config_url = self._read_config_registry_url()
         default = registry_url or config_url or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz")
         base = default.rstrip("/")
-        base = base.replace("/v2", "").replace("/v1", "")
         return f"{base}{path}"
 
     @staticmethod
@@ -156,7 +155,7 @@ class RegistryClient:
         sort: str = "relevance",
         limit: int = 50,
     ) -> List[RegistryResult]:
-        url = self._build_registry_url("/v1/capabilities", registry_url)
+        url = self._build_registry_url("/v2/search", registry_url)
         params = []
         if query:
             params.append(f"q={urllib.parse.quote(query)}")
@@ -195,7 +194,7 @@ class RegistryClient:
         name: str,
         registry_url: Optional[str] = None,
     ) -> Optional[RegistryResult]:
-        url = self._build_registry_url(f"/v1/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
+        url = self._build_registry_url(f"/v2/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
         try:
             data = self._request(url)
             return RegistryResult(**{k: v for k, v in data.items() if k in RegistryResult.__dataclass_fields__})
@@ -217,7 +216,7 @@ class RegistryClient:
                     break
             else:
                 return None
-        url = self._build_registry_url(f"/v1/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
+        url = self._build_registry_url(f"/v2/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
         try:
             data = self._request(url)
             return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclasses_fields__})
@@ -227,21 +226,21 @@ class RegistryClient:
             raise
 
     def get_stats(self, registry_url: Optional[str] = None) -> Dict[str, Any]:
-        url = self._build_registry_url("/v1/stats", registry_url)
+        url = self._build_registry_url("/v2/stats", registry_url)
         return self._request(url)
 
     def get_user_info(self, registry_url: Optional[str] = None) -> Dict[str, Any]:
-        url = self._build_registry_url("/v1/user", registry_url)
+        url = self._build_registry_url("/v2/user", registry_url)
         return self._request(url)
 
     def publish(self, payload: Dict[str, Any], registry_url: Optional[str] = None) -> Dict[str, Any]:
-        url = self._build_registry_url("/v1/capabilities/publish", registry_url)
+        url = self._build_registry_url("/v2/publish", registry_url)
         data = json.dumps(payload).encode("utf-8")
         return self._request(url, method="POST", data=data)
 
     def verify_token(self, registry_url: Optional[str] = None) -> bool:
         try:
-            self._request(self._build_registry_url("/v1/stats", registry_url))
+            self._request(self._build_registry_url("/v2/stats", registry_url))
             return True
         except RegistryClientError:
             return False
@@ -251,7 +250,7 @@ class RegistryClient:
         name: str,
         registry_url: Optional[str] = None,
     ) -> List[Dict[str, str]]:
-        url = self._build_registry_url(f"/v1/capabilities/{urllib.parse.quote(name, safe='')}/versions", registry_url)
+        url = self._build_registry_url(f"/v2/capabilities/{urllib.parse.quote(name, safe='')}/versions", registry_url)
         data = self._request(url)
         return data.get("versions", [])
 
@@ -263,7 +262,7 @@ class RegistryClient:
         dest_path: Optional[Path] = None,
     ) -> bytes:
         url = self._build_registry_url(
-            f"/v1/capabilities/{urllib.parse.quote(name, safe='')}/download?version={urllib.parse.quote(version)}",
+            f"/v2/capabilities/{urllib.parse.quote(name, safe='')}/download?version={urllib.parse.quote(version)}",
             registry_url,
         )
         req_headers = {
