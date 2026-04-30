@@ -36,7 +36,12 @@ class OpenCodeAdapter(FrameworkAdapter):
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
         link_path = self.opencode_skills_dir / cap_name
         if link_path.exists():
-            self.symlink_manager.remove_symlink(link_path)
+            if link_path.is_symlink():
+                self.symlink_manager.remove_symlink(link_path)
+            elif link_path.is_dir():
+                shutil.rmtree(link_path)
+            else:
+                link_path.unlink()
         return True
 
     def capability_exists(self, cap_name: str) -> bool:
@@ -122,6 +127,7 @@ class OpencodeCommandAdapter(FrameworkAdapter):
 
     def __init__(self):
         self.storage = StorageManager()
+        self.symlink_manager = SymlinkManager()
         self.commands_dir = Path.home() / ".config" / "opencode" / "commands"
         self.commands_dir.mkdir(parents=True, exist_ok=True)
 
@@ -161,7 +167,12 @@ class OpencodeCommandAdapter(FrameworkAdapter):
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
         link_path = self.commands_dir / f"{cap_name}.md"
         if link_path.exists():
-            link_path.unlink()
+            if link_path.is_symlink():
+                self.symlink_manager.remove_symlink(link_path)
+            elif link_path.is_dir():
+                shutil.rmtree(link_path)
+            else:
+                link_path.unlink()
         return True
 
     def capability_exists(self, cap_name: str) -> bool:

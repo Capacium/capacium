@@ -46,7 +46,12 @@ class CursorAdapter(FrameworkAdapter):
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
         rule_path = self._get_rules_dir() / f"{cap_name}.mdc"
         if rule_path.exists():
-            rule_path.unlink()
+            if rule_path.is_symlink():
+                self.symlink_manager.remove_symlink(rule_path)
+            elif rule_path.is_dir():
+                shutil.rmtree(rule_path)
+            else:
+                rule_path.unlink()
         return True
 
     def capability_exists(self, cap_name: str) -> bool:
