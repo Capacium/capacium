@@ -118,9 +118,10 @@ def main():
     package_parser.add_argument("path", help="Path to capability directory")
     package_parser.add_argument("--output", help="Output archive path (e.g. archive.tar.gz)")
 
-    publish_parser = subparsers.add_parser("publish", help="Publish capability to a registry (stub)")
+    publish_parser = subparsers.add_parser("publish", help="Publish capability to the Exchange registry")
     publish_parser.add_argument("path", nargs="?", default=".", help="Path to capability directory (default: current directory)")
     publish_parser.add_argument("--registry", help="Target registry URL")
+    publish_parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without publishing")
 
     marketplace_parser = subparsers.add_parser("marketplace", help="Start the marketplace web UI")
     marketplace_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
@@ -301,7 +302,14 @@ def main():
 
         elif args.command == "publish":
             from .commands.publish import publish_capability
-            success = publish_capability(Path(args.path))
+            registry_arg = args.registry
+            if registry_arg and registry_arg.lower() == "false":
+                registry_arg = None
+            success = publish_capability(
+                Path(args.path),
+                registry_url=registry_arg,
+                dry_run=args.dry_run,
+            )
             sys.exit(0 if success else 1)
 
         elif args.command == "doctor":
