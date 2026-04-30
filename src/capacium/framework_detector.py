@@ -5,9 +5,10 @@ from typing import Dict, List, Optional, Set
 
 FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "claude-code": Path.home() / ".claude" / "skills",
-    "cursor": Path.home() / ".cursor" / "skills",
+    "cursor": Path.cwd() / ".cursor" / "skills",
     "gemini-cli": Path.home() / ".gemini" / "skills",
     "opencode": Path.cwd() / ".opencode" / "skills",
+    "openclaw": Path.home() / ".openclaw" / "skills",
     "continue-dev": Path.home() / ".continue" / "skills",
     "antigravity": Path.home() / ".gemini" / "antigravity" / "skills",
     "codex": Path.home() / ".codex" / "skills",
@@ -28,6 +29,10 @@ def _detect_claude_code() -> bool:
 
 def _detect_cursor() -> bool:
     return (Path.cwd() / ".cursorrules").exists() or (Path.cwd() / ".cursor").is_dir()
+
+
+def _detect_openclaw() -> bool:
+    return (Path.home() / ".openclaw").is_dir()
 
 
 def _detect_gemini_cli() -> bool:
@@ -63,6 +68,7 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "cursor": _detect_cursor,
     "gemini-cli": _detect_gemini_cli,
     "opencode": _detect_opencode,
+    "openclaw": _detect_openclaw,
     "continue-dev": _detect_continue_dev,
     "antigravity": _detect_antigravity,
     "codex": _detect_codex,
