@@ -222,6 +222,11 @@ class RegistryClient:
         url = self._build_registry_url(f"/v2/capabilities/{urllib.parse.quote(name, safe='')}", registry_url)
         try:
             data = self._request(url)
+            data = dict(data)
+            canonical = data.get("canonical_name", "")
+            if "/" in canonical:
+                data.setdefault("owner", canonical.split("/", 1)[0])
+                data.setdefault("name", canonical.split("/", 1)[1])
             return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclass_fields__})
         except RegistryClientError as e:
             if "HTTP 404" in str(e):
