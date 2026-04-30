@@ -58,6 +58,19 @@
   </div>
 </div>
 
+<div class="card" style="margin-bottom: 16px;">
+  <h2>Submit a Skill</h2>
+  <form id="submit-form" style="display:flex; gap:8px;">
+    <input type="url" id="submit-url" placeholder="https://github.com/owner/repo" required
+      style="flex:1; background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:8px 12px; color:#c9d1d9; font-size:13px;">
+    <button type="submit"
+      style="background:#238636; border:none; border-radius:6px; padding:8px 16px; color:#fff; font-size:13px; font-weight:600; cursor:pointer;">
+      Submit
+    </button>
+  </form>
+  <div id="submit-result" style="margin-top:8px; font-size:12px;"></div>
+</div>
+
 <div class="grid">
   <div class="card">
     <h2>By Kind</h2>
@@ -145,6 +158,34 @@ async function refresh() {
   errs.innerHTML = '';
 
   try {
+    const s = await fetchJSON(API.stats);
+    document.getElementById('stat-listings').textContent = s.listings;
+    document.getElementById('stat-categories').textContent = s.categories;
+    document.getElementById('stat-list-publishers').textContent = s.publishers;
+
+    document.getElementById('stat-cap-kind-skill').textContent = (s.by_kind || {}).skill || 0;
+    document.getElementById('stat-cap-kind-bundle').textContent = (s.by_kind || {}).bundle || 0;
+    document.getElementById('stat-cap-kind-tool').textContent = (s.by_kind || {}).tool || 0;
+    document.getElementById('stat-cap-kind-mcp-server').textContent = (s.by_kind || {})['mcp-server'] || 0;
+    document.getElementById('stat-cap-kind-other').textContent = s.by_kind_other || 0;
+
+    document.getElementById('stat-trust-discovered').textContent = (s.by_trust || {}).discovered || 0;
+    document.getElementById('stat-trust-audited').textContent = (s.by_trust || {}).audited || 0;
+    document.getElementById('stat-trust-verified').textContent = (s.by_trust || {}).verified || 0;
+    document.getElementById('stat-trust-signed').textContent = (s.by_trust || {}).signed || 0;
+
+    const tokEl = document.getElementById('stat-tokens');
+    tokEl.textContent = `${s.active_tokens || 0} / ${s.expiring_soon || 0} / ${s.expired_tokens || 0}`;
+    tokEl.className = s.expired_tokens ? 'stat small' : 'stat small';
+    if (s.expired_tokens) tokEl.style.color = '#f85149';
+    else if (s.expiring_soon) tokEl.style.color = '#e3b341';
+    else tokEl.style.color = '#f0f6fc';
+
+    document.getElementById('stat-findings').textContent = m.findings;
+  const errs = document.getElementById('errors');
+  errs.innerHTML = '';
+
+  try {
     const stats = await fetchJSON(API.exchange);
     document.getElementById('stat-total').textContent = stats.total || 0;
     document.getElementById('by-kind').innerHTML = Object.entries(stats.by_kind || {}).map(([k,v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -206,6 +247,56 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 5000);
+
+document.getElementById('submit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('submit-url').value.trim();
+  const result = document.getElementById('submit-result');
+  if (!url.startsWith('https://github.com/')) {
+    result.innerHTML = '<span style="color:#f85149;">Only GitHub https:// URLs are supported</span>';
+    return;
+  }
+  result.innerHTML = '<span style="color:#e3b341;">Submitting...</span>';
+  try {
+    const res = await fetch('/v2/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ github_url: url })
+    });
+    const data = await res.json();
+    if (res.status === 202) {
+      result.innerHTML = `<span style="color:#e3b341;">Queued as ${data.job_id.slice(0,8)}... polling...</span>`;
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        const statusRes = await fetch(`/v2/submit/${data.job_id}`);
+        const statusData = await statusRes.json();
+        if (statusData.status === 'completed') {
+          result.innerHTML = `<span style="color:#56d364;">Submitted: <strong>${statusData.canonical_name}</strong></span>`;
+          clearInterval(poll);
+          setTimeout(refresh, 2000);
+        } else if (statusData.status === 'failed') {
+          result.innerHTML = `<span style="color:#f85149;">Failed: ${statusData.error}</span>`;
+          clearInterval(poll);
+        } else if (statusData.status === 'duplicate') {
+          result.innerHTML = `<span style="color:#e3b341;">Already indexed: ${statusData.canonical_name}</span>`;
+          clearInterval(poll);
+        }
+        if (++attempts > 30) {
+          result.innerHTML = '<span style="color:#e3b341;">Still processing... check back later</span>';
+          clearInterval(poll);
+        }
+      }, 2000);
+    } else if (res.ok) {
+      result.innerHTML = `<span style="color:#56d364;">Submitted: <strong>${data.canonical_name}</strong></span>`;
+      setTimeout(refresh, 2000);
+    } else {
+      const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data);
+      result.innerHTML = `<span style="color:#f85149;">Error: ${detail}</span>`;
+    }
+  } catch(err) {
+    result.innerHTML = `<span style="color:#f85149;">Network error: ${err.message}</span>`;
+  }
+});
 </script>
 </body>
 </html>

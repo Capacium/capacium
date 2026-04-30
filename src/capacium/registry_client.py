@@ -290,6 +290,17 @@ class RegistryClient:
         return body
 
 
+    def submit(
+        self,
+        github_url: str,
+        registry_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        url = self._build_registry_url("/v2/submit", registry_url)
+        payload = {"github_url": github_url}
+        data = json.dumps(payload).encode("utf-8")
+        return self._request(url, method="POST", data=data)
+
+
 def _check_yaml_available() -> None:
     try:
         import yaml  # noqa: F401

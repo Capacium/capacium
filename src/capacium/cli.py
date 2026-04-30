@@ -160,6 +160,10 @@ def main():
     config_get_parser = config_sub.add_parser("get", help="Get a configuration value")
     config_get_parser.add_argument("key", help="Configuration key")
 
+    submit_parser = subparsers.add_parser("submit", help="Submit a GitHub repository for indexing on the Exchange")
+    submit_parser.add_argument("github_url", help="GitHub repository URL (https://github.com/owner/repo)")
+    submit_parser.add_argument("--registry", help="Target registry URL (defaults to configured Exchange)")
+
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
     mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
@@ -344,6 +348,24 @@ def main():
                 sys.exit(0)
             else:
                 config_parser.print_help()
+                sys.exit(1)
+
+        elif args.command == "submit":
+            from .registry_client import RegistryClient, RegistryClientError
+            client = RegistryClient()
+            try:
+                result = client.submit(args.github_url, registry_url=getattr(args, "registry", None))
+                print(f"Submitted: {result.get('canonical_name', 'unknown')}")
+                print(f"  Kind: {result.get('kind', 'unknown')}")
+                print(f"  Trust: {result.get('trust_state', 'unknown')}")
+                print(f"  URL: https://capacium.xyz/listings/{result.get('canonical_name', '')}")
+                sys.exit(0)
+            except RegistryClientError as e:
+                msg = str(e)
+                if "409" in msg:
+                    print(f"Already registered: {msg}")
+                else:
+                    print(f"Submit failed: {msg}")
                 sys.exit(1)
 
         elif args.command == "mcp":
