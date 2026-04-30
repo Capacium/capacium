@@ -23,6 +23,8 @@ from .roo_code import RooCodeAdapter
 from .goose import GooseAdapter
 from .aider import AiderAdapter
 from .openclaw import OpenClawAdapter
+from .hermes import HermesAdapter
+from .copilot import CopilotAdapter
 from .langchain_bridge import LangChainToolAdapter, FlowiseAdapter
 
 _ADAPTER_REGISTRY: dict[str, type[FrameworkAdapter]] = {}
@@ -106,3 +108,7 @@ register_adapter("junie", JunieAdapter)
 # ── Tier 4: Agent Flow Bridging ────────────────────────────────────────
 register_adapter("langchain", LangChainToolAdapter)
 register_adapter("flowise", FlowiseAdapter)
+
+# ── Tier 5: SKILL.md-Capable Agents (2026 standard) ────────────────────
+register_adapter("hermes", HermesAdapter)
+register_adapter("copilot", CopilotAdapter)

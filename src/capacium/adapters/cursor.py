@@ -1,7 +1,13 @@
+"""Cursor adapter — Skills + MCP.
+
+Cursor supports SKILL.md via .cursor/skills/ (project-only) since 2026.
+MCP: .cursor/mcp.json (project-local preferred, global fallback).
+"""
 import json
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
 from ..manifest import Manifest
@@ -11,52 +17,59 @@ from .mcp_config_patcher import McpConfigPatcher
 
 class CursorAdapter(FrameworkAdapter):
 
-    # Cursor reads MCP servers from ~/.cursor/mcp.json (global) or
-    # <project>/.cursor/mcp.json (project-local). Both use the same
-    # `mcpServers` JSON map shape Claude Desktop / Windsurf use.
     MCP_SECTION_KEY = "mcpServers"
 
     def __init__(self):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
-        self.project_rules_dir = Path.cwd() / ".cursor" / "rules"
-        self.global_rules_dir = Path.home() / ".cursor" / "rules"
+        self._skills_dir = Path.cwd() / ".cursor" / "skills"
         self.project_mcp_path = Path.cwd() / ".cursor" / "mcp.json"
         self.global_mcp_path = Path.home() / ".cursor" / "mcp.json"
+        self._legacy_rules_dir = Path.cwd() / ".cursor" / "rules"
+        self._legacy_global_rules_dir = Path.home() / ".cursor" / "rules"
+
+    @property
+    def skills_dir(self) -> Path:
+        return self._skills_dir
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+
         package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
         if package_dir.exists():
             shutil.rmtree(package_dir)
         shutil.copytree(source_dir, package_dir)
 
-        rules_dir = self._ensure_rules_dir()
-        description = self._read_description(source_dir)
-        rule_content = self._build_rule_file(cap_name, description, source_dir)
-        rule_path = rules_dir / f"{cap_name}.mdc"
-        rule_path.write_text(rule_content)
+        link_path = self.skills_dir / cap_name
+        success = self.symlink_manager.create_symlink(package_dir, link_path)
 
-        metadata = self._extract_capability_metadata(package_dir)
         metadata_path = package_dir / ".capacium-meta.json"
         with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+            json.dump({"name": cap_name, "version": version, "owner": owner}, f, indent=2)
 
-        return True
+        return success
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
-        rule_path = self._get_rules_dir() / f"{cap_name}.mdc"
-        if rule_path.exists():
-            if rule_path.is_symlink():
-                self.symlink_manager.remove_symlink(rule_path)
-            elif rule_path.is_dir():
-                shutil.rmtree(rule_path)
+        link_path = self.skills_dir / cap_name
+        if link_path.exists():
+            if link_path.is_symlink():
+                self.symlink_manager.remove_symlink(link_path)
+            elif link_path.is_dir():
+                shutil.rmtree(link_path)
             else:
-                rule_path.unlink()
+                link_path.unlink()
+        for legacy_dir in (self._legacy_rules_dir, self._legacy_global_rules_dir):
+            legacy_path = legacy_dir / f"{cap_name}.mdc"
+            if legacy_path.exists():
+                try:
+                    legacy_path.unlink()
+                except OSError:
+                    pass
         return True
 
     def capability_exists(self, cap_name: str) -> bool:
-        rule_path = self._get_rules_dir() / f"{cap_name}.mdc"
-        if rule_path.exists():
+        link_path = self.skills_dir / cap_name
+        if link_path.exists() and link_path.is_symlink():
             return True
         return McpConfigPatcher.mcp_server_exists_json(
             self._get_mcp_path(), cap_name, self.MCP_SECTION_KEY,
@@ -86,77 +99,24 @@ class CursorAdapter(FrameworkAdapter):
         )
 
     def list_capabilities(self) -> List[str]:
-        rules_dir = self._get_rules_dir()
-        if not rules_dir.exists():
+        if not self.skills_dir.exists():
             return []
         return sorted(
-            f.stem for f in rules_dir.iterdir()
-            if f.suffix == ".mdc" and not f.name.startswith(".")
+            d.name for d in self.skills_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".")
         )
 
     def get_capability_metadata(self, cap_name: str) -> Optional[Dict[str, Any]]:
-        base = self.storage.get_package_dir(cap_name).parent
-        if not base.exists():
-            return None
-        for version_dir in sorted(base.iterdir(), reverse=True):
-            metadata_path = version_dir / ".capacium-meta.json"
+        link_path = self.skills_dir / cap_name
+        if link_path.exists() and link_path.is_symlink():
+            target_dir = link_path.resolve()
+            metadata_path = target_dir / ".capacium-meta.json"
             if metadata_path.exists():
                 with open(metadata_path) as f:
                     return json.load(f)
         return None
 
-    def _get_rules_dir(self) -> Path:
-        if self.project_rules_dir.exists():
-            return self.project_rules_dir
-        return self.global_rules_dir
-
     def _get_mcp_path(self) -> Path:
-        # Mirror Cursor's own precedence: project-local config wins when its
-        # parent .cursor/ already exists in the cwd.
         if self.project_mcp_path.parent.exists():
             return self.project_mcp_path
         return self.global_mcp_path
-
-    def _ensure_rules_dir(self) -> Path:
-        rules_dir = self._get_rules_dir()
-        rules_dir.mkdir(parents=True, exist_ok=True)
-        return rules_dir
-
-    def _read_description(self, source_dir: Path) -> str:
-        try:
-            manifest = Manifest.detect_from_directory(source_dir)
-            return manifest.description or f"Capability: {source_dir.name}"
-        except Exception:
-            return f"Capability: {source_dir.name}"
-
-    def _build_rule_file(self, cap_name: str, description: str, source_dir: Path) -> str:
-        content_parts = []
-        for file_path in sorted(source_dir.iterdir()):
-            if file_path.is_file() and file_path.name != "capability.yaml":
-                try:
-                    content = file_path.read_text()
-                    content_parts.append(f"### {file_path.name}\n\n{content}")
-                except Exception:
-                    pass
-
-        body = "\n\n".join(content_parts) if content_parts else f"# {cap_name}\n\n{description}"
-
-        return f"""---
-description: {description}
-globs: "**/*"
----
-
-{body}
-"""
-
-    def _extract_capability_metadata(self, cap_dir: Path) -> Dict[str, Any]:
-        metadata = {
-            "name": cap_dir.parent.name,
-            "version": cap_dir.name,
-            "files": []
-        }
-        for file_path in cap_dir.rglob("*"):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(cap_dir)
-                metadata["files"].append(str(rel_path))
-        return metadata

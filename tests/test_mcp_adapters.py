@@ -517,10 +517,10 @@ class TestOpenCodeAdapterMcp:
 
 
 class TestAdapterRegistration:
-    def test_all_28_adapters_registered(self):
+    def test_all_adapters_registered(self):
         from capacium.adapters import list_registered_adapters
         adapters = list_registered_adapters()
-        assert len(adapters) >= 28
+        assert len(adapters) >= 30
 
     def test_tier1_adapters_present(self):
         from capacium.adapters import list_registered_adapters
@@ -549,6 +549,20 @@ class TestAdapterRegistration:
         tier3 = ["roo-code", "goose", "aider", "openclaw"]
         for name in tier3:
             assert name in adapters, f"Missing Tier 3 adapter: {name}"
+
+    def test_tier3c_adapters_present(self):
+        from capacium.adapters import list_registered_adapters
+        adapters = list_registered_adapters()
+        tier3c = ["junie"]
+        for name in tier3c:
+            assert name in adapters, f"Missing Tier 3c adapter: {name}"
+
+    def test_tier5_adapters_present(self):
+        from capacium.adapters import list_registered_adapters
+        adapters = list_registered_adapters()
+        tier5 = ["hermes", "copilot"]
+        for name in tier5:
+            assert name in adapters, f"Missing Tier 5 adapter: {name}"
 
     def test_tier4_adapters_present(self):
         from capacium.adapters import list_registered_adapters

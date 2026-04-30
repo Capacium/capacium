@@ -1,8 +1,8 @@
-"""OpenClaw adapter — Skills + MCP.
+"""Hermes Agent adapter — Skills + MCP.
 
-OpenClaw is the open-source AI coding agent by Peter Steinberger.
-Skills: ~/.openclaw/skills/<name>/  (SKILL.md standard, cross-agent compatible)
-MCP:   ~/.openclaw/mcp_config.json → mcpServers
+Hermes Agent by Nous Research — 126k ☆, self-improving AI agent.
+Skills: ~/.hermes/skills/<name>/  (SKILL.md standard, auto-discovered on startup)
+MCP:   ~/.hermes/mcp_config.json → mcpServers
 """
 import json
 import shutil
@@ -14,13 +14,13 @@ from .base import FrameworkAdapter
 from .mcp_config_patcher import McpConfigPatcher
 
 
-class OpenClawAdapter(FrameworkAdapter):
+class HermesAdapter(FrameworkAdapter):
 
     def __init__(self):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
-        self.skills_dir = Path.home() / ".openclaw" / "skills"
-        self.config_path = Path.home() / ".openclaw" / "mcp_config.json"
+        self.skills_dir = Path.home() / ".hermes" / "skills"
+        self.config_path = Path.home() / ".hermes" / "mcp_config.json"
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         self.skills_dir.mkdir(parents=True, exist_ok=True)

@@ -12,8 +12,9 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "continue-dev": Path.home() / ".continue" / "skills",
     "antigravity": Path.home() / ".gemini" / "antigravity" / "skills",
     "codex": Path.home() / ".codex" / "skills",
-    "windsurf": Path.home() / ".windsurf" / "skills",
     "junie": Path.home() / ".junie" / "skills",
+    "hermes": Path.home() / ".hermes" / "skills",
+    "copilot": Path.home() / ".config" / "github-copilot" / "skills",
 }
 
 FRAMEWORK_ALIASES: Dict[str, str] = {
@@ -55,12 +56,16 @@ def _detect_codex() -> bool:
     return (Path.home() / ".codex").is_dir()
 
 
-def _detect_windsurf() -> bool:
-    return (Path.home() / ".windsurf").is_dir()
-
-
 def _detect_junie() -> bool:
     return (Path.home() / ".junie").is_dir()
+
+
+def _detect_hermes() -> bool:
+    return (Path.home() / ".hermes").is_dir()
+
+
+def _detect_copilot() -> bool:
+    return (Path.home() / ".config" / "github-copilot").is_dir()
 
 
 FRAMEWORK_DETECTORS: Dict[str, callable] = {
@@ -72,8 +77,9 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "continue-dev": _detect_continue_dev,
     "antigravity": _detect_antigravity,
     "codex": _detect_codex,
-    "windsurf": _detect_windsurf,
     "junie": _detect_junie,
+    "hermes": _detect_hermes,
+    "copilot": _detect_copilot,
 }
 
 
