@@ -197,8 +197,7 @@ def clear_auth() -> None:
 
 
 def get_registry_url() -> str:
-    config = load_user_config()
-    return config.get("registry", "http://localhost:8000")
+    return load_config().get("registry_url", "https://api.capacium.xyz/v2")
 
 
 def get_trust_level() -> str:

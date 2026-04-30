@@ -109,10 +109,11 @@ src/capacium/
 - Does NOT modify original capability files
 
 ### Releases
-- Language requirement: All release notes and changelogs MUST be written in English.
-- Naming convention: `Capacium vX.Y.Z`
-- Git tags use `vX.Y.Z` format
+- **Language**: All release notes, changelogs, and release titles MUST be written in English.
+- **Naming**: Release titles MUST follow `Capacium vX.Y.Z` format (e.g. `Capacium v0.9.0`). Git tags use bare `vX.Y.Z`.
+- **Pre-release names** also follow the same format: `Capacium vX.Y.Z RC N`.
 - **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
+- **Post-release check**: After creating a release, verify the title matches `Capacium vX.Y.Z` via `gh release view <tag> --json name`.
 - **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes

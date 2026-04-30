@@ -160,6 +160,47 @@ Your capability is now discoverable:
 cap search my-capability
 ```
 
+## Submit a Capability Directly
+
+If you don't want to install the GitHub App, you can submit your capability to the Exchange with a single command or API call.
+
+### CLI
+
+```bash
+cap submit <github-url>
+```
+
+Example:
+
+```bash
+cap submit https://github.com/my-org/my-capability
+```
+
+This sends a POST to the Exchange API with the repository URL. The Exchange crawler will fetch the repository, validate the manifest, and index the capability.
+
+### API
+
+```
+POST /v2/submit
+Content-Type: application/json
+
+{
+  "repository": "https://github.com/my-org/my-capability"
+}
+```
+
+**Response (202 Accepted):**
+
+```json
+{
+  "status": "accepted",
+  "repository": "https://github.com/my-org/my-capability",
+  "message": "Capability submission queued for indexing"
+}
+```
+
+The capability will appear in search results once indexing completes.
+
 ## Step 4: Verify Your Publisher Identity
 
 When the GitHub App first discovers your capability, it's listed with trust state `discovered`. Ownership verification and trust state progression are managed by the Exchange layer (see `capacium-exchange` repo).
