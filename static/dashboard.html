@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Capacium Universe</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 24px; min-height: 100vh; }
+  h1 { font-size: 20px; margin-bottom: 20px; color: #58a6ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #8b949e; margin-bottom: 12px; }
+  .stat { font-size: 32px; font-weight: 700; color: #f0f6fc; }
+  .stat.small { font-size: 16px; }
+  .label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .badge.ok { background: #0d3320; color: #56d364; }
+  .badge.warn { background: #3d2e00; color: #e3b341; }
+  .badge.err { background: #3d0f11; color: #f85149; }
+  .badge.neutral { background: #1c2a3a; color: #79c0ff; }
+  .badge.info { background: #0a1d33; color: #58a6ff; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; font-size: 12px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; position: sticky; top: 0; background: #161b22; }
+  td { color: #c9d1d9; }
+  .listings-table { max-height: 500px; overflow-y: auto; }
+  .listings-table table { table-layout: fixed; }
+  .listings-table td.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag-wrap { display: flex; flex-wrap: wrap; gap: 3px; }
+  .refreshed { font-size: 11px; color: #484f58; text-align: right; margin-top: 16px; }
+  .error-msg { color: #f85149; font-size: 12px; padding: 12px; background: #3d0f11; border-radius: 6px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>▸ Capacium Universe</h1>
+
+<div class="grid">
+  <div class="card">
+    <h2>Total Listings</h2>
+    <div class="stat" id="stat-total">—</div>
+    <div class="label">in exchange registry</div>
+  </div>
+  <div class="card">
+    <h2>Crawl Cycles</h2>
+    <div class="stat" id="stat-cycles">—</div>
+    <div class="label" id="stat-errors"></div>
+  </div>
+  <div class="card">
+    <h2>Findings</h2>
+    <div class="stat" id="stat-findings">—</div>
+    <div class="label">total discovered</div>
+  </div>
+  <div class="card">
+    <h2>Token Pool</h2>
+    <div class="stat small" id="stat-tokens">—</div>
+    <div class="label">active / expiring / expired</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>By Kind</h2>
+    <table><tbody id="by-kind"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>By Trust</h2>
+    <table><tbody id="by-trust"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Categories</h2>
+    <table><tbody id="by-category"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Source Activity</h2>
+    <table><tbody id="by-source"></tbody></table>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:24px">
+  <h2>All Listings <span style="font-weight:400;font-size:11px;color:#8b949e" id="listings-count"></span></h2>
+  <div class="listings-table">
+    <table>
+      <thead><tr>
+        <th style="width:18%">Name</th>
+        <th style="width:8%">Kind</th>
+        <th style="width:12%">Category</th>
+        <th style="width:8%">Sub</th>
+        <th style="width:28%">Tags</th>
+        <th style="width:10%">Trust</th>
+        <th style="width:10%">Score</th>
+        <th style="width:6%">FW</th>
+      </tr></thead>
+      <tbody id="by-listing"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="refreshed" id="refreshed">refreshing…</div>
+<div id="errors"></div>
+
+<script>
+const API = {
+  exchange: '/api/v1/stats',
+  listings: '/api/v1/listings',
+  categories: '/api/v1/categories',
+  metrics: '/metrics',
+};
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  const text = await r.text();
+  try { return JSON.parse(text); } catch {
+    const out = {};
+    for (const line of text.split('\n')) {
+      if (line.startsWith('#') || !line.trim()) continue;
+      const m = line.match(/^(\w+)\s+(.+)$/);
+      if (m) out[m[1]] = !isNaN(m[2]) ? Number(m[2]) : m[2];
+    }
+    return out;
+  }
+}
+
+function parseMetrics(m) {
+  return {
+    cycles: m.crawl_cycles_total || 0,
+    errors: m.crawl_errors_total || 0,
+    findings: m.findings_discovered_total || 0,
+    github_skills: m.github_skills_discovered || 0,
+    github_mcp: m.github_mcp_discovered || 0,
+    skills_sh: m.skills_sh_scraped_total || 0,
+    mcpmarket: m.mcpmarket_scraped_total || 0,
+    skillsmp: m.skillsmp_scraped_total || 0,
+    dedup_hits: m.dedup_hits_total || 0,
+    dedup_misses: m.dedup_misses_total || 0,
+    token_active: m.token_pool_active != null ? m.token_pool_active : null,
+    token_expiring: m.token_pool_expiring_soon != null ? m.token_pool_expiring_soon : null,
+    token_expired: m.token_pool_expired != null ? m.token_pool_expired : null,
+  };
+}
+
+async function refresh() {
+  const errs = document.getElementById('errors');
+  errs.innerHTML = '';
+
+  try {
+    const stats = await fetchJSON(API.exchange);
+    document.getElementById('stat-total').textContent = stats.total || 0;
+    document.getElementById('by-kind').innerHTML = Object.entries(stats.by_kind || {}).map(([k,v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+    document.getElementById('by-trust').innerHTML = Object.entries(stats.by_trust || {}).map(([k,v]) => `<tr><td><span class="badge ${k==='discovered'?'neutral':k==='audited'?'warn':k==='verified'?'ok':k==='signed'?'ok':'neutral'}">${k}</span></td><td>${v}</td></tr>`).join('');
+  } catch(e) { errs.innerHTML += `<div class="error-msg">Exchange: ${e.message}</div>`; }
+
+  try {
+    const cats = await fetchJSON(API.categories);
+    document.getElementById('by-category').innerHTML = (cats.categories || []).map(c => `<tr><td>${c.name}</td><td>${c.count}</td></tr>`).join('');
+  } catch(e) {}
+
+  try {
+    const m = parseMetrics(await fetchJSON(API.metrics));
+    document.getElementById('stat-cycles').textContent = m.cycles;
+    document.getElementById('stat-errors').textContent = m.errors > 0 ? `${m.errors} errors` : '';
+
+    const src = document.getElementById('by-source');
+    src.innerHTML = [
+      ['skills.sh', m.skills_sh, 'MEDIUM'],
+      ['mcpmarket', m.mcpmarket, 'MEDIUM'],
+      ['skillsmp', m.skillsmp, 'MEDIUM'],
+      ['GitHub skills', m.github_skills, 'LOW'],
+      ['GitHub MCP', m.github_mcp, 'LOW'],
+    ].map(([name, val, prio]) => `<tr><td>${name} <span class="badge neutral">${prio}</span></td><td>${val}</td></tr>`).join('');
+
+    // Token pool: use actual values or show check state
+    const tpA = m.token_active != null ? m.token_active : '?';
+    const tpE = m.token_expiring != null ? m.token_expiring : '?';
+    const tpX = m.token_expired != null ? m.token_expired : '?';
+    const allUnknown = m.token_active == null && m.token_expiring == null && m.token_expired == null;
+    const tokEl = document.getElementById('stat-tokens');
+    tokEl.innerHTML = allUnknown ? '—' : `<span class="badge ok">${tpA}</span> / <span class="badge ${tpE>0?'warn':'ok'}">${tpE}</span> / <span class="badge ${tpX>0?'err':'ok'}">${tpX}</span>`;
+    tokEl.className = 'stat small';
+
+    document.getElementById('stat-findings').textContent = m.findings;
+  } catch(e) { errs.innerHTML += `<div class="error-msg">Crawler: ${e.message}</div>`; }
+
+  try {
+    const listData = await fetchJSON(API.listings);
+    document.getElementById('listings-count').textContent = `(${listData.total} total)`;
+    document.getElementById('by-listing').innerHTML = (listData.listings || []).map(l => {
+      const tags = (l.tags || []).slice(0, 6).map(t => `<span class="badge info">${t}</span>`).join('');
+      const fw = (l.target_frameworks || []).slice(0, 2).map(f => `<span class="badge info">${f}</span>`).join('');
+      return `<tr>
+        <td class="name" title="${l.canonical_name}">${l.canonical_name}</td>
+        <td><span class="badge neutral">${l.package_type}</span></td>
+        <td>${l.primary_category ? `<span class="badge neutral">${l.primary_category}</span>` : '—'}</td>
+        <td>${l.subcategory || '—'}</td>
+        <td><div class="tag-wrap">${tags || '—'}</div></td>
+        <td><span class="badge ${l.trust_state==='discovered'?'neutral':l.trust_state==='audited'?'warn':'ok'}">${l.trust_state}</span></td>
+        <td>${l.quality_score != null ? l.quality_score.toFixed(0) : '—'}</td>
+        <td>${fw || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {}
+
+  document.getElementById('refreshed').textContent = `updated ${new Date().toLocaleTimeString()}`;
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

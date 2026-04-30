@@ -179,3 +179,27 @@ Capacium is distributed across multiple repos under the `Capacium` org.
 - `cap install` runs a pre-flight check; `--skip-runtime-check` bypasses
 - `cap doctor` reports per-capability runtime health
 - `cap runtimes list` / `cap runtimes install <name>` inspect or print install hints
+
+## Pre-Commit Checklist
+
+Before committing to `capacium` (core), you MUST run locally:
+
+```bash
+ruff check src/ --fix && pytest tests/ -q
+```
+
+Before tagging a release, verify README version references match pyproject.toml:
+
+```bash
+python3 -c "
+import pathlib, re
+v = re.search(r'^version\s*=\s*\"([^\"]+)\"', pathlib.Path('pyproject.toml').read_text(), re.MULTILINE).group(1)
+readme = pathlib.Path('README.md').read_text()
+expected = {f'@v{v}', f'cap:{v}'}
+missing = [n for n in expected if n not in readme]
+assert not missing, f'README missing: {missing}'
+print(f'README OK for v{v}')
+"
+```
+
+Never push a tag before CI passes on main. The correct order is: commit → push → wait for CI green → tag → push tag.

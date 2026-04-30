@@ -202,7 +202,7 @@ class TestInstallFromSourceFlag:
         )
         assert result is False
         out = capsys.readouterr().out
-        assert "not found" not in out
+        assert "does not appear to be a valid capability" in out
 
 
 class TestFetchRemoteTags:

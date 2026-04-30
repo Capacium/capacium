@@ -34,29 +34,54 @@ def install_capability(
     version_spec = spec["version"]
     cap_id = f"{owner}/{cap_name}"
 
+    storage = StorageManager()
+    registry = Registry()
+
+    # ── Check for updates vs registry if already installed ──────────
+    existing = registry.get_capability(cap_id, version_spec)
+    if existing:
+        from ..registry_client import RegistryClient
+        client = RegistryClient.from_config()
+        try:
+            remote = client.get_capability(cap_id)
+            if remote and remote.version != existing.version:
+                print(f"Update available: {cap_id} {existing.version} → {remote.version}")
+                print(f"  Run: cap update {cap_id}")
+        except Exception:
+            pass
+
+    # ── Resolve source ─────────────────────────────────────────────
     source_url = None
-    if source_dir is None:
-        cwd = Path.cwd()
-        manifest = Manifest.detect_from_directory(cwd)
-        if manifest.name == cwd.name and manifest.version == "1.0.0" and not (cwd / "capability.yaml").exists():
-            print(f"No capability source specified and current directory ({cwd}) does not appear to be a valid capability.")
-            print("Usage: cap install <owner/name> --source <path|url|owner/repo>")
-            return False
-        source_dir = cwd
-    else:
+    if source_dir is not None:
         source_raw = str(source_dir)
-        resolved = _resolve_source(source_raw, version_spec=version_spec)
-        if resolved is None:
-            return False
-        source_dir, source_url = resolved
+        if _is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw):
+            resolved = _resolve_source(source_raw, version_spec=version_spec)
+            if resolved is None:
+                return False
+            source_dir, source_url = resolved
+    else:
+        # No --source flag: try registry fetch
+        source_dir, source_url = _fetch_from_registry(
+            cap_id=cap_id,
+            cap_name=cap_name,
+            owner=owner,
+            version_spec=version_spec,
+            storage=storage,
+        )
+        if source_dir is None:
+            # Fallback to current directory
+            cwd = Path.cwd()
+            manifest = Manifest.detect_from_directory(cwd)
+            if manifest.name == cwd.name and manifest.version == "1.0.0" and not (cwd / "capability.yaml").exists():
+                print(f"No capability source specified and current directory ({cwd}) does not appear to be a valid capability.")
+                print("Usage: cap install <owner/name> [--source <path|url|owner/repo>]")
+                return False
+            source_dir = cwd
 
     if version_spec in ["latest", "stable"]:
         version = VersionManager.detect_version(source_dir)
     else:
         version = version_spec
-
-    storage = StorageManager()
-    registry = Registry()
 
     existing = registry.get_capability(cap_id, version)
     if existing:
@@ -439,3 +464,86 @@ def _preflight_runtimes(manifest: Manifest) -> bool:
         return True
     print(format_failure_report(statuses))
     return False
+
+
+def _fetch_from_registry(
+    cap_id: str,
+    cap_name: str,
+    owner: str,
+    version_spec: str,
+    storage: StorageManager,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Fetch a capability from the configured Exchange registry.
+
+    Resolves the best version from the registry, downloads it into the
+    cache (~/.capacium/packages/owner/name/version/), and returns the
+    cache path + source URL.
+
+    Returns (None, None) if the capability is not found in the registry.
+    """
+    from ..registry_client import RegistryClient
+
+    client = RegistryClient()
+    try:
+        remote = client.get_detail(f"{owner}/{cap_name}")
+    except Exception as e:
+        print(f"  Registry lookup failed: {e}")
+        return None, None
+
+    if remote is None:
+        print(f"  Capability '{cap_id}' not found in registry.")
+        return None, None
+
+    best_version = remote.version
+    if version_spec not in ("latest", "stable", "") and version_spec != best_version:
+        # Version specified explicitly — check if available
+        if version_spec in (remote.versions or []):
+            best_version = version_spec
+        else:
+            print(f"  Version {version_spec} not found in registry. Available: {', '.join(remote.versions or [best_version])}")
+            return None, None
+
+    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+    if cache_dir.exists():
+        print(f"  Using cached {cap_id}@{best_version}")
+        return cache_dir, remote.repository
+
+    repository = remote.repository
+    if not repository:
+        print(f"  No source repository for {cap_id}@{best_version}")
+        return None, None
+
+    repo_dir = _clone_registry_repo(repository, best_version)
+    if repo_dir is None:
+        return None, None
+
+    # Copy into cache
+    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    shutil.copytree(repo_dir, cache_dir)
+    shutil.rmtree(repo_dir.parent, ignore_errors=True)
+    return cache_dir, repository
+
+
+def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
+    """Clone a repository from URL into temp + return path."""
+    import tempfile
+
+    tag = version if version.startswith("v") else f"v{version}"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cap-registry-"))
+    clone_args = ["git", "clone", "--depth=1", "--branch", tag, repo_url, str(tmp_dir / "repo")]
+
+    print(f"  Fetching {repo_url}@{version}...")
+    try:
+        result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            print(f"  Clone failed: {result.stderr.strip()}")
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"  Clone failed: {e}")
+        return None
+
+    return tmp_dir / "repo"
