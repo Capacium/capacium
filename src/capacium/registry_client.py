@@ -227,6 +227,13 @@ class RegistryClient:
             if "/" in canonical:
                 data.setdefault("owner", canonical.split("/", 1)[0])
                 data.setdefault("name", canonical.split("/", 1)[1])
+            versions_raw = data.get("versions", [])
+            if versions_raw and isinstance(versions_raw[0], dict):
+                data["version"] = versions_raw[0].get("version", "")
+                data["versions"] = [v.get("version", str(v)) for v in versions_raw]
+            trust_history = data.get("trust_history")
+            if trust_history and isinstance(trust_history, list):
+                data.setdefault("trust_breakdown", data.get("trust_breakdown", {}))
             return RegistryDetail(**{k: v for k, v in data.items() if k in RegistryDetail.__dataclass_fields__})
         except RegistryClientError as e:
             if "HTTP 404" in str(e):
