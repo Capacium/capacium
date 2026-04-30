@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -17,8 +18,10 @@ class SymlinkManager:
             if target.exists():
                 if target.is_symlink():
                     target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target)
                 else:
-                    return False
+                    target.unlink()
 
             target.symlink_to(source)
             return True
