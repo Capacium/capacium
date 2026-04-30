@@ -15,6 +15,12 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "junie": Path.home() / ".junie" / "skills",
 }
 
+FRAMEWORK_ALIASES: Dict[str, str] = {
+    "opencode-command": "opencode",
+    "claude-code-command": "claude-code",
+    "gemini-cli-command": "gemini-cli",
+}
+
 
 def _detect_claude_code() -> bool:
     return (Path.cwd() / "CLAUDE.md").exists() or (Path.home() / ".claude").is_dir()
@@ -69,12 +75,25 @@ def detect_active_frameworks() -> Set[str]:
     return {name for name, detector in FRAMEWORK_DETECTORS.items() if detector()}
 
 
+def _normalize_frameworks(frameworks: List[str]) -> List[str]:
+    """Resolve command-aliases (opencode-command → opencode) and deduplicate."""
+    seen = set()
+    result = []
+    for fw in frameworks:
+        fw = FRAMEWORK_ALIASES.get(fw, fw)
+        if fw not in seen:
+            seen.add(fw)
+            result.append(fw)
+    return result
+
+
 def resolve_frameworks(
     manifest_frameworks: Optional[List[str]],
     all_frameworks: bool = False,
     framework_filter: Optional[str] = None,
     preferred_frameworks: Optional[List[str]] = None,
 ) -> List[str]:
+    framework_filter = FRAMEWORK_ALIASES.get(framework_filter or "", framework_filter) or None
     if framework_filter:
         fw = framework_filter.strip().lower()
         if fw in FRAMEWORK_SKILLS_DIRS:
@@ -92,7 +111,7 @@ def resolve_frameworks(
     if preferred_frameworks:
         return list(preferred_frameworks)
     if manifest_frameworks:
-        return list(manifest_frameworks)
+        return _normalize_frameworks(list(manifest_frameworks))
     detected = sorted(detect_active_frameworks())
     if detected:
         return detected
