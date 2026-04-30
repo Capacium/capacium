@@ -125,8 +125,9 @@ class RegistryClient:
 
     def _build_registry_url(self, path: str, registry_url: Optional[str] = None) -> str:
         config_url = self._read_config_registry_url()
-        default = registry_url or config_url or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz/v2")
+        default = registry_url or config_url or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz")
         base = default.rstrip("/")
+        base = base.replace("/v2", "").replace("/v1", "")
         return f"{base}{path}"
 
     @staticmethod
