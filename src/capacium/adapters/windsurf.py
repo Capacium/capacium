@@ -2,11 +2,10 @@
 
 Config: ~/.codeium/windsurf/mcp_config.json
 """
-import shutil
 from pathlib import Path
 
 from ..storage import StorageManager
-from .base import FrameworkAdapter
+from .base import FrameworkAdapter, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
@@ -24,10 +23,7 @@ class WindsurfAdapter(FrameworkAdapter):
         return False
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         from ..manifest import Manifest
         manifest = Manifest.detect_from_directory(package_dir)

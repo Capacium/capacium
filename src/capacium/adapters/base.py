@@ -2,6 +2,17 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
+def ensure_package_dir(storage, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> Path:
+    """Copy source_dir → package_dir if they differ. Returns package_dir."""
+    package_dir = storage.get_package_dir(cap_name, version, owner=owner)
+    if source_dir.resolve() != package_dir.resolve():
+        import shutil
+        if package_dir.exists():
+            shutil.rmtree(package_dir)
+        shutil.copytree(source_dir, package_dir)
+    return package_dir
+
+
 class FrameworkAdapter(ABC):
     def install_capability(self, cap_name: str, version: str, source_dir: Path, owner: str = "global", kind: str = "skill") -> bool:
         if kind == "mcp-server":

@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, List
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
 from ..manifest import Manifest
-from .base import FrameworkAdapter
+from .base import FrameworkAdapter, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
@@ -35,10 +35,7 @@ class CursorAdapter(FrameworkAdapter):
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         link_path = self.skills_dir / cap_name
         success = self.symlink_manager.create_symlink(package_dir, link_path)
@@ -76,10 +73,7 @@ class CursorAdapter(FrameworkAdapter):
         )
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         manifest = Manifest.detect_from_directory(package_dir)
         mcp_meta = manifest.get_mcp_metadata()

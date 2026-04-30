@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter
+from .base import FrameworkAdapter, ensure_package_dir
 
 
 class OpenCodeAdapter(FrameworkAdapter):
@@ -17,11 +17,7 @@ class OpenCodeAdapter(FrameworkAdapter):
         self.opencode_skills_dir.mkdir(parents=True, exist_ok=True)
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         link_path = self.opencode_skills_dir / cap_name
         success = self.symlink_manager.create_symlink(package_dir, link_path)
@@ -58,7 +54,7 @@ class OpenCodeAdapter(FrameworkAdapter):
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         from .mcp_config_patcher import McpConfigPatcher
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
         if package_dir.exists() and package_dir.resolve() != source_dir.resolve():
             shutil.rmtree(package_dir)
         if package_dir.resolve() != source_dir.resolve():
@@ -132,10 +128,7 @@ class OpencodeCommandAdapter(FrameworkAdapter):
         self.commands_dir.mkdir(parents=True, exist_ok=True)
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner)
 
         md_files = sorted(package_dir.glob("*.md"))
         cmd_file = None

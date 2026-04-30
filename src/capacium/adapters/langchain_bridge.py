@@ -10,12 +10,11 @@ a standardized JSON tool definition that can be imported into
 agent orchestration frameworks.
 """
 import json
-import shutil
 from pathlib import Path
 from typing import Any, Dict
 
 from ..storage import StorageManager
-from .base import FrameworkAdapter
+from .base import FrameworkAdapter, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
@@ -49,10 +48,7 @@ class _LangChainBridgeBase(FrameworkAdapter):
 
     def _export_tool_def(self, cap_name: str, version: str, source_dir: Path, owner: str, kind: str) -> bool:
         """Generate and save a JSON tool definition."""
-        package_dir = self.storage.get_package_dir(cap_name, version, owner=owner)
-        if package_dir.exists():
-            shutil.rmtree(package_dir)
-        shutil.copytree(source_dir, package_dir)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         from ..manifest import Manifest
         manifest = Manifest.detect_from_directory(package_dir)
