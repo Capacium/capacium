@@ -131,13 +131,15 @@ class OpencodeCommandAdapter(FrameworkAdapter):
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner)
 
         md_files = sorted(package_dir.glob("*.md"))
+        # Skip SKILL.md files — those are loaded by the skills adapter, not as commands
+        command_files = [f for f in md_files if f.name != "SKILL.md"]
         cmd_file = None
-        for f in md_files:
+        for f in command_files:
             if f.stem == cap_name:
                 cmd_file = f
                 break
-        if cmd_file is None and md_files:
-            cmd_file = md_files[0]
+        if cmd_file is None and command_files:
+            cmd_file = command_files[0]
 
         if cmd_file is None or not cmd_file.exists():
             print(f"  Warning: No .md file found for command '{cap_name}'")
