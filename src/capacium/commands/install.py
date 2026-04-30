@@ -594,9 +594,11 @@ def _fetch_from_registry(
             return None, None
 
     cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
-    if cache_dir.exists():
+    if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
         print(f"  Using cached {cap_id}@{best_version}")
         return cache_dir, remote.repository
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
 
     repository = remote.repository
     if not repository:
