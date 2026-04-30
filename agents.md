@@ -204,3 +204,42 @@ print(f'README OK for v{v}')
 ```
 
 Never push a tag before CI passes on main. The correct order is: commit → push → wait for CI green → tag → push tag.
+
+## Release Checklist
+
+Before releasing, the following MUST all match the target version:
+
+### 1. `pyproject.toml` version
+```bash
+rg '^version = ' pyproject.toml
+```
+
+### 2. `__init__.py` dynamic version
+`src/capacium/__init__.py` uses `importlib.metadata.version("capacium")` — ensure the installed package metadata matches. After `pip install -e .` the version comes from `pyproject.toml`.
+
+### 3. README references
+```bash
+rg '@v|cap:' README.md
+```
+
+### 4. CI must be green on the commit being tagged
+Never delete and re-create a tag. If a tag needs fixing, delete it, fix the issue, commit, wait for CI, then re-tag.
+
+## Homebrew Tap
+
+The Capacium Homebrew tap lives at:
+```
+/opt/homebrew/Library/Taps/capacium/homebrew-tap
+```
+(`capacium/homebrew-tap` — NOT `fusionAIze/homebrew-tap`)
+
+To bump the formula after a release:
+```bash
+TAP="/opt/homebrew/Library/Taps/capacium/homebrew-tap"
+# Download new tarball and compute SHA256
+curl -sSL "https://github.com/Capacium/capacium/archive/refs/tags/vX.Y.Z.tar.gz" -o /tmp/cap.tar.gz
+SHA=$(shasum -a 256 /tmp/cap.tar.gz | awk '{print $1}')
+# Edit Formula/capacium.rb: update url and sha256
+# Commit and push:
+cd "$TAP" && git add Formula/capacium.rb && git commit -m "chore(capacium): bump to vX.Y.Z" && git push origin main
+```
