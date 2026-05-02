@@ -46,6 +46,36 @@
 <body>
 <h1>▸ Capacium Universe</h1>
 
+<!-- Scheduler Panel -->
+<div class="card" style="margin-bottom:16px" id="scheduler-panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <span style="font-size:14px;font-weight:600">Scheduler</span>
+    <span style="font-size:12px;color:#3fb950" id="scheduler-status">—</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+    <div class="tier-card" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;text-align:center">
+      <div style="font-size:11px;color:#6e7681;margin-bottom:4px">HOT</div>
+      <div style="font-size:13px;font-weight:600" id="tier-hot-status">—</div>
+      <div style="font-size:11px;color:#6e7681;margin-top:2px" id="tier-hot-next">—</div>
+    </div>
+    <div class="tier-card" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;text-align:center">
+      <div style="font-size:11px;color:#6e7681;margin-bottom:4px">WARM</div>
+      <div style="font-size:13px;font-weight:600" id="tier-warm-status">—</div>
+      <div style="font-size:11px;color:#6e7681;margin-top:2px" id="tier-warm-next">—</div>
+    </div>
+    <div class="tier-card" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;text-align:center">
+      <div style="font-size:11px;color:#6e7681;margin-bottom:4px">COLD</div>
+      <div style="font-size:13px;font-weight:600" id="tier-cold-status">—</div>
+      <div style="font-size:11px;color:#6e7681;margin-top:2px" id="tier-cold-next">—</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button onclick="triggerCycle('HOT')" style="background:#238636;color:white;border:none;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">Trigger HOT</button>
+    <button onclick="triggerCycle('WARM')" style="background:#238636;color:white;border:none;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">Trigger WARM</button>
+    <button onclick="triggerCycle('COLD')" style="background:#238636;color:white;border:none;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">Trigger COLD</button>
+  </div>
+</div>
+
 <div class="grid">
   <div class="card">
     <h2>Total Listings</h2>
@@ -118,6 +148,26 @@
       </tr></thead>
       <tbody id="by-listing"></tbody>
     </table>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <h2 style="margin-bottom:0">Logs <span style="font-weight:400;font-size:11px;color:#8b949e" id="cnt-logs">—</span></h2>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:12px;color:#6e7681">Auto-refresh:</span>
+      <select id="log-refresh" onchange="changeLogRefresh()" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px">
+        <option value="0">Off</option>
+        <option value="5000">5s</option>
+        <option value="15000" selected>15s</option>
+        <option value="30000">30s</option>
+      </select>
+    </div>
+  </div>
+  <pre id="log-content" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;font-size:11px;font-family:monospace;max-height:600px;overflow-y:auto;line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:0">Loading...</pre>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button onclick="copyLogs()" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer">Copy All</button>
+    <button onclick="loadLogs()" style="background:#30363d;color:#c9d1d9;border:1px solid #484f58;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer">Refresh</button>
   </div>
 </div>
 
@@ -247,6 +297,9 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 5000);
+loadScheduler();
+setInterval(loadScheduler, 30000);
+loadLogs();
 
 document.getElementById('submit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -297,6 +350,88 @@ document.getElementById('submit-form').addEventListener('submit', async (e) => {
     result.innerHTML = `<span style="color:#f85149;">Network error: ${err.message}</span>`;
   }
 });
+
+let logTimer = null;
+
+async function loadLogs() {
+  const el = document.getElementById('log-content');
+  el.textContent = 'Loading...';
+  try {
+    const r = await fetch(`${API.exchange.split('/v2/')[0]}/v2/crawler/logs?lines=200`);
+    const d = await r.json();
+    if (d.lines && d.lines.length > 0) {
+      el.innerHTML = d.lines.map(line => {
+        let cls = '#6e7681';
+        if (line.includes('[ERROR]') || line.includes('ERROR') || line.includes('Error')) cls = '#f85149';
+        else if (line.includes('[WARN]') || line.includes('WARN') || line.includes('Warning')) cls = '#d29922';
+        return `<span style="color:${cls}">${line.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+      }).join('\n');
+      document.getElementById('cnt-logs').textContent = d.count;
+    } else {
+      el.textContent = 'No log lines available.';
+    }
+  } catch(e) {
+    el.textContent = 'Could not load logs: ' + e.message;
+  }
+}
+
+function changeLogRefresh() {
+  if (logTimer) clearInterval(logTimer);
+  const ms = parseInt(document.getElementById('log-refresh').value);
+  if (ms > 0) logTimer = setInterval(loadLogs, ms);
+}
+
+function copyLogs() {
+  const el = document.getElementById('log-content');
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  }).catch(() => alert('Copy failed'));
+}
+
+async function loadScheduler() {
+  try {
+    const r = await fetch(`${API.exchange.split('/v2/')[0]}/v2/crawler/status`);
+    const d = await r.json();
+    document.getElementById('scheduler-status').textContent = d.scheduler?.status || 'Active';
+    for (const tier of ['HOT','WARM','COLD']) {
+      const tierData = d.scheduler?.tiers?.[tier.toLowerCase()] || {};
+      const statusEl = document.getElementById(`tier-${tier.toLowerCase()}-status`);
+      statusEl.textContent = tierData.running ? 'Running' : 'Idle';
+      statusEl.style.color = tierData.running ? '#3fb950' : '#6e7681';
+      const next = tierData.next_cycle_at;
+      if (next) {
+        const diff = Math.max(0, Math.floor((new Date(next) - Date.now()) / 1000));
+        const m = Math.floor(diff / 60);
+        const s = diff % 60;
+        document.getElementById(`tier-${tier.toLowerCase()}-next`).textContent = `next: ${m}m ${s}s`;
+      } else {
+        const intervals = {hot: 900, warm: 3600, cold: 21600};
+        const sec = intervals[tier.toLowerCase()] || 3600;
+        const m = Math.floor(sec / 60);
+        document.getElementById(`tier-${tier.toLowerCase()}-next`).textContent = `every ${m}m`;
+      }
+    }
+  } catch(e) {
+    document.getElementById('scheduler-status').textContent = 'Unavailable';
+  }
+}
+
+async function triggerCycle(tier) {
+  const r = await fetch(`${API.exchange.split('/v2/')[0]}/v2/crawler/cycle`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tier: tier})
+  });
+  if (r.ok) {
+    alert(`✓ ${tier} cycle triggered`);
+    setTimeout(loadScheduler, 2000);
+  } else {
+    alert(`Failed to trigger ${tier} cycle`);
+  }
+}
 </script>
 </body>
 </html>
