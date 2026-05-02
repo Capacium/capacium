@@ -27,6 +27,17 @@
   .listings-table { max-height: 500px; overflow-y: auto; }
   .listings-table table { table-layout: fixed; }
   .listings-table td.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .star-cell { color: #e3b341; font-weight: 600; font-size: 11px; }
+  .kind-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .kind-tool { background: #1f2233; color: #79c0ff; }
+  .kind-skill { background: #1c3323; color: #56d364; }
+  .kind-mcp-server { background: #2e1c33; color: #c689c6; }
+  .kind-prompt { background: #33270c; color: #e3b341; }
+  .kind-bundle { background: #1c1c33; color: #a5a6f6; }
+  .kind-agent { background: #332020; color: #f85149; }
+  .kind-other { background: #1c2a3a; color: #8b949e; }
+  .detail-link { color: #58a6ff; text-decoration: none; font-size: 11px; }
+  .detail-link:hover { text-decoration: underline; }
   .tag-wrap { display: flex; flex-wrap: wrap; gap: 3px; }
   .refreshed { font-size: 11px; color: #484f58; text-align: right; margin-top: 16px; }
   .error-msg { color: #f85149; font-size: 12px; padding: 12px; background: #3d0f11; border-radius: 6px; margin-top: 8px; }
@@ -42,14 +53,14 @@
     <div class="label">in exchange registry</div>
   </div>
   <div class="card">
+    <h2>GitHub ★</h2>
+    <div class="stat" id="stat-stars">—</div>
+    <div class="label" id="stat-stars-pct"></div>
+  </div>
+  <div class="card">
     <h2>Crawl Cycles</h2>
     <div class="stat" id="stat-cycles">—</div>
     <div class="label" id="stat-errors"></div>
-  </div>
-  <div class="card">
-    <h2>Findings</h2>
-    <div class="stat" id="stat-findings">—</div>
-    <div class="label">total discovered</div>
   </div>
   <div class="card">
     <h2>Token Pool</h2>
@@ -95,14 +106,15 @@
   <div class="listings-table">
     <table>
       <thead><tr>
-        <th style="width:18%">Name</th>
-        <th style="width:8%">Kind</th>
+        <th style="width:20%">Name</th>
+        <th style="width:7%">Kind</th>
+        <th style="width:6%">★</th>
         <th style="width:12%">Category</th>
-        <th style="width:8%">Sub</th>
-        <th style="width:28%">Tags</th>
-        <th style="width:10%">Trust</th>
-        <th style="width:10%">Score</th>
+        <th style="width:22%">Tags</th>
+        <th style="width:8%">Trust</th>
+        <th style="width:6%">Score</th>
         <th style="width:6%">FW</th>
+        <th style="width:5%">▸</th>
       </tr></thead>
       <tbody id="by-listing"></tbody>
     </table>
@@ -114,9 +126,8 @@
 
 <script>
 const API = {
-  exchange: '/api/v1/stats',
-  listings: '/api/v1/listings',
-  categories: '/api/v1/categories',
+  exchange: 'https://api.capacium.xyz/v2/stats',
+  listings: 'https://api.capacium.xyz/v2/listings?limit=50',
   metrics: '/metrics',
 };
 
@@ -158,44 +169,18 @@ async function refresh() {
   errs.innerHTML = '';
 
   try {
-    const s = await fetchJSON(API.stats);
-    document.getElementById('stat-listings').textContent = s.listings;
-    document.getElementById('stat-categories').textContent = s.categories;
-    document.getElementById('stat-list-publishers').textContent = s.publishers;
-
-    document.getElementById('stat-cap-kind-skill').textContent = (s.by_kind || {}).skill || 0;
-    document.getElementById('stat-cap-kind-bundle').textContent = (s.by_kind || {}).bundle || 0;
-    document.getElementById('stat-cap-kind-tool').textContent = (s.by_kind || {}).tool || 0;
-    document.getElementById('stat-cap-kind-mcp-server').textContent = (s.by_kind || {})['mcp-server'] || 0;
-    document.getElementById('stat-cap-kind-other').textContent = s.by_kind_other || 0;
-
-    document.getElementById('stat-trust-discovered').textContent = (s.by_trust || {}).discovered || 0;
-    document.getElementById('stat-trust-audited').textContent = (s.by_trust || {}).audited || 0;
-    document.getElementById('stat-trust-verified').textContent = (s.by_trust || {}).verified || 0;
-    document.getElementById('stat-trust-signed').textContent = (s.by_trust || {}).signed || 0;
-
-    const tokEl = document.getElementById('stat-tokens');
-    tokEl.textContent = `${s.active_tokens || 0} / ${s.expiring_soon || 0} / ${s.expired_tokens || 0}`;
-    tokEl.className = s.expired_tokens ? 'stat small' : 'stat small';
-    if (s.expired_tokens) tokEl.style.color = '#f85149';
-    else if (s.expiring_soon) tokEl.style.color = '#e3b341';
-    else tokEl.style.color = '#f0f6fc';
-
-    document.getElementById('stat-findings').textContent = m.findings;
-  const errs = document.getElementById('errors');
-  errs.innerHTML = '';
-
-  try {
     const stats = await fetchJSON(API.exchange);
     document.getElementById('stat-total').textContent = stats.total || 0;
     document.getElementById('by-kind').innerHTML = Object.entries(stats.by_kind || {}).map(([k,v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
-    document.getElementById('by-trust').innerHTML = Object.entries(stats.by_trust || {}).map(([k,v]) => `<tr><td><span class="badge ${k==='discovered'?'neutral':k==='audited'?'warn':k==='verified'?'ok':k==='signed'?'ok':'neutral'}">${k}</span></td><td>${v}</td></tr>`).join('');
+    document.getElementById('by-trust').innerHTML = Object.entries(stats.by_trust || {}).map(([k,v]) => `<tr><td><span class="badge ${k==='discovered'?'neutral':k==='audited'?'warn':'ok'}">${k}</span></td><td>${v}</td></tr>`).join('');
+    
+    // GitHub enrichment stats
+    const enriched = stats.enriched_count || 0;
+    const total = stats.total || 1;
+    const maxStars = stats.top_github_stars || 0;
+    document.getElementById('stat-stars').textContent = maxStars.toLocaleString();
+    document.getElementById('stat-stars-pct').textContent = `${enriched} enriched (${Math.round(enriched*100/total)}%) — top: ${maxStars.toLocaleString()}★`;
   } catch(e) { errs.innerHTML += `<div class="error-msg">Exchange: ${e.message}</div>`; }
-
-  try {
-    const cats = await fetchJSON(API.categories);
-    document.getElementById('by-category').innerHTML = (cats.categories || []).map(c => `<tr><td>${c.name}</td><td>${c.count}</td></tr>`).join('');
-  } catch(e) {}
 
   try {
     const m = parseMetrics(await fetchJSON(API.metrics));
@@ -227,19 +212,34 @@ async function refresh() {
     const listData = await fetchJSON(API.listings);
     document.getElementById('listings-count').textContent = `(${listData.total} total)`;
     document.getElementById('by-listing').innerHTML = (listData.listings || []).map(l => {
-      const tags = (l.tags || []).slice(0, 6).map(t => `<span class="badge info">${t}</span>`).join('');
-      const fw = (l.target_frameworks || []).slice(0, 2).map(f => `<span class="badge info">${f}</span>`).join('');
+      const tags = (l.tags || []).slice(0, 4).map(t => `<span class="badge info">${t}</span>`).join('');
+      const fw = (l.frameworks || l.target_frameworks || []).slice(0, 2).map(f => `<span class="badge info">${f}</span>`).join('');
+      const kind = l.kind || l.package_type || '?';
+      const kc = kind === 'tool' ? 'kind-tool' : kind === 'skill' ? 'kind-skill' : kind === 'mcp-server' ? 'kind-mcp-server' : kind === 'prompt' ? 'kind-prompt' : kind === 'bundle' ? 'kind-bundle' : kind === 'agent' ? 'kind-agent' : 'kind-other';
+      const stars = l.github_stars ? `<span class="star-cell">${l.github_stars >= 1000 ? (l.github_stars/1000).toFixed(1)+'k' : l.github_stars}★</span>` : '—';
+      const nameDisplay = l.canonical_name.length > 35 ? l.canonical_name.slice(0, 32) + '...' : l.canonical_name;
       return `<tr>
-        <td class="name" title="${l.canonical_name}">${l.canonical_name}</td>
-        <td><span class="badge neutral">${l.package_type}</span></td>
+        <td class="name" title="${l.canonical_name}">${nameDisplay}</td>
+        <td><span class="kind-tag ${kc}">${kind}</span></td>
+        <td>${stars}</td>
         <td>${l.primary_category ? `<span class="badge neutral">${l.primary_category}</span>` : '—'}</td>
-        <td>${l.subcategory || '—'}</td>
         <td><div class="tag-wrap">${tags || '—'}</div></td>
-        <td><span class="badge ${l.trust_state==='discovered'?'neutral':l.trust_state==='audited'?'warn':'ok'}">${l.trust_state}</span></td>
+        <td><span class="badge ${l.trust_state==='discovered'?'neutral':'ok'}">${l.trust_state||'discovered'}</span></td>
         <td>${l.quality_score != null ? l.quality_score.toFixed(0) : '—'}</td>
         <td>${fw || '—'}</td>
+        <td><a class="detail-link" href="https://api.capacium.xyz/v2/capabilities/${encodeURIComponent(l.canonical_name)}" target="_blank">↗</a></td>
       </tr>`;
     }).join('');
+
+    const catMap = {};
+    (listData.listings || []).forEach(l => {
+      if (l.primary_category) {
+        catMap[l.primary_category] = (catMap[l.primary_category] || 0) + 1;
+      }
+    });
+    document.getElementById('by-category').innerHTML = Object.entries(catMap)
+      .sort((a,b) => b[1] - a[1])
+      .map(([name, count]) => `<tr><td>${name}</td><td>${count}</td></tr>`).join('') || '<tr><td colspan="2">—</td></tr>';
   } catch(e) {}
 
   document.getElementById('refreshed').textContent = `updated ${new Date().toLocaleTimeString()}`;

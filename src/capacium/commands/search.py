@@ -1,8 +1,10 @@
+import json
 from typing import List, Optional
 from ..registry import Registry
 from ..models import Kind
 from ..registry_client import RegistryClient, RegistryResult, RegistryClientError
 from ..utils.config import get_registry_url
+from ..utils.table import format_table
 
 
 _TRUST_BADGES = {
@@ -11,6 +13,20 @@ _TRUST_BADGES = {
     "signed": "\U0001f535",
     "untrusted": "\U0001f534",
 }
+
+
+def _parse_listings(listings: List[dict]) -> List[RegistryResult]:
+    results = []
+    for r in listings:
+        r = dict(r)
+        canonical = r.get("canonical_name", "")
+        if "/" in canonical and "owner" not in r:
+            r["owner"], r["name"] = canonical.split("/", 1)
+        r.setdefault("owner", r.get("owner", ""))
+        r.setdefault("name", r.get("name", canonical))
+        r.setdefault("version", r.get("version", "0.0.0"))
+        results.append(RegistryResult(**{k: v for k, v in r.items() if k in RegistryResult.__dataclass_fields__}))
+    return results
 
 
 def _badge(trust: str) -> str:
@@ -69,13 +85,14 @@ def search_capabilities(query: str, kind: Optional[str] = None, registry_url: Op
                         min_trust: Optional[str] = None, tag: Optional[List[str]] = None,
                         mcp_client: Optional[str] = None, publisher: Optional[str] = None,
                         sort: Optional[str] = None, json_output: bool = False,
-                        limit: int = 50, framework: Optional[str] = None):
+                        limit: int = 50, framework: Optional[str] = None,
+                        min_stars: Optional[int] = None):
     effective_url = registry_url or get_registry_url()
 
     client = RegistryClient()
     try:
         tag_value = tag[0] if tag else None
-        results = client.search(
+        raw = client.search_raw(
             query,
             kind=kind,
             registry_url=effective_url,
@@ -85,24 +102,28 @@ def search_capabilities(query: str, kind: Optional[str] = None, registry_url: Op
             tag=tag_value,
             sort=sort or "relevance",
             limit=limit,
+            min_stars=min_stars,
         )
+        listings = raw.get("listings", [])
     except RegistryClientError as e:
         print(f"\u26a0\ufe0f  Exchange not reachable ({e})")
         print("   Falling back to local registry...\n")
         _search_local(query, kind)
         return
 
-    if not results:
+    if json_output:
+        print(json.dumps(listings, indent=2, default=str))
+        return
+
+    if not listings:
         print(f"\U0001f50d Results for \"{query}\" \u2014 0 found")
         return
 
-    print(f"\U0001f50d Results for \"{query}\" \u2014 {len(results)} found\n")
-    for r in results:
-        cap_id = f"{r.owner}/{r.name}"
-        install_cmd = f"cap install {cap_id}"
-        info_cmd = f"cap info {cap_id}"
-        print(_format_result_card(r, install_cmd, info_cmd))
-        print()
+    total = raw.get("total", len(listings))
+    table = format_table(listings)
+    print(table)
+    print()
+    print(f"\033[2mShowing {len(listings)} of {total} results, sorted by {raw.get('sort', sort or 'relevance')}\033[0m")
 
 
 def cap_info(cap_spec: str, registry_url: Optional[str] = None):

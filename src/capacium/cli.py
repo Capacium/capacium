@@ -85,10 +85,16 @@ def main():
     search_parser.add_argument("--tag", action="append", help="Filter by tag (repeatable)")
     search_parser.add_argument("--mcp-client", help="Filter by MCP client compatibility")
     search_parser.add_argument("--publisher", help="Filter by publisher ID")
-    search_parser.add_argument("--sort", choices=["relevance", "name", "trust", "updated"], default="relevance")
+    search_parser.add_argument("--sort", choices=["stars", "trust", "score", "name", "updated"], default="stars")
     search_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    search_parser.add_argument("--min-stars", type=int, help="Filter by minimum GitHub stars")
     search_parser.add_argument("--limit", type=int, default=50, help="Max results")
     search_parser.add_argument("--framework", help="Filter by target framework (e.g. cursor, claude-code)")
+
+    browse_parser = subparsers.add_parser("browse", help="Interactive terminal UI for browsing capabilities")
+    browse_parser.add_argument("--sort", choices=["stars", "score", "name", "updated"], default="stars")
+    browse_parser.add_argument("--min-stars", type=int, help="Filter by minimum GitHub stars")
+    browse_parser.add_argument("--kind", help="Filter by kind")
 
     info_parser = subparsers.add_parser("info", help="Show detailed information about a capability")
     info_parser.add_argument("capability", help="Capability specification (owner/name)")
@@ -242,6 +248,16 @@ def main():
                 publisher=args.publisher, sort=args.sort,
                 json_output=args.json, limit=args.limit,
                 framework=getattr(args, 'framework', None),
+                min_stars=getattr(args, 'min_stars', None),
+            )
+            sys.exit(0)
+
+        elif args.command == "browse":
+            from .commands.browse import browse_capabilities
+            browse_capabilities(
+                sort=getattr(args, "sort", "stars"),
+                min_stars=getattr(args, "min_stars", None),
+                kind=getattr(args, "kind", None),
             )
             sys.exit(0)
 

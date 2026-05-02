@@ -240,7 +240,7 @@ class TestRegistryClientWithKindFilter:
     def test_search_kind_bundle(self):
         client = RegistryClient()
         data = {
-            "results": [
+            "listings": [
                 {"name": "skillweave", "owner": "capacium", "version": "0.5.0", "kind": "bundle"},
             ]
         }
@@ -254,7 +254,7 @@ class TestRegistryClientWithKindFilter:
     def test_search_kind_tool(self):
         client = RegistryClient()
         data = {
-            "results": [
+            "listings": [
                 {"name": "my-tool", "owner": "alice", "version": "1.0.0", "kind": "tool"},
             ]
         }
@@ -268,10 +268,10 @@ class TestRegistryClientWithKindFilter:
 
         def mock_urlopen(req, *a, **kw):
             if "kind=bundle" in req.full_url:
-                return FakeResponse({"results": [
+                return FakeResponse({"listings": [
                     {"name": "bundle-a", "owner": "alice", "version": "1.0.0", "kind": "bundle"},
                 ]})
-            return FakeResponse({"results": [
+            return FakeResponse({"listings": [
                 {"name": "skill-a", "owner": "alice", "version": "1.0.0", "kind": "skill"},
             ]})
 
@@ -292,7 +292,7 @@ class TestRegistryClientWithKindFilter:
     def test_registry_result_kind_filter_works(self):
         client = RegistryClient()
         data = {
-            "results": [
+            "listings": [
                 {"name": "cap-a", "owner": "alice", "version": "1.0.0", "kind": "skill"},
                 {"name": "cap-b", "owner": "alice", "version": "1.0.0", "kind": "bundle"},
                 {"name": "cap-c", "owner": "alice", "version": "1.0.0", "kind": "tool"},

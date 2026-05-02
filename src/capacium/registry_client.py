@@ -154,34 +154,25 @@ class RegistryClient:
         tag: Optional[str] = None,
         sort: str = "relevance",
         limit: int = 50,
+        min_stars: Optional[int] = None,
     ) -> List[RegistryResult]:
-        url = self._build_registry_url("/v2/search", registry_url)
-        params = []
-        if query:
-            params.append(f"q={urllib.parse.quote(query)}")
-        if kind:
-            params.append(f"kind={urllib.parse.quote(kind)}")
-        if framework:
-            params.append(f"framework={urllib.parse.quote(framework)}")
-        if trust:
-            params.append(f"trust={urllib.parse.quote(trust)}")
-        if category:
-            params.append(f"category={urllib.parse.quote(category)}")
-        if tag:
-            params.append(f"tag={urllib.parse.quote(tag)}")
-        if sort:
-            params.append(f"sort={urllib.parse.quote(sort)}")
-        if limit:
-            params.append(f"limit={limit}")
-        if params:
-            url += "?" + "&".join(params)
-
-        data = self._request(url)
-        raw = data.get("results", []) if isinstance(data, dict) else data
-        if isinstance(raw, dict):
-            raw = raw.get("results", [])
+        raw = self.search_raw(
+            query,
+            kind=kind,
+            registry_url=registry_url,
+            framework=framework,
+            trust=trust,
+            category=category,
+            tag=tag,
+            sort=sort,
+            limit=limit,
+            min_stars=min_stars,
+        )
+        listings = raw.get("listings", []) if isinstance(raw, dict) else raw
+        if isinstance(listings, dict):
+            listings = listings.get("listings", [])
         results = []
-        for r in raw:
+        for r in listings:
             r = dict(r)
             canonical = r.get("canonical_name", "")
             if "/" in canonical and "owner" not in r:
@@ -191,6 +182,43 @@ class RegistryClient:
             r.setdefault("version", r.get("version", "0.0.0"))
             results.append(RegistryResult(**{k: v for k, v in r.items() if k in RegistryResult.__dataclass_fields__}))
         return results
+
+    def search_raw(
+        self,
+        query: str,
+        kind: Optional[str] = None,
+        registry_url: Optional[str] = None,
+        framework: Optional[str] = None,
+        trust: Optional[str] = None,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+        sort: str = "relevance",
+        limit: int = 50,
+        min_stars: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        url = self._build_registry_url("/v2/listings", registry_url)
+        params = []
+        if query:
+            params.append(f"q={urllib.parse.quote(query)}")
+        if kind:
+            params.append(f"kind={urllib.parse.quote(kind)}")
+        if framework:
+            params.append(f"framework={urllib.parse.quote(framework)}")
+        if trust:
+            params.append(f"trust_state={urllib.parse.quote(trust)}")
+        if category:
+            params.append(f"category={urllib.parse.quote(category)}")
+        if tag:
+            params.append(f"tag={urllib.parse.quote(tag)}")
+        if sort:
+            params.append(f"sort={urllib.parse.quote(sort)}")
+        if limit:
+            params.append(f"limit={limit}")
+        if min_stars is not None:
+            params.append(f"min_stars={min_stars}")
+        if params:
+            url += "?" + "&".join(params)
+        return self._request(url)
 
     def get_capability(
         self,

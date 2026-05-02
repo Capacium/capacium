@@ -33,7 +33,7 @@ def test_registry_result_from_kwargs():
 def test_search_returns_results():
     client = RegistryClient()
     fake_data = {
-        "results": [
+        "listings": [
             {"name": "cap-a", "owner": "alice", "version": "1.0.0", "kind": "skill"},
             {"name": "cap-b", "owner": "bob", "version": "2.0.0", "kind": "tool"},
         ]
@@ -49,7 +49,7 @@ def test_search_returns_results():
 
 def test_search_empty():
     client = RegistryClient()
-    with patch("urllib.request.urlopen", return_value=FakeResponse({"results": []})):
+    with patch("urllib.request.urlopen", return_value=FakeResponse({"listings": []})):
         results = client.search(query="nonexistent", registry_url="http://localhost:8000/v1")
     assert results == []
 
@@ -159,7 +159,7 @@ def test_http_error():
 def test_search_with_kind_filter():
     client = RegistryClient()
     fake_data = {
-        "results": [
+        "listings": [
             {"name": "tool-a", "owner": "alice", "version": "1.0.0", "kind": "tool"},
         ]
     }

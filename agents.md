@@ -189,41 +189,27 @@ Before committing to `capacium` (core), you MUST run locally:
 ruff check src/ --fix && pytest tests/ -q
 ```
 
-Before tagging a release, verify README version references match pyproject.toml:
+## Release Process (Streamlined)
 
-```bash
-python3 -c "
-import pathlib, re
-v = re.search(r'^version\s*=\s*\"([^\"]+)\"', pathlib.Path('pyproject.toml').read_text(), re.MULTILINE).group(1)
-readme = pathlib.Path('README.md').read_text()
-expected = {f'@v{v}', f'cap:{v}'}
-missing = [n for n in expected if n not in readme]
-assert not missing, f'README missing: {missing}'
-print(f'README OK for v{v}')
-"
-```
+**One command to release:** `./scripts/release.sh 0.10.9` (or `--dry-run` to preview).
 
-Never push a tag before CI passes on main. The correct order is: commit → push → wait for CI green → tag → push tag.
+The script handles:
+1. ruff + pytest (local)
+2. Version bump in `pyproject.toml` + `README.md`
+3. Commit + push + wait for CI green
+4. Git tag + push tag
+5. Tarball hash + Homebrew Tap update (capacium/homebrew-tap, NOT fusionAIze)
+6. GitHub Release with release notes
+7. `brew upgrade capacium` (local)
 
-## Release Checklist
+**Guard rails enforced by CI:**
+- `validate-release-tag.yml` blocks any `v*.*.*` tag where `pyproject.toml` version ≠ tag version
+- `ci.yml` fails if README has stale `@v`/`cap:` references
+- `bump-tap.yml` auto-updates the Homebrew formula when a new tag is pushed
 
-Before releasing, the following MUST all match the target version:
-
-### 1. `pyproject.toml` version
-```bash
-rg '^version = ' pyproject.toml
-```
-
-### 2. `__init__.py` dynamic version
-`src/capacium/__init__.py` uses `importlib.metadata.version("capacium")` — ensure the installed package metadata matches. After `pip install -e .` the version comes from `pyproject.toml`.
-
-### 3. README references
-```bash
-rg '@v|cap:' README.md
-```
-
-### 4. CI must be green on the commit being tagged
-Never delete and re-create a tag. If a tag needs fixing, delete it, fix the issue, commit, wait for CI, then re-tag.
+**Never:**
+- Delete and re-create a tag. If a tag must be fixed, delete, fix the issue, commit, wait for CI, then re-tag.
+- Use `fusionAIze/homebrew-tap` — the correct tap is `capacium/homebrew-tap`
 
 ## Homebrew Tap
 
