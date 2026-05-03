@@ -1,0 +1,40 @@
+name: Build & Deploy Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'README.md'
+      - 'AGENTS.md'
+  workflow_dispatch:
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    container: python:3.12-alpine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install mkdocs-material mkdocs-material-extensions
+
+      - name: Mirror README and AGENTS
+        run: |
+          cp README.md docs/index.md 2>/dev/null || true
+          cp AGENTS.md docs/agents.md 2>/dev/null || true
+
+      - name: Build mkdocs
+        run: mkdocs build --clean --strict
+
+      - name: Deploy to CPX22
+        uses: easingthemes/ssh-deploy@v5.1.0
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.LANGEVC_DEPLOY_KEY }}
+          REMOTE_HOST: ${{ secrets.LANGEVC_DEPLOY_HOST }}
+          REMOTE_PORT: ${{ secrets.LANGEVC_DEPLOY_PORT }}
+          REMOTE_USER: ${{ secrets.LANGEVC_DEPLOY_USER }}
+          TARGET: /srv/docs/capacium/site/
+          SOURCE: site/
+          ARGS: -avz --delete

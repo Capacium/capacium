@@ -1,0 +1,77 @@
+site_name: Capacium
+site_description: Capability Packaging System for AI agents — CLI, manifest format, trust model, and framework adapters
+site_url: https://docs.capacium.xyz
+repo_url: https://github.com/Capacium/capacium
+repo_name: Capacium/capacium
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: getting-started.md
+  - CLI Reference: cli-reference.md
+  - Manifest Spec:
+      - capability.yaml: manifest.md
+      - Bundles: bundles.md
+  - Trust Model:
+      - Signing: signing.md
+      - Lock Files: lockfile.md
+  - Adapters: adapters.md
+  - Runtimes: runtimes.md
+  - Registry: registry.md
+  - Publishing: publishing.md
+  - Marketplace: marketplace.md
+  - Architecture:
+      - Repo Topology: repo-topology.md
+      - Core Boundary: core-boundary.md
+      - Bridge Boundary: bridge-boundary.md
+      - Exchange Boundary: exchange-boundary.md
+      - Crawler Boundary: crawler-boundary.md
+      - Tap Boundary: tap-boundary.md
+  - Contributing:
+      - Contributing: https://github.com/Capacium/capacium/blob/main/CONTRIBUTING.md
+
+plugins:
+  - search
