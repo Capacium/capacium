@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -57,6 +58,10 @@ def main():
         "--from-tarball",
         help="Install from a local .tar.gz file",
     )
+    install_parser.add_argument(
+        "--token",
+        help="GitHub token for private repositories (or set GITHUB_TOKEN)",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -99,10 +104,34 @@ def main():
     info_parser = subparsers.add_parser("info", help="Show detailed information about a capability")
     info_parser.add_argument("capability", help="Capability specification (owner/name)")
     info_parser.add_argument("--registry", help="Remote registry URL")
+    info_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
-    init_parser = subparsers.add_parser("init", help="Initialize Capacium configuration or create a new capability")
-    init_sub = init_parser.add_subparsers(dest="init_command", help="Init subcommand")
-    init_sub.add_parser("skill", help="Create a new capability.yaml interactively")
+    compare_parser = subparsers.add_parser("compare", help="Compare two capabilities side-by-side")
+    compare_parser.add_argument("a", help="First capability (owner/name)")
+    compare_parser.add_argument("b", help="Second capability (owner/name)")
+    compare_parser.add_argument("--registry", help="Remote registry URL")
+    compare_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    update_parser = subparsers.add_parser("update-index", help="Update the local search index from the Exchange")
+    update_parser.add_argument("--full", action="store_true", help="Full index rebuild")
+    update_parser.add_argument("--registry", help="Remote registry URL")
+
+    init_parser = subparsers.add_parser("init", help="Create a new capability.yaml")
+    init_parser.add_argument("--name", help="Capability name (kebab-case)")
+    init_parser.add_argument(
+        "--kind",
+        help="Capability kind (skill, tool, prompt, mcp-server, template, bundle, workflow, connector-pack)",
+    )
+    init_parser.add_argument("--version", help="Capability version (semver, e.g. 0.1.0)")
+    init_parser.add_argument("--description", help="Capability description")
+    init_parser.add_argument(
+        "--frameworks",
+        help="Comma-separated frameworks (e.g. opencode,claude-code)",
+    )
+    init_parser.add_argument(
+        "--runtimes",
+        help="Comma-separated runtimes (e.g. uv:>=0.4.0,node:>=20)",
+    )
 
     registry_parser = subparsers.add_parser("registry", help="Manage Capacium registries")
     registry_sub = registry_parser.add_subparsers(dest="registry_command", help="Registry subcommand")
@@ -121,13 +150,13 @@ def main():
     lock_parser.add_argument("--update", action="store_true", help="Update existing lock file")
 
     package_parser = subparsers.add_parser("package", help="Package capability for distribution")
-    package_parser.add_argument("path", help="Path to capability directory")
-    package_parser.add_argument("--output", help="Output archive path (e.g. archive.tar.gz)")
+    package_parser.add_argument("--manifest", help="Path to capability.yaml (default: capability.yaml in current directory)")
+    package_parser.add_argument("--output-dir", default="./dist/", help="Output directory (default: ./dist/)")
 
-    publish_parser = subparsers.add_parser("publish", help="Publish capability to the Exchange registry")
-    publish_parser.add_argument("path", nargs="?", default=".", help="Path to capability directory (default: current directory)")
+    publish_parser = subparsers.add_parser("publish", help="Publish a capability tarball to the Exchange registry")
+    publish_parser.add_argument("package_path", help="Path to the .tar.gz package to publish")
+    publish_parser.add_argument("--token", help="API token for the Exchange registry (or set CAPACIUM_API_TOKEN)")
     publish_parser.add_argument("--registry", help="Target registry URL")
-    publish_parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without publishing")
 
     marketplace_parser = subparsers.add_parser("marketplace", help="Start the marketplace web UI")
     marketplace_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
@@ -216,6 +245,7 @@ def main():
                 force=getattr(args, "force", False),
                 from_tarball=getattr(args, "from_tarball", None),
                 yes=getattr(args, "yes", False),
+                github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
             )
             sys.exit(0 if success else 1)
 
@@ -262,19 +292,47 @@ def main():
             sys.exit(0)
 
         elif args.command == "info":
-            from .commands.search import cap_info
-            cap_info(args.capability, registry_url=args.registry)
+            from .commands.info import cap_info
+            cap_info(
+                args.capability,
+                registry_url=args.registry,
+                json_output=getattr(args, "json", False),
+            )
             sys.exit(0)
 
+        elif args.command == "compare":
+            from .commands.compare import compare_cmd
+            sys.exit(compare_cmd(args))
+
+        elif args.command == "update-index":
+            from .sync import update_cmd
+            sys.exit(update_cmd(args))
+
         elif args.command == "init":
-            if getattr(args, "init_command", None) == "skill":
-                from .commands.init import init_skill
-                success = init_skill()
-                sys.exit(0 if success else 1)
-            else:
-                from .commands.init import init_config
-                success = init_config()
-                sys.exit(0 if success else 1)
+            from .commands.init import init_capability
+
+            frameworks_list = None
+            if getattr(args, "frameworks", None):
+                frameworks_list = [
+                    f.strip() for f in args.frameworks.split(",") if f.strip()
+                ]
+            runtimes_dict = None
+            if getattr(args, "runtimes", None):
+                runtimes_dict = {}
+                for pair in args.runtimes.split(","):
+                    pair = pair.strip()
+                    if ":" in pair:
+                        k, v = pair.split(":", 1)
+                        runtimes_dict[k.strip()] = v.strip()
+            success = init_capability(
+                name=getattr(args, "name", None),
+                kind=getattr(args, "kind", None),
+                version=getattr(args, "version", None),
+                description=getattr(args, "description", None),
+                frameworks=frameworks_list,
+                runtimes=runtimes_dict,
+            )
+            sys.exit(0 if success else 1)
 
         elif args.command == "registry":
             sub = getattr(args, "registry_command", None)
@@ -313,18 +371,21 @@ def main():
 
         elif args.command == "package":
             from .commands.package import package_capability
-            success = package_capability(Path(args.path), output=args.output)
+            manifest_path = Path(args.manifest) if args.manifest else Path("capability.yaml")
+            output_dir = Path(args.output_dir) if args.output_dir else Path("dist")
+            success = package_capability(manifest_path, output_dir)
             sys.exit(0 if success else 1)
 
         elif args.command == "publish":
             from .commands.publish import publish_capability
+            token = args.token or os.environ.get("CAPACIUM_API_TOKEN")
             registry_arg = args.registry
             if registry_arg and registry_arg.lower() == "false":
                 registry_arg = None
             success = publish_capability(
-                Path(args.path),
+                Path(args.package_path),
                 registry_url=registry_arg,
-                dry_run=args.dry_run,
+                token=token,
             )
             sys.exit(0 if success else 1)
 

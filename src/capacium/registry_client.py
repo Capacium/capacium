@@ -54,7 +54,9 @@ class RegistryDetail:
 
 
 class RegistryClientError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class RegistryClient:
@@ -114,7 +116,8 @@ class RegistryClient:
             except Exception:
                 pass
             raise RegistryClientError(
-                f"HTTP {e.code} from {url}: {detail or e.reason}"
+                f"HTTP {e.code} from {url}: {detail or e.reason}",
+                status_code=e.code,
             ) from e
         except urllib.error.URLError as e:
             raise RegistryClientError(f"Connection failed: {e.reason}") from e
@@ -329,7 +332,8 @@ class RegistryClient:
             except Exception:
                 pass
             raise RegistryClientError(
-                f"HTTP {e.code} from {url}: {detail or e.reason}"
+                f"HTTP {e.code} from {url}: {detail or e.reason}",
+                status_code=e.code,
             ) from e
         except urllib.error.URLError as e:
             raise RegistryClientError(f"Connection failed: {e.reason}") from e
@@ -352,6 +356,67 @@ class RegistryClient:
         payload = {"github_url": github_url}
         data = json.dumps(payload).encode("utf-8")
         return self._request(url, method="POST", data=data)
+
+    def submit_tarball(
+        self,
+        tarball_path: Path,
+        registry_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        url = self._build_registry_url("/v2/submit", registry_url)
+        return self._upload_file(url, tarball_path)
+
+    def _upload_file(self, url: str, file_path: Path) -> Dict[str, Any]:
+        import uuid
+
+        boundary = uuid.uuid4().hex
+        filename = file_path.name
+
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+
+        body_parts = []
+        body_parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="package"; filename="{filename}"\r\n'
+            f"Content-Type: application/gzip\r\n\r\n".encode("utf-8")
+        )
+        body_parts.append(file_data)
+        body_parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+
+        body = b"".join(body_parts)
+
+        req_headers = {
+            "Accept": "application/json",
+            "User-Agent": f"capacium/{__version__}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        token = self._get_token()
+        if token:
+            req_headers["Authorization"] = f"Bearer {token}"
+
+        req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.DEFAULT_TIMEOUT) as resp:
+                body = resp.read()
+                if resp.status == 204:
+                    return {}
+                return json.loads(body.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RegistryClientError(
+                f"HTTP {e.code} from {url}: {detail or e.reason}",
+                status_code=e.code,
+            ) from e
+        except urllib.error.URLError as e:
+            raise RegistryClientError(f"Connection failed: {e.reason}") from e
+        except json.JSONDecodeError as e:
+            raise RegistryClientError(f"Invalid JSON response from {url}: {e}") from e
+        except OSError as e:
+            raise RegistryClientError(f"Network error: {e}") from e
 
 
 def _check_yaml_available() -> None:

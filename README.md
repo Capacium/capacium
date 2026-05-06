@@ -49,6 +49,18 @@ brew install capacium/tap/capacium
 # Install a capability
 cap install code-reviewer --source ./my-skill
 
+# Create a new capability (interactive)
+cap init
+
+# Create a new capability (non-interactive)
+cap init --name my-skill --kind skill --version 0.1.0
+
+# Package for distribution
+cap package
+
+# Publish to the Exchange registry
+cap publish ./dist/my-skill-0.1.0.tar.gz
+
 # List installed capabilities
 cap list
 
@@ -64,9 +76,6 @@ cap runtimes list
 # Print the install command for a runtime (does NOT execute it)
 cap runtimes install uv
 
-# Package for distribution
-cap package ./my-skill --output my-skill.tar.gz
-
 # Search the exchange
 cap search code-review
 
@@ -79,6 +88,33 @@ cap key generate mykey
 # Sign a capability
 cap sign my-skill --key mykey
 ```
+
+## Publishing Your Skills in 5 Minutes
+
+Got an agent skill, prompt, or MCP server? Publish it on Capacium.
+
+```bash
+# 1. Create the manifest
+cap init
+# → name: my-skill
+# → kind: skill
+# → version: 0.1.0
+# → description: Does amazing things
+
+# 2. Package it
+cap package
+# ✓ Created dist/local-my-skill-0.1.0.tar.gz
+
+# 3. Publish to Exchange
+export CAPACIUM_API_TOKEN="cp_..."
+cap publish ./dist/local-my-skill-0.1.0.tar.gz
+# ✓ Published my-skill v0.1.0
+
+# Users can now install it:
+# cap install my-org/my-skill
+```
+
+**More in [Publishing](docs/publishing.md)** — CI integration, versioning, signing, and registry setup.
 
 ## Documentation
 

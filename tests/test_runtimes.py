@@ -271,16 +271,14 @@ class TestFormatFailureReport:
 
 class TestDoctor:
     def _install_capability(self, tmp_path, monkeypatch, manifest_yaml: str, name="cap-x"):
-        # Create source
         src = tmp_path / name
         src.mkdir()
         (src / "capability.yaml").write_text(manifest_yaml)
         (src / "main.py").write_text("# x")
-        # Point home to tmp_path so registry lives there
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        # Install with runtime check skipped (we want a registered cap regardless)
         from capacium.commands.install import install_capability
-        ok = install_capability(name, source_dir=src, skip_runtime_check=True)
+        cap_spec = f"test-org/{name}"
+        ok = install_capability(cap_spec, source_dir=src, skip_runtime_check=True, force=True)
         assert ok is True
         return src
 
@@ -374,7 +372,7 @@ class TestInstallPreflight:
                 )
             ]
             from capacium.commands.install import install_capability
-            success = install_capability("needs-uv", source_dir=src)
+            success = install_capability("test-org/needs-uv", source_dir=src)
         assert success is False
         out = capsys.readouterr().out
         assert "uv" in out
@@ -393,7 +391,7 @@ class TestInstallPreflight:
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         from capacium.commands.install import install_capability
         success = install_capability(
-            "needs-uv-bypass", source_dir=src, skip_runtime_check=True
+            "test-org/needs-uv-bypass", source_dir=src, skip_runtime_check=True, force=True
         )
         assert success is True
 

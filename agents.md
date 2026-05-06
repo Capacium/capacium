@@ -86,6 +86,12 @@ src/capacium/
 
 ## Standards
 
+### Language
+- **English is the REQUIRED language for ALL Capacium content.**
+  - README files, documentation, inline code comments, commit messages, PR descriptions, release notes, changelogs, PRDs, playbooks, and agent instructions.
+  - No German (or any other language) in any Capacium-owned repository or document.
+  - The only exception: local `.skillweave/` discovery notes written during live sessions — these are internal working artifacts, not published content.
+
 ### Python
 - Target: 3.10+ (stdlib only for core)
 - Style: PEP 8

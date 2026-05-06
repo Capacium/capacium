@@ -1,35 +1,449 @@
-"""Interactive terminal-based capability browser (curses TUI with graceful fallback).
+"""Interactive terminal-based capability browser.
+
+Prefer local FTS5 index when available (fast category drill-down + search).
+Fall back to curses TUI when no local index exists. Graceful text-mode fallback
+when curses is unavailable.
 
 FEAT-TUI / FEAT-TUI-NAV / FEAT-TUI-FALLBACK
 """
 
+from __future__ import annotations
+
+import os
 import re
 import sys
-from typing import List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from ..registry_client import RegistryClient, RegistryClientError
-from ..utils.config import get_registry_url
-from ..utils.table import format_table
+from ..ui import (
+    CardLayout,
+    KindPill,
+    TableLayout,
+    TrustBadge,
+    should_use_table_layout,
+)
 
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_ANSIC = re.compile(r"\033\[[0-9;]*m")
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _strip(text: str) -> str:
+    return _ANSIC.sub("", text)
+
+
+def _pad(text: str, width: int) -> str:
+    visible = len(_strip(text))
+    if visible >= width:
+        return text[:width]
+    return text + " " * (width - visible)
+
+
+def _trunc(text: str, width: int) -> str:
+    t = _strip(text)
+    if len(t) <= width:
+        return text
+    return t[:width - 1] + "\u2026"
+
+
+def _fmt_stars(count) -> str:
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        return "-"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _fmt_installs(count) -> str:
+    return _fmt_stars(count)
+
+
+def _canonical_name(listing: dict) -> str:
+    owner = listing.get("owner", "")
+    name = listing.get("name", listing.get("id", ""))
+    if owner:
+        return f"{owner}/{name}"
+    return name
+
+
+# ── local-index browse mode ────────────────────────────────────────────────
+
+
+def _index_path() -> Path:
+    return Path.home() / ".capacium" / "search_index.db"
+
+
+def _has_index() -> bool:
+    return _index_path().exists()
+
+
+def _browse_local(
+    sort: str = "stars",
+    min_stars: Optional[int] = None,
+    kind: Optional[str] = None,
+) -> None:
+    from ..index import Index
+
+    index = Index(_index_path())
+    taxonomy = index.get_taxonomy()
+    if not taxonomy:
+        print("Local index is empty.")
+        print("Run: cap search --sync  to populate the index.")
+        return
+
+    _local_loop(index, taxonomy, sort, min_stars, kind)
+
+
+def _render_results_table(listings: List[dict]) -> str:
+    if not listings:
+        return ""
+
+    if should_use_table_layout():
+        headers = ["Name", "Kind", "Stars", "Trust", "Description"]
+        rows: List[List[str]] = []
+        for r in listings:
+            trust = r.get("trust", "discovered")
+            rows.append([
+                _canonical_name(r),
+                KindPill.render(r.get("kind", "skill")),
+                _fmt_stars(r.get("stars", 0)),
+                TrustBadge.label(trust),
+                _trunc(r.get("description", ""), 40),
+            ])
+        return TableLayout(headers=headers, rows=rows).render()
+
+    items: List[Dict] = []
+    for r in listings:
+        items.append({
+            "trust_badge": r.get("trust", "discovered"),
+            "name": _canonical_name(r),
+            "kind": r.get("kind", "skill"),
+            "description": r.get("description", ""),
+            "trust": r.get("trust", "discovered"),
+            "stars": r.get("stars"),
+            "categories": r.get("categories", []),
+            "tags": r.get("tags", []),
+        })
+    return CardLayout(items=items).render()
+
+
+def _print_header(title: str) -> None:
+    width = os.get_terminal_size().columns
+    print()
+    print(f"{_BOLD}{title}{_RESET}")
+    print(f"{_DIM}\u2500 * {min(width - 4, len(_strip(title)) + 2)}{_RESET}")
+    print()
+
+
+def _render_result_summary(listings: List[dict]) -> None:
+    for i, r in enumerate(listings):
+        trust = r.get("trust", "discovered")
+        kind = r.get("kind", "skill")
+        stars = _fmt_stars(r.get("stars", 0))
+        name = _canonical_name(r)
+        desc = _trunc(r.get("description", ""), 60)
+        idx = f"{_DIM}[{i + 1}]{_RESET}"
+        STAR = "\u2605"
+        print(
+            f" {idx} {TrustBadge.render(trust)} "
+            f"{_BOLD}{name}{_RESET}  "
+            f"{KindPill.short(kind)}  "
+            f"{_DIM}{STAR}{stars}{_RESET}"
+        )
+        if desc:
+            print(f"    {_DIM}{desc}{_RESET}")
+
+
+def _local_loop(
+    index,
+    taxonomy: List[dict],
+    sort: str,
+    min_stars: Optional[int],
+    kind: Optional[str],
+) -> None:
+    stack: List[str] = []     # breadcrumb category paths
+    view = "categories"        # categories | results
+    results: List[dict] = []
+    search_active = False
+    search_query = ""
+
+    cat_by_parent: Dict[str, List[dict]] = {}
+    for entry in taxonomy:
+        parent = entry.get("parent_path", "")
+        cat_by_parent.setdefault(parent, []).append(entry)
+
+    def _show_categories():
+        nonlocal view
+        view = "categories"
+        parent = stack[-1] if stack else ""
+        entries = cat_by_parent.get(parent, [])
+        if not entries:
+            print("(no subcategories)")
+            return
+        print()
+        for i, entry in enumerate(entries):
+            name = entry.get("name", "?")
+            count = entry.get("count", 0)
+            idx = f"{_DIM}[{i + 1}]{_RESET}"
+            print(f"  {idx} {name}  {_DIM}({count:,}){_RESET}")
+        print()
+
+    def _show_breadcrumb():
+        parts = ["Capacium Registry"]
+        if stack:
+            for p in stack:
+                for e in taxonomy:
+                    if e.get("path") == p:
+                        parts.append(e.get("name", p))
+                        break
+        sep = " \u203a "
+        return f"{_BOLD}{sep.join(parts)}{_RESET}"
+
+    def _do_search(query: str):
+        nonlocal view, results, search_active
+        category = stack[-1] if stack else None
+        res, _, _ = index.search(
+            query,
+            category=category,
+            sort=sort,
+            limit=50,
+            min_stars=min_stars,
+            kind=kind,
+        )
+        results = list(res)
+        view = "results"
+        search_active = True
+
+    def _enter_category(cat_path: str):
+        nonlocal view, results, search_active
+        _, _, total = index.search(
+            "",
+            category=cat_path,
+            sort=sort,
+            limit=50,
+            min_stars=min_stars,
+            kind=kind,
+        )
+        if total == 0:
+            print(f"\n  {_DIM}(no results in this category){_RESET}")
+            return
+        res, _, _ = index.search(
+            "",
+            category=cat_path,
+            sort=sort,
+            limit=50,
+            min_stars=min_stars,
+            kind=kind,
+        )
+        results = list(res)
+        view = "results"
+        search_active = False
+        stack.append(cat_path)
+
+    _print_header(_show_breadcrumb())
+
+    while True:
+        if view == "categories":
+            parent = stack[-1] if stack else ""
+            entries = cat_by_parent.get(parent, [])
+
+            if not entries and not stack:
+                print("  (no categories in index)")
+                print()
+                print(f"  {_DIM}[/] search all  [q] quit{_RESET}")
+            else:
+                for i, entry in enumerate(entries):
+                    name = entry.get("name", "?")
+                    count = entry.get("count", 0)
+                    idx = f"{_DIM}[{i + 1}]{_RESET}"
+                    print(f"  {idx} {name}  {_DIM}({count:,}){_RESET}")
+
+            print()
+            hints = []
+            if stack:
+                hints.append("[b] back")
+            hints.append("[/] search")
+            hints.append("[q] quit")
+            print(f"  {_DIM}{'  '.join(hints)}{_RESET}")
+
+        elif view == "results":
+            if not results:
+                print("  (no results)")
+            else:
+                _render_result_summary(results)
+                print()
+                if should_use_table_layout():
+                    print(_render_results_table(results))
+                    print()
+
+            hints = []
+            if search_active:
+                hints.append(f"search: \"{search_query}\"")
+            hints.append("[b] back to categories")
+            hints.append("[/] new search")
+            hints.append("[q] quit")
+            print(f"  {_DIM}{'  '.join(hints)}{_RESET}")
+
+        try:
+            cmd = input(f"\n{_BOLD}{_show_breadcrumb()} > {_RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not cmd:
+            continue
+
+        if cmd == "q":
+            break
+
+        if cmd == "b":
+            if view == "results":
+                if search_active:
+                    view = "categories"
+                    search_active = False
+                    results = []
+                elif stack:
+                    stack.pop()
+                    view = "categories"
+                    results = []
+                else:
+                    view = "categories"
+                    results = []
+            elif view == "categories":
+                if stack:
+                    stack.pop()
+                else:
+                    break
+            continue
+
+        if cmd == "/":
+            try:
+                query = input("  Search: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if not query:
+                continue
+            search_query = query
+            _do_search(query)
+            continue
+
+        if view == "categories":
+            try:
+                idx = int(cmd) - 1
+                if 0 <= idx < len(entries):
+                    entry = entries[idx]
+                    _enter_category(entry.get("path", ""))
+                else:
+                    print(f"  {_DIM}invalid selection{_RESET}")
+            except ValueError:
+                print(f"  {_DIM}invalid input: type a number, / to search, b for back, q to quit{_RESET}")
+
+        elif view == "results":
+            try:
+                idx = int(cmd) - 1
+                if 0 <= idx < len(results):
+                    _show_detail(results[idx])
+                else:
+                    print(f"  {_DIM}invalid selection{_RESET}")
+            except ValueError:
+                print(f"  {_DIM}press a number for detail, b to go back, / to search, q to quit{_RESET}")
+
+
+def _show_detail(listing: dict) -> None:
+    canonical = listing.get("canonical_name", "")
+    owner = listing.get("owner", "")
+    name = listing.get("name", "")
+    if not owner and "/" in canonical:
+        owner, name = canonical.split("/", 1)
+    owner = owner or canonical
+    name = name or listing.get("id", "")
+
+    kind = listing.get("kind", "skill")
+    stars = listing.get("stars")
+    license_ = listing.get("license", "")
+    desc = listing.get("description", "")
+    tags = listing.get("tags", [])
+    source = listing.get("repository", listing.get("source_url", ""))
+    version = listing.get("version", "")
+    trust = listing.get("trust", listing.get("trust_state", "discovered"))
+    runtimes = listing.get("runtimes", {})
+    dependencies = listing.get("dependencies", {})
+    frameworks = listing.get("frameworks", [])
+    installs = listing.get("installs", 0)
+    updated = listing.get("updated_at", "")
+    categories = listing.get("categories", [])
+    fingerprint = listing.get("fingerprint", "")
+
+    sep = _DIM + "\u2550" * 60 + _RESET
+    print()
+    print(sep)
+    print(f"  {TrustBadge.label(trust)}  {_BOLD}{owner}/{name}{_RESET}  {KindPill.render(kind)}")
+    if version:
+        print(f"  {_DIM}Version:{_RESET} {version}")
+    if desc:
+        print(f"  {desc}")
+    print(sep)
+    print(f"  {_DIM}Stars:{_RESET}        \u2605{_RESET} {_fmt_stars(stars) or '-'}")
+    print(f"  {_DIM}License:{_RESET}      {license_ or '-'}")
+    print(f"  {_DIM}Installs:{_RESET}     {_fmt_installs(installs)}")
+    print(f"  {_DIM}Trust:{_RESET}        {trust}")
+    if categories:
+        cat_arrow = " \u203a "
+        print(f"  {_DIM}Category:{_RESET}     {cat_arrow.join(categories[:5])}")
+    if frameworks:
+        print(f"  {_DIM}Frameworks:{_RESET}   {', '.join(frameworks)}")
+    if updated:
+        print(f"  {_DIM}Updated:{_RESET}      {updated}")
+    if tags:
+        print(f"  {_DIM}Tags:{_RESET}         {', '.join(tags[:10])}")
+    if fingerprint:
+        print(f"  {_DIM}Fingerprint:{_RESET}  {fingerprint[:16]}...")
+    if source:
+        print(f"  {_DIM}Source:{_RESET}       {source}")
+    if dependencies:
+        print(f"  {_DIM}Dependencies:{_RESET}")
+        for dk, dv in (dict(dependencies) if not isinstance(dependencies, dict) else dependencies).items():
+            print(f"    - {dk}: {dv}")
+    if runtimes:
+        print(f"  {_DIM}Runtimes:{_RESET}")
+        for rk, rv in (dict(runtimes) if not isinstance(runtimes, dict) else runtimes).items():
+            print(f"    - {rk}: {rv}")
+    print()
+    print(f"  {_DIM}Install:{_RESET} cap install {owner}/{name}")
+    print(f"  {_DIM}Info:{_RESET}    cap info {owner}/{name}")
+    print(sep)
+    print(f"  {_DIM}Press Enter to continue{_RESET}")
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+# ── curses fallback (kept from original) ───────────────────────────────────
 
 _BARE_SORT = ("stars", "score", "name", "updated")
-
-
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
 
 
 class BrowseSession:
 
     def __init__(
         self,
-        client: RegistryClient,
+        client,
         sort: str,
         min_stars: Optional[int] = None,
         kind: Optional[str] = None,
     ):
-        self._client = client
+        from ..registry_client import RegistryClient
+
+        self._client: RegistryClient = client
         self._sort: str = sort
         self._min_stars: Optional[int] = min_stars
         self._kind: Optional[str] = kind
@@ -42,10 +456,20 @@ class BrowseSession:
         self._search_focused: bool = False
         self._error: Optional[str] = None
         self._loading: bool = True
-        self._registry_url: str = get_registry_url()
+        self._registry_url: str = self._resolve_url()
         self._fetch()
 
+    @staticmethod
+    def _resolve_url() -> str:
+        try:
+            from ..utils.config import get_registry_url
+            return get_registry_url()
+        except Exception:
+            return "https://api.capacium.xyz/v2"
+
     def _fetch(self) -> None:
+        from ..registry_client import RegistryClientError
+
         self._loading = True
         self._error = None
         try:
@@ -119,11 +543,11 @@ class BrowseSession:
             lines.append(f"  Source:       {source}")
         if dependencies:
             lines.append("  Dependencies:")
-            for dk, dv in dependencies.items():
+            for dk, dv in (dependencies if isinstance(dependencies, dict) else {}).items():
                 lines.append(f"    - {dk}: {dv}")
         if runtimes:
             lines.append("  Runtimes:")
-            for rk, rv in runtimes.items():
+            for rk, rv in (runtimes if isinstance(runtimes, dict) else {}).items():
                 lines.append(f"    - {rk}: {rv}")
         lines.append("")
         lines.append(f"  Install:  cap install {owner}/{name}")
@@ -167,6 +591,9 @@ class BrowseSession:
 
     def _render_list(self, stdscr, y: int, rows: int, width: int) -> None:
         import curses
+
+        from ..utils.table import format_table
+
         table_str = format_table(self._listings)
         table_lines = table_str.split("\n")
 
@@ -187,7 +614,7 @@ class BrowseSession:
 
         for i in range(min(visible_lines, len(table_lines) - self._scroll)):
             line_idx = self._scroll + i
-            line = _strip_ansi(table_lines[line_idx])
+            line = _strip(table_lines[line_idx])
             attr = curses.A_REVERSE if line_idx == self._idx else 0
             self._add_str(stdscr, y + i, 0, line[: width - 1], attr)
 
@@ -200,6 +627,7 @@ class BrowseSession:
 
     def _render_search_bar(self, stdscr, y: int, width: int) -> None:
         import curses
+
         prompt = f"Search: {self._search}"
         remaining = width - 1 - len(prompt)
         if remaining > 0:
@@ -209,7 +637,7 @@ class BrowseSession:
     def _status_line(self, width: int) -> str:
         count = len(self._listings)
         left = f" Capacium Browse — {count} results — Sort: {self._sort} "
-        right = " / search  |  tab sort  |  ↑↓ nav  |  enter detail  |  q quit "
+        right = " / search  |  tab sort  |  \u2191\u2193 nav  |  enter detail  |  q quit "
         return f"{left}{' ' * max(1, width - len(left) - len(right))}{right}"
 
     def _add_str(self, stdscr, y: int, x: int, text: str, attr: int) -> None:
@@ -288,7 +716,10 @@ def _browse_curses(session: BrowseSession) -> None:
     curses.wrapper(_main)
 
 
-def _browse_fallback(client: RegistryClient, sort: str, limit: int) -> None:
+def _browse_fallback(client, sort: str, limit: int) -> None:
+    from ..registry_client import RegistryClientError
+    from ..utils.table import format_table
+
     print("Terminal UI not available — using table view.")
     print("Install textual for enhanced TUI: pipx install textual")
     print()
@@ -307,11 +738,20 @@ def _browse_fallback(client: RegistryClient, sort: str, limit: int) -> None:
     print(f"\033[2mShowing {len(listings)} of {total} results\033[0m")
 
 
+# ── public entry point ─────────────────────────────────────────────────────
+
+
 def browse_capabilities(
     sort: str = "stars",
     min_stars: Optional[int] = None,
     kind: Optional[str] = None,
 ) -> None:
+    if _has_index():
+        _browse_local(sort=sort, min_stars=min_stars, kind=kind)
+        return
+
+    from ..registry_client import RegistryClient
+
     client = RegistryClient()
 
     try:

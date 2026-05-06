@@ -1,42 +1,58 @@
-import json
 import tarfile
 from pathlib import Path
-from typing import Optional
-from ..fingerprint import compute_fingerprint
 from ..manifest import Manifest
 
 
-def package_capability(path: Path, output: Optional[str] = None) -> bool:
-    if not path.exists() or not path.is_dir():
-        print(f"Error: path does not exist or is not a directory: {path}")
+def package_capability(manifest_path: Path, output_dir: Path) -> bool:
+    manifest_path = manifest_path.resolve()
+
+    if not manifest_path.exists():
+        print(f"Error: manifest not found: {manifest_path}")
         return False
 
-    manifest = Manifest.detect_from_directory(path)
-    fingerprint = compute_fingerprint(path)
+    manifest = Manifest.load(manifest_path)
 
-    if output:
-        output_path = Path(output)
-    else:
-        output_path = path.parent / f"{manifest.name}-{manifest.version}.cap"
+    if not manifest.name:
+        print("Error: manifest missing required field 'name'")
+        return False
+    if not manifest.kind:
+        print("Error: manifest missing required field 'kind'")
+        return False
+    if not manifest.version:
+        print("Error: manifest missing required field 'version'")
+        return False
+
+    owner = manifest.owner or "local"
+    filename = f"{owner}-{manifest.name}-{manifest.version}.tar.gz"
+
+    base_dir = manifest_path.parent
+
+    files = [manifest_path]
+
+    for name in ("SKILL.md", "README.md"):
+        p = base_dir / name
+        if p.exists():
+            files.append(p)
+
+    assets_dir = base_dir / "assets"
+    if assets_dir.exists() and assets_dir.is_dir():
+        files.append(assets_dir)
+
+    if manifest.kind == "mcp-server":
+        for py_file in sorted(base_dir.rglob("*.py")):
+            if "__pycache__" not in py_file.parts and py_file not in files:
+                files.append(py_file)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
 
     try:
         with tarfile.open(output_path, "w:gz") as tar:
-            for file_path in path.rglob("*"):
-                if any(p.startswith(".") for p in file_path.parts):
-                    if file_path.name in (".git", "__pycache__"):
-                        continue
-                rel_path = file_path.relative_to(path)
-                tar.add(file_path, arcname=rel_path)
+            for file_path in files:
+                arcname = file_path.relative_to(base_dir)
+                tar.add(file_path, arcname=str(arcname))
 
-            metadata = manifest.to_dict()
-            metadata["fingerprint"] = fingerprint
-            metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")
-            info = tarfile.TarInfo(name=".capacium-meta.json")
-            info.size = len(metadata_bytes)
-            tar.addfile(info, fileobj=__import__("io").BytesIO(metadata_bytes))
-
-        print(f"Packaged {manifest.id}@{manifest.version}")
-        print(f"  fingerprint: {fingerprint[:8]}...")
+        print(f"Packaged {filename}")
         print(f"  output: {output_path}")
         return True
 

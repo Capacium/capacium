@@ -1,9 +1,174 @@
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
+
+VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+VALID_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VALID_KINDS = {
+    "skill",
+    "tool",
+    "prompt",
+    "mcp-server",
+    "template",
+    "bundle",
+    "workflow",
+    "connector-pack",
+}
+
+
+def _validate_name(name: str) -> Optional[str]:
+    if not name:
+        return "name is required"
+    if not VALID_NAME_RE.match(name):
+        return f"invalid name '{name}': must be kebab-case (lowercase letters, numbers, hyphens)"
+    return None
+
+
+def _validate_kind(kind: str) -> Optional[str]:
+    if not kind:
+        return "kind is required"
+    if kind not in VALID_KINDS:
+        kinds_str = ", ".join(sorted(VALID_KINDS))
+        return f"invalid kind '{kind}': must be one of {kinds_str}"
+    return None
+
+
+def _validate_version(version: str) -> Optional[str]:
+    if not version:
+        return "version is required"
+    if not VALID_SEMVER_RE.match(version):
+        return f"invalid version '{version}': must be valid semver (x.y.z)"
+    return None
+
+
+def init_capability(
+    name: Optional[str] = None,
+    kind: Optional[str] = None,
+    version: Optional[str] = None,
+    description: Optional[str] = None,
+    frameworks: Optional[List[str]] = None,
+    runtimes: Optional[Dict[str, str]] = None,
+) -> bool:
+    non_interactive = name is not None
+
+    if non_interactive:
+        err = _validate_name(name)
+        if err:
+            print(f"Error: {err}")
+            return False
+        kind = kind or "skill"
+        err = _validate_kind(kind)
+        if err:
+            print(f"Error: {err}")
+            return False
+        version = version or "0.1.0"
+        err = _validate_version(version)
+        if err:
+            print(f"Error: {err}")
+            return False
+        description = description or ""
+        frameworks = frameworks or []
+        runtimes = runtimes or {}
+    else:
+        print("\n  Capacium — Create capability.yaml\n" + "\u2500" * 36 + "\n")
+
+        while True:
+            name = input("  Name (kebab-case): ").strip()
+            err = _validate_name(name)
+            if err:
+                print(f"  {err}")
+                continue
+            break
+
+        print(f"\n  Kinds: {', '.join(sorted(VALID_KINDS))}")
+        while True:
+            kind = input("  Kind [skill]: ").strip() or "skill"
+            err = _validate_kind(kind)
+            if err:
+                print(f"  {err}")
+                continue
+            break
+
+        while True:
+            version = input("  Version [0.1.0]: ").strip() or "0.1.0"
+            err = _validate_version(version)
+            if err:
+                print(f"  {err}")
+                continue
+            break
+
+        description = input("  Description (optional): ").strip()
+
+        frameworks_raw = input(
+            "  Frameworks (comma-separated, optional): "
+        ).strip()
+        if frameworks_raw:
+            frameworks = [f.strip() for f in frameworks_raw.split(",") if f.strip()]
+        else:
+            frameworks = []
+
+        runtimes_raw = input(
+            "  Runtimes (name:version, comma-separated, optional): "
+        ).strip()
+        if runtimes_raw:
+            runtimes = {}
+            for pair in runtimes_raw.split(","):
+                pair = pair.strip()
+                if ":" in pair:
+                    key, val = pair.split(":", 1)
+                    runtimes[key.strip()] = val.strip()
+        else:
+            runtimes = {}
+
+    manifest = Manifest(
+        kind=kind,
+        name=name,
+        version=version,
+        description=description,
+        frameworks=frameworks,
+        runtimes=runtimes,
+    )
+
+    output_path = Path.cwd() / "capability.yaml"
+
+    if not non_interactive:
+        print(f"\n  Will create: {output_path}\n")
+        print(f"    kind: {kind}")
+        print(f"    name: {name}")
+        print(f"    version: {version}")
+        if description:
+            print(f"    description: {description}")
+        if frameworks:
+            print(f"    frameworks: {frameworks}")
+        if runtimes:
+            print(f"    runtimes: {runtimes}")
+        print()
+
+        confirm = input("  Create capability.yaml? [Y/n]: ").strip().lower()
+        if confirm and confirm not in ("y", "yes", ""):
+            print("  Aborted.")
+            return False
+
+    if output_path.exists():
+        if non_interactive:
+            print(f"Error: {output_path} already exists")
+            return False
+        overwrite = (
+            input(f"  File {output_path} already exists. Overwrite? [y/N]: ")
+            .strip()
+            .lower()
+        )
+        if overwrite not in ("y", "yes"):
+            print("  Aborted.")
+            return False
+
+    manifest.save(output_path)
+    print(f"\n  Created {output_path}")
+    return True
 
 
 def init_config(

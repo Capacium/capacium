@@ -32,6 +32,7 @@ def install_capability(
     force: bool = False,
     from_tarball: Optional[str] = None,
     yes: bool = False,
+    github_token: Optional[str] = None,
 ) -> bool:
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
@@ -120,7 +121,7 @@ def install_capability(
     elif source_dir is not None:
         source_raw = str(source_dir)
         if _is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw):
-            resolved = _resolve_source(source_raw, version_spec=version_spec)
+            resolved = _resolve_source(source_raw, version_spec=version_spec, github_token=github_token)
             if resolved is None:
                 return False
             source_dir, source_url = resolved
@@ -136,6 +137,7 @@ def install_capability(
             owner=owner,
             version_spec=version_spec,
             storage=storage,
+            github_token=github_token,
         )
         if source_dir is None:
             # Fallback to current directory
@@ -363,10 +365,11 @@ def _is_git_remote_url(value: str) -> bool:
 def _resolve_source(
     source_str: str,
     version_spec: Optional[str] = None,
+    github_token: Optional[str] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
     if _is_git_remote_url(source_str) or _GITHUB_SHORT_RE.match(source_str):
         version_filter = version_spec if version_spec not in ("latest", "stable", None) else None
-        return _clone_remote_source(source_str, version_filter=version_filter)
+        return _clone_remote_source(source_str, version_filter=version_filter, github_token=github_token)
 
     p = Path(source_str)
     if p.exists():
@@ -380,6 +383,7 @@ def _resolve_source(
 def _clone_remote_source(
     source_str: str,
     version_filter: Optional[str] = None,
+    github_token: Optional[str] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
     if _GITHUB_SHORT_RE.match(source_str):
         url = f"https://github.com/{source_str}.git"
@@ -390,13 +394,17 @@ def _clone_remote_source(
         return None
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-source-"))
+    clone_url = url
+    if github_token and "github.com" in url:
+        clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
     clone_args = ["git", "clone", "--depth=1"]
     if version_filter:
         tag = version_filter if version_filter.startswith("v") else f"v{version_filter}"
         clone_args.extend(["--branch", tag])
-    clone_args.extend([url, str(tmp_dir / "repo")])
+    clone_args.extend([clone_url, str(tmp_dir / "repo")])
 
-    print(f"  Cloning {url}" + (f" (tag: {version_filter})" if version_filter else "") + "...")
+    display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
+    print(f"  Cloning {display_url}" + (f" (tag: {version_filter})" if version_filter else "") + "...")
     try:
         result = subprocess.run(
             clone_args,
@@ -445,67 +453,77 @@ def _fetch_remote_tags(repo_url: str) -> List[str]:
         return []
 
 
-def _auto_generate_manifest(repo_dir: Path, repo_url: str) -> None:
+def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Optional[dict] = None) -> None:
     dest = repo_dir / "capability.yaml"
     if dest.exists():
         return
 
-    name = repo_dir.name
-    owner = "unknown"
+    if registry_meta:
+        name = registry_meta.get("name", repo_dir.name)
+        owner = registry_meta.get("owner", "unknown")
+        kind = registry_meta.get("kind", "skill")
+        version = registry_meta.get("version", "1.0.0")
+        description = registry_meta.get("description", f"Auto-detected capability {name}")
+        if version in ("", "latest", "stable"):
+            version = "1.0.0"
+        tags_list = registry_meta.get("tags", [])
+    else:
+        name = repo_dir.name
+        owner = "unknown"
+        m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", repo_url)
+        if m:
+            owner = m.group(1)
+            name = m.group(2)
+        tags_list = []
 
-    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", repo_url)
-    if m:
-        owner = m.group(1)
-        name = m.group(2)
+        tags = _fetch_remote_tags(repo_url)
+        version = "1.0.0"
+        if tags:
+            def _vk(v):
+                parts = []
+                for p in v.split("."):
+                    try:
+                        parts.append(int(p))
+                    except ValueError:
+                        parts.append(p)
+                return tuple(parts)
+            version = max(tags, key=_vk)
 
-    tags = _fetch_remote_tags(repo_url)
-    version = "1.0.0"
-    if tags:
-        def _vk(v):
-            parts = []
-            for p in v.split("."):
-                try:
-                    parts.append(int(p))
-                except ValueError:
-                    parts.append(p)
-            return tuple(parts)
-        version = max(tags, key=_vk)
+        kind = "skill"
+        topics_lower = name.lower()
+        if "mcp" in topics_lower or "mcp-server" in topics_lower:
+            kind = "mcp-server"
+        elif "bundle" in topics_lower or "pack" in topics_lower:
+            kind = "bundle"
+        elif "tool" in topics_lower:
+            kind = "tool"
+        elif "template" in topics_lower:
+            kind = "template"
+        elif "workflow" in topics_lower:
+            kind = "workflow"
 
-    kind = "skill"
-    topics_lower = name.lower()
-    if "mcp" in topics_lower or "mcp-server" in topics_lower:
-        kind = "mcp-server"
-    elif "bundle" in topics_lower or "pack" in topics_lower:
-        kind = "bundle"
-    elif "tool" in topics_lower:
-        kind = "tool"
-    elif "template" in topics_lower:
-        kind = "template"
-    elif "workflow" in topics_lower:
-        kind = "workflow"
+        description = f"Auto-detected capability {name}"
+
+    if not version or version in ("", "latest", "stable"):
+        version = "1.0.0"
+
+    yaml_data = {
+        "kind": kind,
+        "name": name,
+        "version": version,
+        "description": description,
+        "owner": owner,
+        "repository": repo_url,
+    }
+    if tags_list:
+        yaml_data["tags"] = tags_list
 
     try:
         import yaml
-        yaml_data = {
-            "kind": kind,
-            "name": name,
-            "version": version,
-            "description": f"Auto-detected capability {name}",
-            "owner": owner,
-            "repository": repo_url,
-        }
         dest.write_text(yaml.dump(yaml_data, default_flow_style=False, sort_keys=False))
     except ImportError:
         import json
-        json_data = {
-            "kind": kind,
-            "name": name,
-            "version": version,
-            "description": f"Auto-detected capability {name}",
-            "owner": owner,
-            "repository": repo_url,
-        }
-        dest.write_text(json.dumps(json_data, indent=2) + "\n")
+        dest.write_text(json.dumps(yaml_data, indent=2) + "\n")
 
     print(f"  Auto-generated capability.yaml for {owner}/{name}@{version}")
 
@@ -553,6 +571,7 @@ def _fetch_from_registry(
     owner: str,
     version_spec: str,
     storage: StorageManager,
+    github_token: Optional[str] = None,
 ) -> tuple[Optional[Path], Optional[str]]:
     """Fetch a capability from the configured Exchange registry.
 
@@ -605,9 +624,22 @@ def _fetch_from_registry(
         print(f"  No source repository for {cap_id}@{best_version}")
         return None, None
 
-    repo_dir = _clone_registry_repo(repository, best_version)
+    repo_dir = _clone_registry_repo(repository, best_version, github_token=github_token)
     if repo_dir is None:
         return None, None
+
+    manifest = Manifest.detect_from_directory(repo_dir)
+    if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
+        registry_meta = {
+            "name": remote.name,
+            "owner": remote.owner,
+            "version": best_version or remote.version,
+            "kind": remote.kind or "skill",
+            "description": remote.description or "",
+            "repository": repository,
+            "tags": remote.tags or [],
+        }
+        _auto_generate_manifest(repo_dir, repository, registry_meta=registry_meta)
 
     # Copy into cache
     cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
@@ -618,7 +650,7 @@ def _fetch_from_registry(
     return cache_dir, repository
 
 
-def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
+def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
     """Clone a repository from URL into temp + return path.
 
     Clones the specific tag (v{version}). If the tag doesn't exist,
@@ -628,9 +660,13 @@ def _clone_registry_repo(repo_url: str, version: str) -> Optional[Path]:
 
     tag = version if version.startswith("v") else f"v{version}"
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-registry-"))
-    clone_args = ["git", "clone", "--depth=1", "--branch", tag, repo_url, str(tmp_dir / "repo")]
+    clone_url = repo_url
+    if github_token and "github.com" in repo_url:
+        clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
+    clone_args = ["git", "clone", "--depth=1", "--branch", tag, clone_url, str(tmp_dir / "repo")]
 
-    print(f"  Fetching {repo_url}@{version}...")
+    display_url = repo_url.replace("https://", "https://***@") if github_token and "github.com" in repo_url else repo_url
+    print(f"  Fetching {display_url}@{version}...")
     try:
         result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:

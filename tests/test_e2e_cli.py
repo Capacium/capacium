@@ -13,41 +13,38 @@ def _cap(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_init_creates_valid_manifest(tmp_path: Path):
-    """cap init skill creates valid capability.yaml."""
+    """cap init --name creates valid capability.yaml."""
     manifest_path = tmp_path / "capability.yaml"
-    # Interactive prompt order: name, kind, version, description, owner, frameworks, runtimes, deps, repo, homepage, license, author, confirm
     result = subprocess.run(
-        [sys.executable, "-m", "capacium.cli", "init", "skill"],
-        input="test-skill\n\n1.0.0\nA test skill\n\n\n\n\n\n\n\n\ny\n",
+        [
+            sys.executable, "-m", "capacium.cli", "init",
+            "--name", "test-skill",
+            "--version", "1.0.0",
+            "--description", "A test skill",
+        ],
         capture_output=True, text=True,
         cwd=tmp_path,
     )
     assert manifest_path.exists(), f"stdout={result.stdout} stderr={result.stderr}"
+    assert result.returncode == 0
     content = manifest_path.read_text()
     assert "name: test-skill" in content
 
 
-def test_init_config_detects_frameworks(tmp_path: Path, monkeypatch):
-    """cap init config completes without error."""
-    home = tmp_path / "home"
-    home.mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setenv("HOME", str(home))
-
-    (home / ".claude").mkdir(parents=True, exist_ok=True)
-
-    cap_home = home / ".capacium"
-    cap_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("capacium.utils.config.get_config_dir", lambda: cap_home)
-
+def test_init_interactive_creates_manifest(tmp_path: Path):
+    """cap init (interactive) creates valid capability.yaml."""
+    manifest_path = tmp_path / "capability.yaml"
+    # Prompt order: name, kind, version, description, frameworks, runtimes, confirm
     result = subprocess.run(
         [sys.executable, "-m", "capacium.cli", "init"],
-        input="y\n\nnotify\noff\n",
+        input="test-skill\n\n0.1.0\n\n\n\ny\n",
         capture_output=True, text=True,
         cwd=tmp_path,
-        env={**dict(subprocess.os.environ), "HOME": str(home)},
     )
-    assert result.returncode == 0, f"stderr={result.stderr}"
+    assert manifest_path.exists(), f"stdout={result.stdout} stderr={result.stderr}"
+    assert result.returncode == 0
+    content = manifest_path.read_text()
+    assert "name: test-skill" in content
 
 
 def test_verify_all_on_empty_registry():
@@ -70,29 +67,14 @@ def test_help_outputs():
         assert result.returncode == 0
 
 
-def test_dry_run_publish(tmp_path: Path):
-    """cap publish --dry-run shows payload without network call."""
-    (tmp_path / "capability.yaml").write_text("""\
-kind: skill
-name: test-publish
-version: 1.0.0
-description: A publish test
-owner: test-org
-frameworks:
-  - opencode
-repository: https://github.com/test-org/test-publish
-""")
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-    subprocess.run(["git", "remote", "add", "origin", "https://github.com/test-org/test-publish.git"],
-                   cwd=tmp_path, capture_output=True)
-
+def test_publish_rejects_missing_tarball(tmp_path: Path):
+    """cap publish without a valid tarball shows error."""
     result = subprocess.run(
-        [sys.executable, "-m", "capacium.cli", "publish", "--dry-run"],
+        [sys.executable, "-m", "capacium.cli", "publish"],
         capture_output=True, text=True,
         cwd=tmp_path,
     )
-    assert "DRY RUN" in result.stdout
-    assert "test-org/test-publish" in result.stdout
+    assert result.returncode != 0
 
 
 def test_remove_nonexistent_shows_error():
@@ -131,10 +113,9 @@ def test_lock_on_uninstalled_shows_error():
     assert result.returncode != 0
 
 
-def test_doctor_empty_registry():
-    """cap doctor without arguments runs without error."""
-    result = subprocess.run(
-        [sys.executable, "-m", "capacium.cli", "doctor"],
-        capture_output=True, text=True,
-    )
-    assert result.returncode == 0
+def test_doctor_empty_registry(tmp_path, monkeypatch):
+    """cap doctor with empty registry prints info and returns True."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    from capacium.commands.doctor import doctor
+    result = doctor()
+    assert result is True
