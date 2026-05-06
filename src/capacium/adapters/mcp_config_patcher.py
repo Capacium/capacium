@@ -84,6 +84,46 @@ class McpConfigPatcher:
                 f.write(f'{key} = "{value}"\n')
 
     @staticmethod
+    def enrich_mcp_meta_for_git(
+        mcp_meta: Optional[Dict[str, Any]],
+        repository: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """If a GitHub repository URL is known, inject ``@ git+<url>`` into uvx
+        ``--from`` args so that git-only packages resolve correctly instead of
+        falling back to a potentially unrelated PyPI package.
+
+        Returns *mcp_meta* unchanged when no transformation is needed.
+        """
+        if not repository or not mcp_meta:
+            return mcp_meta
+
+        command = mcp_meta.get("command", "")
+        args = list(mcp_meta.get("args", [])) if mcp_meta.get("args") else []
+
+        if command != "uvx" or "--from" not in args:
+            return mcp_meta
+
+        try:
+            from_idx = args.index("--from")
+        except ValueError:
+            return mcp_meta
+
+        if from_idx + 1 >= len(args):
+            return mcp_meta
+
+        pkg_spec = args[from_idx + 1]
+        if " @ " in pkg_spec or "git+" in pkg_spec:
+            return mcp_meta
+
+        if not repository.startswith(("https://github.com/", "http://github.com/")):
+            return mcp_meta
+
+        args[from_idx + 1] = f"{pkg_spec} @ git+{repository}"
+        enriched = dict(mcp_meta)
+        enriched["args"] = args
+        return enriched
+
+    @staticmethod
     def build_mcp_entry(
         cap_name: str,
         source_dir: Path,
@@ -166,6 +206,15 @@ class McpConfigPatcher:
         if stdio.get("env"):
             entry["env"] = stdio["env"]
         return entry
+
+    @classmethod
+    def build_server_key(cls, cap_name: str, owner: str = "global") -> str:
+        """Return the server key used in framework config files.
+
+        ``owner/cap_name`` when owner is not ``"global"``, else bare ``cap_name``.
+        """
+        from .base import _cap_id
+        return _cap_id(cap_name, owner)
 
     @classmethod
     def inject_json_mcp_server(

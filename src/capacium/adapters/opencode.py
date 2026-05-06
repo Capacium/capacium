@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter, ensure_package_dir
+from .base import FrameworkAdapter, _cap_id, ensure_package_dir
 
 
 class OpenCodeAdapter(FrameworkAdapter):
@@ -19,7 +19,7 @@ class OpenCodeAdapter(FrameworkAdapter):
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
-        link_path = self.opencode_skills_dir / cap_name
+        link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
         success = self.symlink_manager.create_symlink(package_dir, link_path)
 
         metadata = self._extract_capability_metadata(package_dir)
@@ -30,7 +30,7 @@ class OpenCodeAdapter(FrameworkAdapter):
         return success
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
-        link_path = self.opencode_skills_dir / cap_name
+        link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
         if link_path.exists():
             if link_path.is_symlink():
                 self.symlink_manager.remove_symlink(link_path)
@@ -63,6 +63,7 @@ class OpenCodeAdapter(FrameworkAdapter):
         from ..manifest import Manifest
         manifest = Manifest.detect_from_directory(package_dir)
         mcp_meta = manifest.get_mcp_metadata()
+        mcp_meta = McpConfigPatcher.enrich_mcp_meta_for_git(mcp_meta, manifest.repository)
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
 
         McpConfigPatcher.backup(config_path)

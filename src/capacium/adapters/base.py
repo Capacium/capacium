@@ -2,6 +2,16 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
+def _cap_id(cap_name: str, owner: str = "global") -> str:
+    """Return the canonical capability identifier.
+
+    ``owner/cap_name`` when owner is not ``"global"``, else bare ``cap_name``.
+    """
+    if owner and owner != "global":
+        return f"{owner}/{cap_name}"
+    return cap_name
+
+
 def ensure_package_dir(storage, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> Path:
     """Copy source_dir → package_dir if they differ. Returns package_dir."""
     package_dir = storage.get_package_dir(cap_name, version, owner=owner)

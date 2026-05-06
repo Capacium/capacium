@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter, ensure_package_dir
+from .base import FrameworkAdapter, _cap_id, ensure_package_dir
 
 
 class GeminiCLIAdapter(FrameworkAdapter):
@@ -20,7 +20,7 @@ class GeminiCLIAdapter(FrameworkAdapter):
 
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner)
 
-        link_path = self.skills_dir / cap_name
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
         success = self.symlink_manager.create_symlink(package_dir, link_path)
 
         metadata = self._extract_capability_metadata(package_dir)
@@ -93,7 +93,7 @@ class GeminiCLIAdapter(FrameworkAdapter):
 
         return McpConfigPatcher.inject_json_mcp_server(
             config_path=config_path,
-            server_key=cap_name,
+            server_key=McpConfigPatcher.build_server_key(cap_name, owner),
             mcp_section_key="mcpServers",
             cap_name=cap_name,
             source_dir=package_dir,

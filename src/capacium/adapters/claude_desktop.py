@@ -47,7 +47,7 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
 
         return McpConfigPatcher.inject_json_mcp_server(
             config_path=self.config_path,
-            server_key=cap_name,
+            server_key=McpConfigPatcher.build_server_key(cap_name),
             mcp_section_key="mcpServers",
             cap_name=cap_name,
             source_dir=package_dir,
@@ -57,13 +57,13 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
         return McpConfigPatcher.remove_json_mcp_server(
             config_path=self.config_path,
-            server_key=cap_name,
+            server_key=McpConfigPatcher.build_server_key(cap_name),
             mcp_section_key="mcpServers",
         )
 
     def capability_exists(self, cap_name: str) -> bool:
         return McpConfigPatcher.mcp_server_exists_json(
             config_path=self.config_path,
-            server_key=cap_name,
+            server_key=McpConfigPatcher.build_server_key(cap_name),
             mcp_section_key="mcpServers",
         )

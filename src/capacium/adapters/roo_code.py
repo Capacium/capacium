@@ -32,7 +32,7 @@ class RooCodeAdapter(FrameworkAdapter):
 
         return McpConfigPatcher.inject_json_mcp_server(
             config_path=self.config_path,
-            server_key=cap_name,
+            server_key=McpConfigPatcher.build_server_key(cap_name, owner),
             mcp_section_key="mcpServers",
             cap_name=cap_name,
             source_dir=package_dir,
