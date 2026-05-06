@@ -213,6 +213,36 @@ The script handles:
 - `ci.yml` fails if README has stale `@v`/`cap:` references
 - `bump-tap.yml` auto-updates the Homebrew formula when a new tag is pushed
 
+**CI workflow notes:**
+- `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
+- `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
+- `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
+- `prerelease.yml`: Triggered manually via workflow_dispatch. Builds binaries, publishes to GitHub Releases as pre-release.
+- `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
+- `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
+- `publish.yml`: Manual trigger for PyPI workflow.
+
+**CodeQL — known issue: `build/lib/` folder**
+After a local `pip install -e .` or `python setup.py build`, a `build/lib/` directory is created with duplicate source files. CodeQL sees these as duplicate definitions and fails with `F811 Redefinition of unused...`. Fix: `rm -rf build/lib/` before pushing. The `.gitignore` should already exclude `build/`.
+
+**Release flow (for agents):**
+```bash
+# 1. Local: clean build artifacts
+rm -rf build/lib/ dist/ *.egg-info
+
+# 2. Local: verify
+ruff check src/ tests/ --fix && pytest tests/ -q
+
+# 3. Run release script
+./scripts/release.sh 0.10.10
+
+# 4. Verify CI passed (ci.yml: success + codeql.yml: success)
+gh run list --repo Capacium/capacium --limit 3
+
+# 5. Verify release title matches "Capacium v0.10.10"
+gh release view v0.10.10 --json name
+```
+
 **Never:**
 - Delete and re-create a tag. If a tag must be fixed, delete, fix the issue, commit, wait for CI, then re-tag.
 - Use `fusionAIze/homebrew-tap` — the correct tap is `capacium/homebrew-tap`

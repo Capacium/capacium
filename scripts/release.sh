@@ -32,8 +32,9 @@ echo -e "${GREEN}=== Capacium Release v${VERSION} ===${NC}"
 # ── Step 1: Local verification ────────────────────────────────
 echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
 cd "$REPO_DIR"
+rm -rf build/lib/ dist/ *.egg-info
 ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
-python3 -m pytest tests/ -q --ignore=tests/test_signing.py -k "not test_doctor_empty_registry and not test_doctor_no_runtimes_passes and not test_install_skip_runtime_check_bypasses" || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+python3 -m pytest tests/ -q --ignore=tests/test_signing.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
 echo -e "${GREEN}  Tests pass${NC}"
 
 # ── Step 2: Bump versions ──────────────────────────────────────
