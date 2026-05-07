@@ -200,6 +200,24 @@ def main():
     submit_parser.add_argument("github_url", help="GitHub repository URL (https://github.com/owner/repo)")
     submit_parser.add_argument("--registry", help="Target registry URL (defaults to configured Exchange)")
 
+    submit_tarball_parser = subparsers.add_parser("submit-tarball", help="Upload a capability tarball to the Exchange")
+    submit_tarball_parser.add_argument("tarball_path", help="Path to .tar.gz file")
+
+    key_parser = subparsers.add_parser("key", help="Manage Ed25519 signing keys")
+    key_sub = key_parser.add_subparsers(dest="key_command", help="Key subcommand")
+    key_gen_parser = key_sub.add_parser("generate", help="Generate a new Ed25519 keypair")
+    key_gen_parser.add_argument("name", help="Key name")
+    key_list_parser = key_sub.add_parser("list", help="List available keys")
+    key_export_parser = key_sub.add_parser("export", help="Export public key as PEM")
+    key_export_parser.add_argument("name", help="Key name")
+    key_import_parser = key_sub.add_parser("import", help="Import a key from a PEM file")
+    key_import_parser.add_argument("name", help="Key name")
+    key_import_parser.add_argument("pem_file", help="Path to PEM file")
+
+    sign_parser = subparsers.add_parser("sign", help="Sign a capability with an Ed25519 key")
+    sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
+    sign_parser.add_argument("key_name", help="Name of the signing key")
+
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
     mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
@@ -452,6 +470,53 @@ def main():
                 else:
                     print(f"Submit failed: {msg}")
                 sys.exit(1)
+
+        elif args.command == "submit-tarball":
+            from .registry_client import RegistryClient, RegistryClientError
+            client = RegistryClient()
+            try:
+                result = client.submit_tarball(args.tarball_path)
+                print(f"Uploaded: {result.get('canonical_name', 'unknown')}")
+                print(f"  Kind: {result.get('kind', 'unknown')}")
+                print(f"  Trust: {result.get('trust_state', 'unknown')}")
+                sys.exit(0)
+            except RegistryClientError as e:
+                msg = str(e)
+                if "409" in msg:
+                    print(f"Already registered: {msg}")
+                else:
+                    print(f"Upload failed: {msg}")
+                sys.exit(1)
+
+        elif args.command == "marketplace":
+            print("Capacium Marketplace: https://capacium.xyz")
+            print("Run locally:")
+            print("  cd src/capacium/marketplace && npm run dev")
+            sys.exit(0)
+
+        elif args.command == "key":
+            from .commands.key import key_generate, key_list, key_export, key_import
+            sub = getattr(args, "key_command", None) or "list"
+            if sub == "generate":
+                success = key_generate(args.name)
+                sys.exit(0 if success else 1)
+            elif sub == "list":
+                success = key_list()
+                sys.exit(0 if success else 1)
+            elif sub == "export":
+                success = key_export(args.name)
+                sys.exit(0 if success else 1)
+            elif sub == "import":
+                success = key_import(args.name, args.pem_file)
+                sys.exit(0 if success else 1)
+            else:
+                key_parser.print_help()
+                sys.exit(1)
+
+        elif args.command == "sign":
+            from .commands.sign import sign_capability
+            success = sign_capability(args.capability, args.key_name)
+            sys.exit(0 if success else 1)
 
         elif args.command == "mcp":
             try:

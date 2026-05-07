@@ -51,6 +51,12 @@ def registry_login(registry_url: Optional[str] = None) -> bool:
 
 
 def registry_publish(path: Path, registry_url: Optional[str] = None) -> bool:
+    from .publish import publish_capability
+
+    local_manifest = path / "capability.yaml"
+    if local_manifest.exists():
+        return publish_capability(local_manifest, registry_url=registry_url)
+
     effective_url = registry_url or get_registry_url()
 
     if not path.exists() or not path.is_dir():

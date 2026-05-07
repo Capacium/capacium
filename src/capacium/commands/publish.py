@@ -16,13 +16,19 @@ def publish_capability(
         print(f"Error: file not found: {package_path}")
         return False
 
-    if package_path.suffix not in (".gz",) and not package_path.name.endswith(".tar.gz"):
-        print(f"Error: file must be a .tar.gz package: {package_path}")
+    if package_path.is_dir() or package_path.suffix in (".yaml", ".yml"):
+        manifest_path = package_path if package_path.is_file() else package_path / "capability.yaml"
+        if not manifest_path.exists():
+            print(f"Error: no capability.yaml found in {package_path}")
+            return False
+        manifest = Manifest.load(manifest_path)
+        print(f"Publishing from {manifest_path}...")
+    elif package_path.name.endswith(".tar.gz"):
+        print(f"Reading {package_path}...")
+        manifest = _extract_manifest_from_tarball(package_path)
+    else:
+        print(f"Error: file must be a .tar.gz package or capability.yaml: {package_path}")
         return False
-
-    print(f"Reading {package_path}...")
-
-    manifest = _extract_manifest_from_tarball(package_path)
     if manifest is None:
         return False
 

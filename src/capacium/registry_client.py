@@ -63,8 +63,14 @@ class RegistryClient:
 
     DEFAULT_TIMEOUT = 30
 
-    def __init__(self, token: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, base_url: Optional[str] = None):
         self._token = token
+        self._base_url = base_url
+
+    @staticmethod
+    def from_config() -> "RegistryClient":
+        from .utils.config import get_registry_url
+        return RegistryClient(base_url=get_registry_url())
 
     def _get_token(self) -> Optional[str]:
         if self._token:
@@ -127,9 +133,9 @@ class RegistryClient:
             raise RegistryClientError(f"Network error: {e}") from e
 
     def _build_registry_url(self, path: str, registry_url: Optional[str] = None) -> str:
-        config_url = self._read_config_registry_url()
-        default = registry_url or config_url or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz")
-        base = default.rstrip("/")
+        base = (registry_url or self._base_url or self._read_config_registry_url()
+                or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz"))
+        base = base.rstrip("/")
         return f"{base}{path}"
 
     @staticmethod
