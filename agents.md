@@ -208,6 +208,37 @@ The script handles:
 6. GitHub Release with release notes
 7. `brew upgrade capacium` (local)
 
+### Post-Release Verification (MANDATORY)
+
+After every release, you MUST verify:
+
+1. **Homebrew Tap**: Check `brew info capacium` shows the new version. The tap repo is at:
+   ```
+   /opt/homebrew/Library/Taps/capacium/homebrew-tap
+   ```
+   (NOT `fusionAIze/homebrew-tap`)
+
+2. **Test Lab**: Run the full CLI test suite against the released version:
+   ```bash
+   cd /Users/andrelange/Documents/repositories/github/capacium-test-lab
+   bash tests/run_tests.sh
+   ```
+   - Expected: 63+ of 68 CLI tests passing
+   - Unit/integration/smoke tests require framework stubs (WIP) — those failures are expected
+   - `cap doctor` may fail if local runtimes are unhealthy — not a release blocker
+
+3. **CI Verification**:
+   ```bash
+   gh run list --repo Capacium/capacium --limit 3
+   ```
+   All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
+
+4. **Release title**: Verify via:
+   ```bash
+   gh release view v0.10.10 --json name
+   ```
+   Must match `Capacium vX.Y.Z` format.
+
 **Guard rails enforced by CI:**
 - `validate-release-tag.yml` blocks any `v*.*.*` tag where `pyproject.toml` version ≠ tag version
 - `ci.yml` fails if README has stale `@v`/`cap:` references

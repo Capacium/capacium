@@ -15,6 +15,15 @@ VERSION="${1:-}"
 DRY_RUN="${2:-}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_DIR="/opt/homebrew/Library/Taps/capacium/homebrew-tap"
+if [ ! -d "$TAP_DIR" ]; then
+    echo -e "${YELLOW}  Tap not found at ${TAP_DIR} — cloning...${NC}"
+    git clone https://github.com/Capacium/homebrew-tap "$TAP_DIR"
+fi
+# Ensure remote points to the Capacium org (not the old capacium org redirect)
+TAP_REMOTE=$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || echo "")
+if echo "$TAP_REMOTE" | grep -q "capacium/homebrew-tap$"; then
+    git -C "$TAP_DIR" remote set-url origin https://github.com/Capacium/homebrew-tap
+fi
 GITHUB_REPO="Capacium/capacium"
 
 if [ -z "$VERSION" ]; then
