@@ -207,7 +207,7 @@ def main():
     key_sub = key_parser.add_subparsers(dest="key_command", help="Key subcommand")
     key_gen_parser = key_sub.add_parser("generate", help="Generate a new Ed25519 keypair")
     key_gen_parser.add_argument("name", help="Key name")
-    key_list_parser = key_sub.add_parser("list", help="List available keys")
+    key_sub.add_parser("list", help="List available keys")
     key_export_parser = key_sub.add_parser("export", help="Export public key as PEM")
     key_export_parser.add_argument("name", help="Key name")
     key_import_parser = key_sub.add_parser("import", help="Import a key from a PEM file")
