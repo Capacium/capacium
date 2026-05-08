@@ -153,8 +153,8 @@ def main():
     package_parser.add_argument("--manifest", help="Path to capability.yaml (default: capability.yaml in current directory)")
     package_parser.add_argument("--output-dir", default="./dist/", help="Output directory (default: ./dist/)")
 
-    publish_parser = subparsers.add_parser("publish", help="Publish a capability tarball to the Exchange registry")
-    publish_parser.add_argument("package_path", help="Path to the .tar.gz package to publish")
+    publish_parser = subparsers.add_parser("publish", help="Publish a capability to the Exchange registry")
+    publish_parser.add_argument("package_path", help="Path to .tar.gz, capability.yaml, or directory containing capability.yaml")
     publish_parser.add_argument("--token", help="API token for the Exchange registry (or set CAPACIUM_API_TOKEN)")
     publish_parser.add_argument("--registry", help="Target registry URL")
 
@@ -217,6 +217,8 @@ def main():
     sign_parser = subparsers.add_parser("sign", help="Sign a capability with an Ed25519 key")
     sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
     sign_parser.add_argument("key_name", help="Name of the signing key")
+
+    subparsers.add_parser("version", help="Print Capacium version")
 
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
@@ -517,6 +519,10 @@ def main():
             from .commands.sign import sign_capability
             success = sign_capability(args.capability, args.key_name)
             sys.exit(0 if success else 1)
+
+        elif args.command == "version":
+            print(f"cap {__version__}")
+            sys.exit(0)
 
         elif args.command == "mcp":
             try:

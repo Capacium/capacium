@@ -46,6 +46,9 @@ def package_capability(manifest_path: Path, output_dir: Path) -> bool:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / filename
 
+    if output_path.exists():
+        print(f"Warning: {output_path} already exists and will be overwritten")
+
     try:
         with tarfile.open(output_path, "w:gz") as tar:
             for file_path in files:
