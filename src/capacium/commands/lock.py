@@ -30,7 +30,7 @@ def lock_capability(cap_spec: str, update: bool = False) -> bool:
 
     fingerprint = compute_fingerprint(
         cap.install_path,
-        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", LOCK_FILENAME]
+        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", LOCK_FILENAME]
     )
 
     locked_deps = []

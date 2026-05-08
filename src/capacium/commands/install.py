@@ -75,7 +75,7 @@ def install_capability(
             print(f"  Existing owner: {conflict.existing_owner}")
             if force:
                 print(f"  --force: overriding owner from '{conflict.existing_owner}' to '{owner}'")
-                _force_remove_conflicting_link(cap_name, conflict.existing_owner)
+                _force_remove_conflicting_link(cap_name, conflict.existing_owner, target_framework=framework)
             else:
                 print("  Use --force to override (will remove existing installation)")
                 return False
@@ -191,6 +191,10 @@ def install_capability(
             source_manifest, all_frameworks=all_frameworks, framework_filter=framework
         )
 
+    if not resolved_frameworks:
+        print(f"  Error: '{source_manifest.kind or 'skill'}' kind is not supported by the selected framework(s).")
+        return False
+
     installed_frameworks: set[str] = set()
     for fw in resolved_frameworks:
         if fw not in installed_frameworks:
@@ -217,7 +221,7 @@ def install_capability(
         )
         fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
+        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
 
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
@@ -333,7 +337,7 @@ def _install_single_sub_cap(
     shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
-    sub_frameworks = resolve_frameworks(sub_manifest.frameworks)
+    sub_frameworks = resolve_frameworks(sub_manifest.frameworks, kind=sub_manifest.kind or "skill")
     for fw in sub_frameworks:
         try:
             from ..adapters import get_adapter
@@ -353,7 +357,7 @@ def _install_single_sub_cap(
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"])
+        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
 
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
     source_url = sub_manifest.repository or _detect_git_remote(source_path)
@@ -719,10 +723,16 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
 def _is_framework_already(cap_name: str, owner: str, version_spec: str, framework: str) -> bool:
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS
     skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
-    if skills_dir is None:
+    if skills_dir is not None:
+        link_path = skills_dir / cap_name
+        return link_path.exists()
+
+    from ..adapters import get_adapter
+    try:
+        adapter = get_adapter(framework)
+    except ValueError:
         return False
-    link_path = skills_dir / cap_name
-    return link_path.exists()
+    return adapter.capability_exists(cap_name)
 
 
 def _append_framework(
@@ -732,11 +742,6 @@ def _append_framework(
     framework: str,
 ) -> None:
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
-
-    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
-    if skills_dir is None:
-        print(f"  Unknown framework: {framework}")
-        return
 
     registry = Registry()
     cap_id = f"{owner}/{cap_name}"
@@ -755,19 +760,34 @@ def _append_framework(
         version = existing.version
 
     kind_str = existing.kind.value if existing.kind else "skill"
-    fingerprint = existing.fingerprint
-    trust_state = "untrusted"
 
-    create_framework_symlinks(
-        package_dir=package_dir,
-        cap_name=cap_name,
-        owner=owner,
-        version=version,
-        kind=kind_str,
-        fingerprint=fingerprint,
-        frameworks=[framework],
-        trust_state=trust_state,
-    )
+    # Skills-dir-backed frameworks: use symlinks
+    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+    if skills_dir is not None:
+        fingerprint = existing.fingerprint
+        trust_state = "untrusted"
+        create_framework_symlinks(
+            package_dir=package_dir,
+            cap_name=cap_name,
+            owner=owner,
+            version=version,
+            kind=kind_str,
+            fingerprint=fingerprint,
+            frameworks=[framework],
+            trust_state=trust_state,
+        )
+    else:
+        # Config-backed frameworks (e.g. claude-desktop): use adapter
+        try:
+            from ..adapters import get_adapter
+            adapter = get_adapter(framework)
+        except ValueError:
+            print(f"  Unknown framework: {framework}")
+            return
+        success = adapter.install_capability(cap_name, version, package_dir, owner=owner, kind=kind_str)
+        if not success:
+            print(f"  Warning: Could not install capability for framework '{framework}'. Skipping.")
+            return
 
     all_frameworks = list(existing.frameworks) if existing.frameworks else [existing.framework] if existing.framework else []
     if framework not in all_frameworks:
@@ -875,6 +895,7 @@ def _resolve_install_frameworks(
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
+        kind=manifest.kind or "skill",
     )
 
 
@@ -894,10 +915,12 @@ class PromptHandler:
             return default
 
 
-def _force_remove_conflicting_link(cap_name: str, existing_owner: str) -> None:
+def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_framework: Optional[str] = None) -> None:
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS
 
     for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+        if target_framework and fw_name != target_framework:
+            continue
         link_path = skills_dir / cap_name
         if not link_path.exists():
             continue
@@ -913,12 +936,26 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str) -> None:
             print(f"  Removing old installation from {fw_name}...")
             import shutil
             shutil.rmtree(link_path, ignore_errors=True)
-            cap_id = f"{existing_owner}/{cap_name}"
-            try:
-                registry = Registry()
-                registry.remove_capability(cap_id)
-            except Exception:
-                pass
+            if not target_framework:
+                cap_id = f"{existing_owner}/{cap_name}"
+                try:
+                    registry = Registry()
+                    registry.remove_capability(cap_id)
+                except Exception:
+                    pass
+
+    # Config-backed frameworks (e.g. claude-desktop)
+    from ..adapters import get_adapter
+    for fw_name in ("claude-desktop",):
+        if target_framework and fw_name != target_framework:
+            continue
+        try:
+            adapter = get_adapter(fw_name)
+        except ValueError:
+            continue
+        if adapter.capability_exists(cap_name):
+            print(f"  Removing old installation from {fw_name} config...")
+            adapter.remove_capability(cap_name, owner=existing_owner, kind="mcp-server")
 
 
 def _check_bundle_member_conflict(
@@ -991,6 +1028,21 @@ def check_conflict(
                 existing_name=meta_name,
                 message=f"'{cap_name}' v{meta_version} is installed in {fw_name}. Requested v{version_spec}.",
             )
+
+    # Check config-backed frameworks (e.g. claude-desktop) via adapter
+    from ..adapters import get_adapter
+    for fw_name in ("claude-desktop",):
+        try:
+            adapter = get_adapter(fw_name)
+        except ValueError:
+            continue
+        if adapter.capability_exists(cap_name):
+            return ConflictResult(
+                state=ConflictState.ALREADY_INSTALLED,
+                existing_name=cap_name,
+                message=f"'{cap_name}' already exists in {fw_name} config.",
+            )
+
     return ConflictResult(state=ConflictState.NO_CONFLICT)
 
 

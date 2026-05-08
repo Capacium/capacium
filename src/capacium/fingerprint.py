@@ -3,10 +3,20 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+FINGERPRINT_EXCLUDES = [
+    ".git",
+    "__pycache__",
+    "*.pyc",
+    ".DS_Store",
+    ".capacium-meta.json",
+    ".cap-meta.json",
+    "capability.lock",
+]
+
 
 def compute_fingerprint(directory: Path, exclude_patterns: Optional[List[str]] = None) -> str:
     if exclude_patterns is None:
-        exclude_patterns = [".git", "__pycache__", "*.pyc", ".DS_Store"]
+        exclude_patterns = FINGERPRINT_EXCLUDES
 
     hasher = hashlib.sha256()
 
@@ -31,8 +41,9 @@ def compute_fingerprint(directory: Path, exclude_patterns: Optional[List[str]] =
     return hasher.hexdigest()
 
 
-def verify_fingerprint(directory: Path, expected_fingerprint: str) -> bool:
-    actual = compute_fingerprint(directory)
+def verify_fingerprint(directory: Path, expected_fingerprint: str,
+                       exclude_patterns: Optional[List[str]] = None) -> bool:
+    actual = compute_fingerprint(directory, exclude_patterns=exclude_patterns)
     return actual == expected_fingerprint
 
 

@@ -15,8 +15,18 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "junie": Path.home() / ".junie" / "skills",
     "hermes": Path.home() / ".hermes" / "skills",
     "copilot": Path.home() / ".config" / "github-copilot" / "skills",
-    "claude-desktop": Path.home() / ".claude-desktop" / "skills",
 }
+
+FRAMEWORK_KINDS: Dict[str, Set[str]] = {
+    "claude-desktop": {"mcp-server"},
+}
+"""Frameworks whose default kinds differ from the universal set.
+
+Frameworks not listed here default to supporting *all* kinds (skill, mcp-server,
+bundle, tool, prompt, template, workflow, connector-pack).  ``claude-desktop`` only
+supports ``mcp-server`` because it manages MCP entries in its desktop config file,
+not filesystem symlinks.
+"""
 
 FRAMEWORK_ALIASES: Dict[str, str] = {
     "opencode-command": "opencode",
@@ -70,7 +80,15 @@ def _detect_copilot() -> bool:
 
 
 def _detect_claude_desktop() -> bool:
-    return (Path.home() / ".claude-desktop").is_dir()
+    # Check for the actual Claude Desktop config file
+    import platform
+    if platform.system() == "Darwin":
+        config = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    elif platform.system() == "Windows":
+        config = Path.home() / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json"
+    else:
+        config = Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+    return config.exists()
 
 
 FRAMEWORK_DETECTORS: Dict[str, callable] = {
@@ -105,15 +123,29 @@ def _normalize_frameworks(frameworks: List[str]) -> List[str]:
     return result
 
 
+def _framework_supports_kind(fw: str, kind: str) -> bool:
+    allowed = FRAMEWORK_KINDS.get(fw)
+    if allowed is None:
+        return True
+    return kind in allowed
+
+
+def _filter_frameworks_by_kind(frameworks: List[str], kind: str) -> List[str]:
+    return [fw for fw in frameworks if _framework_supports_kind(fw, kind)]
+
+
 def resolve_frameworks(
     manifest_frameworks: Optional[List[str]],
     all_frameworks: bool = False,
     framework_filter: Optional[str] = None,
     preferred_frameworks: Optional[List[str]] = None,
+    kind: str = "skill",
 ) -> List[str]:
     framework_filter = FRAMEWORK_ALIASES.get(framework_filter or "", framework_filter) or None
     if framework_filter:
         fw = framework_filter.strip().lower()
+        if not _framework_supports_kind(fw, kind):
+            return []
         if fw in FRAMEWORK_SKILLS_DIRS:
             return [fw]
         detected = sorted(detect_active_frameworks())
@@ -124,16 +156,18 @@ def resolve_frameworks(
     if all_frameworks:
         detected = sorted(detect_active_frameworks())
         if not detected:
-            return ["opencode"]
-        return detected
+            return ["opencode"] if _framework_supports_kind("opencode", kind) else []
+        return _filter_frameworks_by_kind(detected, kind) or (
+            ["opencode"] if _framework_supports_kind("opencode", kind) else []
+        )
     if preferred_frameworks:
-        return list(preferred_frameworks)
+        return _filter_frameworks_by_kind(list(preferred_frameworks), kind)
     if manifest_frameworks:
-        return _normalize_frameworks(list(manifest_frameworks))
+        return _filter_frameworks_by_kind(_normalize_frameworks(list(manifest_frameworks)), kind)
     detected = sorted(detect_active_frameworks())
     if detected:
-        return detected
-    return ["opencode"]
+        return _filter_frameworks_by_kind(detected, kind)
+    return ["opencode"] if _framework_supports_kind("opencode", kind) else []
 
 
 def write_meta_at_target(target_dir: Path, cap_name: str, owner: str, version: str,

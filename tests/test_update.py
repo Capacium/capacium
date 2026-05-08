@@ -22,6 +22,8 @@ def test_update_reconciles_unique_unqualified_mcp_name(tmp_home, tmp_path):
         source_dir=source,
         no_lock=True,
         skip_runtime_check=True,
+        force=True,
+        yes=True,
     ) is True
 
     config_path = tmp_home / ".config" / "opencode" / "opencode.json"

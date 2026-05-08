@@ -23,6 +23,7 @@ FINGERPRINT_EXCLUDES = [
     "*.pyc",
     ".DS_Store",
     ".capacium-meta.json",
+    ".cap-meta.json",
     "capability.lock",
 ]
 

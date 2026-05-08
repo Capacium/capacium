@@ -43,7 +43,7 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
     else:
         fingerprint = compute_fingerprint(
             cap.install_path,
-            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", "capability.lock"]
+            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
         )
 
     fingerprint_bytes = fingerprint.encode("utf-8")
