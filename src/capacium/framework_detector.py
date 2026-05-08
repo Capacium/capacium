@@ -15,6 +15,7 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "junie": Path.home() / ".junie" / "skills",
     "hermes": Path.home() / ".hermes" / "skills",
     "copilot": Path.home() / ".config" / "github-copilot" / "skills",
+    "claude-desktop": Path.home() / ".claude-desktop" / "skills",
 }
 
 FRAMEWORK_ALIASES: Dict[str, str] = {
@@ -68,6 +69,10 @@ def _detect_copilot() -> bool:
     return (Path.home() / ".config" / "github-copilot").is_dir()
 
 
+def _detect_claude_desktop() -> bool:
+    return (Path.home() / ".claude-desktop").is_dir()
+
+
 FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "claude-code": _detect_claude_code,
     "cursor": _detect_cursor,
@@ -80,6 +85,7 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "junie": _detect_junie,
     "hermes": _detect_hermes,
     "copilot": _detect_copilot,
+    "claude-desktop": _detect_claude_desktop,
 }
 
 

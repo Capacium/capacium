@@ -189,8 +189,7 @@ class TestInstallFromSourceFlag:
         result = install_capability("test-cap", no_lock=True, skip_runtime_check=True)
         assert result is False
         out = capsys.readouterr().out
-        assert "No capability source specified" in out
-        assert "Usage:" in out
+        assert "Use --source" in out
 
     def test_install_accepts_cwd_with_capability(self, tmp_home, tmp_path, capsys, monkeypatch):
         from capacium.commands.install import install_capability
@@ -202,7 +201,7 @@ class TestInstallFromSourceFlag:
         )
         assert result is False
         out = capsys.readouterr().out
-        assert "does not appear to be a valid capability" in out
+        assert "Use --source" in out
 
 
 class TestFetchRemoteTags:

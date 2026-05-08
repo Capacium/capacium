@@ -13,21 +13,23 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     cap_name = spec["skill"]
     version_spec = spec["version"]
 
+    bare_id = f"{owner}/{cap_name}"
+
     registry = Registry()
     storage = StorageManager()
 
     if version_spec in ["latest", "stable"]:
         cap = registry.get_capability(cap_id)
         if cap is None:
-            print(f"Capability {cap_id} not found.")
+            print(f"Capability {bare_id} not found.")
             return False
         version = cap.version
     else:
         version = version_spec
-        cap = registry.get_capability(cap_id, version)
+        cap = registry.get_capability(bare_id, version)
 
     if cap is None:
-        print(f"Capability {cap_id}@{version} not found.")
+        print(f"Capability {bare_id}@{version} not found.")
         return False
 
     _remove_sub_capabilities(cap, registry, force)
@@ -38,9 +40,9 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
         cap_name, owner=owner, kind=cap.kind.value if cap.kind else "skill"
     )
 
-    removed = registry.remove_capability(cap_id, version)
+    removed = registry.remove_capability(bare_id, version)
     if not removed:
-        print(f"Capability {cap_id}@{version} not found in registry.")
+        print(f"Capability {bare_id}@{version} not found in registry.")
         return False
 
     package_dir = storage.get_package_dir(cap_name, version, owner=owner)
@@ -50,7 +52,7 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     if force:
         _purge_all_adapter_symlinks(cap_name)
 
-    print(f"Removed {cap_id}@{version}")
+    print(f"Removed {bare_id}@{version}")
     return True
 
 

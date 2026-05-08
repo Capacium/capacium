@@ -146,11 +146,12 @@ def install_capability(
             # Fallback to current directory
             cwd = Path.cwd()
             manifest = Manifest.detect_from_directory(cwd)
-            if manifest.name == cwd.name and manifest.version == "1.0.0" and not (cwd / "capability.yaml").exists():
-                print(f"No capability source specified and current directory ({cwd}) does not appear to be a valid capability.")
-                print("Usage: cap install <owner/name> [--source <path|url|owner/repo>]")
+            if (cwd / "capability.yaml").exists() and manifest.name == cap_name:
+                source_dir = cwd
+            else:
+                print(f"  Capability '{cap_id}' not found.")
+                print("  Use --source to install from a local path.")
                 return False
-            source_dir = cwd
 
     if version_spec in ["latest", "stable"]:
         version = VersionManager.detect_version(source_dir)
