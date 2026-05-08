@@ -57,6 +57,7 @@ class Capability:
     installed_at: Optional[datetime] = None
     dependencies: Optional[List[str]] = None
     framework: Optional[str] = None
+    frameworks: Optional[List[str]] = None
     source_url: Optional[str] = None
 
     @property
@@ -64,12 +65,14 @@ class Capability:
         return f"{self.owner}/{self.name}"
 
     def to_dict(self) -> Dict[str, Any]:
+        import json as _json
         data = asdict(self)
         data["install_path"] = str(self.install_path) if self.install_path else ""
         data["installed_at"] = self.installed_at.isoformat() if self.installed_at else ""
         data["kind"] = self.kind.value
         data["dependencies"] = ",".join(self.dependencies) if self.dependencies else ""
         data["framework"] = self.framework or ""
+        data["frameworks"] = _json.dumps(self.frameworks) if self.frameworks else "[]"
         data["source_url"] = self.source_url or ""
         return data
 
@@ -100,6 +103,12 @@ class Capability:
                 filtered["kind"] = Kind.SKILL
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
+        if "frameworks" in filtered and isinstance(filtered["frameworks"], str):
+            import json as _json
+            try:
+                filtered["frameworks"] = _json.loads(filtered["frameworks"])
+            except (_json.JSONDecodeError, TypeError):
+                filtered["frameworks"] = None
         return cls(**filtered)
 
 

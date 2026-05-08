@@ -328,3 +328,46 @@ class TestPromptFrameworkSelection:
         monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError))
         result = _prompt_framework_selection()
         assert len(result) == 2
+
+
+class TestFrameworkAppend:
+    def test_is_framework_already_returns_true_when_symlink_exists(self, monkeypatch, tmp_path):
+        from capacium.commands.install import _is_framework_already
+
+        skills_dir = tmp_path / "opencode" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "test-cap").mkdir()
+        monkeypatch.setattr("capacium.framework_detector.FRAMEWORK_SKILLS_DIRS", {"opencode": skills_dir})
+        assert _is_framework_already("test-cap", "test", "1.0.0", "opencode") is True
+
+    def test_is_framework_already_returns_false_when_symlink_absent(self, monkeypatch, tmp_path):
+        from capacium.commands.install import _is_framework_already
+
+        skills_dir = tmp_path / "opencode" / "skills"
+        skills_dir.mkdir(parents=True)
+        monkeypatch.setattr("capacium.framework_detector.FRAMEWORK_SKILLS_DIRS", {"opencode": skills_dir})
+        assert _is_framework_already("test-cap", "test", "1.0.0", "opencode") is False
+
+
+class TestFrameworkListOutput:
+    def test_print_capabilities_shows_multiple_frameworks(self, capsys):
+        from capacium.models import Capability, Kind
+        from datetime import datetime
+        from pathlib import Path
+
+        cap = Capability(
+            owner="test",
+            name="multi-fw-cap",
+            version="1.0.0",
+            kind=Kind.SKILL,
+            fingerprint="abc123",
+            install_path=Path("/tmp"),
+            installed_at=datetime.now(),
+            framework="claude-code",
+            frameworks=["claude-code", "opencode", "gemini-cli"],
+        )
+
+        from capacium.commands.list_capabilities import _print_capabilities
+        _print_capabilities([cap], "")
+        out = capsys.readouterr().out
+        assert "claude-code, opencode, gemini-cli" in out

@@ -1,3 +1,4 @@
+import json as _json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,6 +47,7 @@ class Registry:
                     installed_at TEXT NOT NULL,
                     dependencies TEXT,
                     framework TEXT,
+                    frameworks TEXT DEFAULT '[]',
                     UNIQUE(owner, name, version)
                 )
             """)
@@ -89,6 +91,9 @@ class Registry:
             if "source_url" not in col_names:
                 cursor.execute("ALTER TABLE capabilities ADD COLUMN source_url TEXT")
                 self._backfill_source_urls()
+            if "frameworks" not in col_names:
+                cursor.execute("ALTER TABLE capabilities ADD COLUMN frameworks TEXT DEFAULT '[]'")
+                self._backfill_frameworks()
 
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='skills'")
             old_table = cursor.fetchone()
@@ -107,13 +112,61 @@ class Registry:
             cursor = conn.cursor()
             try:
                 cursor.execute("""
-                    INSERT INTO capabilities (owner, name, version, kind, fingerprint, install_path, installed_at, dependencies, framework, source_url)
-                    VALUES (:owner, :name, :version, :kind, :fingerprint, :install_path, :installed_at, :dependencies, :framework, :source_url)
+                    INSERT INTO capabilities (owner, name, version, kind, fingerprint, install_path, installed_at, dependencies, framework, frameworks, source_url)
+                    VALUES (:owner, :name, :version, :kind, :fingerprint, :install_path, :installed_at, :dependencies, :framework, :frameworks, :source_url)
                 """, cap.to_dict())
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+    def _backfill_frameworks(self):
+        """Backfill the frameworks JSON column from .cap-meta.json in framework symlinks."""
+        from .framework_detector import FRAMEWORK_SKILLS_DIRS
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, owner, name, version, framework, install_path"
+                " FROM capabilities WHERE frameworks IS NULL OR frameworks = '' OR frameworks = '[]'"
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                cap_id_val = row[0]
+                owner_val = row[1]
+                name_val = row[2]
+                version_val = row[3]
+                framework_val = row[4]
+
+                found_frameworks = set()
+                if framework_val:
+                    found_frameworks.add(framework_val)
+
+                for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+                    meta_path = skills_dir / name_val / ".cap-meta.json"
+                    if meta_path.exists():
+                        try:
+                            meta = _json.loads(meta_path.read_text())
+                            meta_owner = meta.get("owner", "")
+                            meta_name = meta.get("name", "")
+                            meta_version = meta.get("version", "")
+                            if meta_owner == owner_val and meta_name == name_val and meta_version == version_val:
+                                fw_list = meta.get("frameworks", [])
+                                if fw_list:
+                                    found_frameworks.update(fw_list)
+                                else:
+                                    found_frameworks.add(fw_name)
+                        except (_json.JSONDecodeError, OSError):
+                            pass
+
+                if not found_frameworks and framework_val:
+                    found_frameworks.add(framework_val)
+
+                frameworks_json = _json.dumps(sorted(found_frameworks))
+                cursor.execute(
+                    "UPDATE capabilities SET frameworks = ? WHERE id = ?",
+                    (frameworks_json, cap_id_val)
+                )
+            conn.commit()
 
     def _backfill_source_urls(self):
         """Attempt to backfill source_url from install_path/.git config for existing entries."""
@@ -210,8 +263,8 @@ class Registry:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM capabilities WHERE framework = ? ORDER BY owner, name, version",
-                (framework,)
+                "SELECT * FROM capabilities WHERE frameworks LIKE ? OR (framework = ? AND (frameworks IS NULL OR frameworks = '' OR frameworks = '[]')) ORDER BY owner, name, version",
+                (f'%"{framework}"%', framework)
             )
             rows = cursor.fetchall()
             return [Capability.from_dict(dict(row)) for row in rows]
@@ -226,7 +279,8 @@ class Registry:
                 conditions.append("kind = ?")
                 params.append(kind.value)
             if framework is not None:
-                conditions.append("framework = ?")
+                conditions.append("(frameworks LIKE ? OR ((frameworks IS NULL OR frameworks = '' OR frameworks = '[]') AND framework = ?))")
+                params.append(f'%"{framework}"%')
                 params.append(framework)
 
             sql = "SELECT * FROM capabilities WHERE " + " AND ".join(conditions) + " ORDER BY owner, name, version"
@@ -245,6 +299,7 @@ class Registry:
                     dependencies = :dependencies,
                     kind = :kind,
                     framework = :framework,
+                    frameworks = :frameworks,
                     source_url = :source_url
                 WHERE owner = :owner AND name = :name AND version = :version
             """, cap.to_dict())

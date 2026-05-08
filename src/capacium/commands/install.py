@@ -57,6 +57,9 @@ def install_capability(
     conflict = check_conflict(cap_name, owner, version_spec)
     if conflict.state != ConflictState.NO_CONFLICT:
         if conflict.state == ConflictState.ALREADY_INSTALLED:
+            if framework and not _is_framework_already(cap_name, owner, version_spec, framework):
+                _append_framework(cap_name, owner, version_spec, framework)
+                return True
             print(f"  {conflict.message}")
             return True
         auto_skip = yes
@@ -228,6 +231,7 @@ def install_capability(
         installed_at=datetime.now(),
         dependencies=[],
         framework=first_fw,
+        frameworks=list(resolved_frameworks),
         source_url=source_url,
     )
 
@@ -709,6 +713,83 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
         return None
 
     return repo_dir
+
+
+def _is_framework_already(cap_name: str, owner: str, version_spec: str, framework: str) -> bool:
+    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+    if skills_dir is None:
+        return False
+    link_path = skills_dir / cap_name
+    return link_path.exists()
+
+
+def _append_framework(
+    cap_name: str,
+    owner: str,
+    version_spec: str,
+    framework: str,
+) -> None:
+    from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
+
+    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+    if skills_dir is None:
+        print(f"  Unknown framework: {framework}")
+        return
+
+    registry = Registry()
+    cap_id = f"{owner}/{cap_name}"
+    existing = registry.get_capability(cap_id, version_spec)
+    if existing is None:
+        print(f"  Error: {cap_id}@{version_spec} not found in registry")
+        return
+
+    package_dir = existing.install_path
+    if package_dir is None or not package_dir.exists():
+        print(f"  Error: install path not found for {cap_id}@{version_spec}")
+        return
+
+    version = version_spec
+    if version_spec in ("latest", "stable", ""):
+        version = existing.version
+
+    kind_str = existing.kind.value if existing.kind else "skill"
+    fingerprint = existing.fingerprint
+    trust_state = "untrusted"
+
+    create_framework_symlinks(
+        package_dir=package_dir,
+        cap_name=cap_name,
+        owner=owner,
+        version=version,
+        kind=kind_str,
+        fingerprint=fingerprint,
+        frameworks=[framework],
+        trust_state=trust_state,
+    )
+
+    all_frameworks = list(existing.frameworks) if existing.frameworks else [existing.framework] if existing.framework else []
+    if framework not in all_frameworks:
+        all_frameworks.append(framework)
+
+    from ..models import Capability as CapModel
+    updated = CapModel(
+        owner=existing.owner,
+        name=existing.name,
+        version=existing.version,
+        kind=existing.kind,
+        fingerprint=existing.fingerprint,
+        install_path=existing.install_path,
+        installed_at=existing.installed_at,
+        dependencies=existing.dependencies,
+        framework=existing.framework,
+        frameworks=all_frameworks,
+        source_url=existing.source_url,
+    )
+    registry.update_capability(updated)
+
+    print(f"  Added framework '{framework}' to {cap_id}@{version}")
+    print(f"  Frameworks: {', '.join(all_frameworks)}")
 
 
 def _is_interactive() -> bool:

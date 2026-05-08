@@ -60,7 +60,8 @@ def _print_capabilities(capabilities, label: str) -> None:
     for cap in capabilities:
         cap_id = f"{cap.owner}/{cap.name}"
         kind_str = cap.kind.value if cap.kind else "skill"
-        fw_str = cap.framework or "—"
+        all_frameworks = cap.frameworks if cap.frameworks else ([cap.framework] if cap.framework else [])
+        fw_str = ", ".join(all_frameworks) if all_frameworks else "—"
         print(f"  * [{kind_str}] {cap_id}@{cap.version}  → {fw_str}")
         print(f"    fingerprint: {cap.fingerprint[:8]}...")
         installed = cap.installed_at.date() if cap.installed_at else "unknown"
