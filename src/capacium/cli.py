@@ -81,7 +81,7 @@ def main():
     list_parser.add_argument("--framework", help="Filter by framework (opencode, claude-code, cursor, etc.)")
 
     search_parser = subparsers.add_parser("search", help="Search for capabilities")
-    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument("query", nargs="?", default="", help="Search query (omit to browse all)")
     search_parser.add_argument("--kind", help="Filter by kind")
     search_parser.add_argument("--registry", help="Remote registry URL to search")
     search_parser.add_argument("--category", help="Filter by category slug")

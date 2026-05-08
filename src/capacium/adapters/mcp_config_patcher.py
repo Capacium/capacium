@@ -67,12 +67,21 @@ class McpConfigPatcher:
                 McpConfigPatcher._write_toml_simple(f, data)
 
     @staticmethod
+    def _toml_quote_key(key: str) -> str:
+        import re
+        if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+            return key
+        return f'"{key}"'
+
+    @staticmethod
     def _write_toml_simple(f, data: dict, prefix: str = "") -> None:
-        """Minimal TOML writer for stdlib-only environments."""
         for key, value in data.items():
-            full_key = f"{prefix}.{key}" if prefix else key
+            full_key = f"{prefix}.{McpConfigPatcher._toml_quote_key(key)}" if prefix else key
             if isinstance(value, dict):
-                f.write(f"\n[{full_key}]\n")
+                if prefix:
+                    f.write(f"[{prefix}.{McpConfigPatcher._toml_quote_key(key)}]\n")
+                else:
+                    f.write(f"[{McpConfigPatcher._toml_quote_key(key)}]\n")
                 McpConfigPatcher._write_toml_simple(f, value, full_key)
             elif isinstance(value, list):
                 f.write(f"{key} = {json.dumps(value)}\n")

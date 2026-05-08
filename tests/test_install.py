@@ -267,7 +267,7 @@ class TestPromptFrameworkSelection:
         result = _prompt_framework_selection()
         assert result == ["opencode"]
 
-    def test_filters_to_manifest_frameworks(self, monkeypatch):
+    def test_shows_all_detected_not_just_manifest(self, monkeypatch):
         from capacium.commands.install import _prompt_framework_selection
 
         monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code", "cursor"})
@@ -275,8 +275,8 @@ class TestPromptFrameworkSelection:
         result = _prompt_framework_selection(
             manifest_frameworks=["opencode", "claude-code"]
         )
-        assert set(result).issubset({"opencode", "claude-code"})
-        assert len(result) == 2
+        # Now returns ALL detected, not just manifest-declared
+        assert set(result) == {"opencode", "claude-code", "cursor"}
 
     def test_all_shortcut_returns_all(self, monkeypatch):
         from capacium.commands.install import _prompt_framework_selection

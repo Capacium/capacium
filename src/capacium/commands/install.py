@@ -824,13 +824,7 @@ def _prompt_framework_selection(
 ) -> List[str]:
     detected = sorted(detect_active_frameworks())
 
-    if manifest_frameworks:
-        manifest_set = set(manifest_frameworks)
-        available = [f for f in detected if f in manifest_set]
-        if not available:
-            available = detected
-    else:
-        available = detected
+    available = detected
 
     if not available:
         return ["opencode"]

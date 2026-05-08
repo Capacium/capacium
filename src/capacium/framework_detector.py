@@ -15,6 +15,7 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "junie": Path.home() / ".junie" / "skills",
     "hermes": Path.home() / ".hermes" / "skills",
     "copilot": Path.home() / ".config" / "github-copilot" / "skills",
+    "qwen": Path.home() / ".qwen" / "skills",
 }
 
 FRAMEWORK_KINDS: Dict[str, Set[str]] = {
@@ -79,6 +80,10 @@ def _detect_copilot() -> bool:
     return (Path.home() / ".config" / "github-copilot").is_dir()
 
 
+def _detect_qwen() -> bool:
+    return (Path.home() / ".qwen").is_dir()
+
+
 def _detect_claude_desktop() -> bool:
     # Check for the actual Claude Desktop config file
     import platform
@@ -103,6 +108,7 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "junie": _detect_junie,
     "hermes": _detect_hermes,
     "copilot": _detect_copilot,
+    "qwen": _detect_qwen,
     "claude-desktop": _detect_claude_desktop,
 }
 
