@@ -16,7 +16,7 @@ from ..runtimes import (
     format_failure_report,
     infer_required_runtimes,
 )
-from ..framework_detector import resolve_frameworks, create_framework_symlinks
+from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 
@@ -165,9 +165,27 @@ def install_capability(
         if not _preflight_runtimes(source_manifest):
             return False
 
-    resolved_frameworks = _resolve_install_frameworks(
-        source_manifest, all_frameworks=all_frameworks, framework_filter=framework
+    interactive = (
+        _is_interactive()
+        and not framework
+        and not all_frameworks
+        and not yes
     )
+    if interactive:
+        preferred = None
+        try:
+            from ..utils.config import ConfigManager
+            preferred = ConfigManager.load().get("preferred_frameworks") or None
+        except Exception:
+            pass
+        resolved_frameworks = _prompt_framework_selection(
+            source_manifest.frameworks,
+            preferred_frameworks=preferred,
+        )
+    else:
+        resolved_frameworks = _resolve_install_frameworks(
+            source_manifest, all_frameworks=all_frameworks, framework_filter=framework
+        )
 
     installed_frameworks: set[str] = set()
     for fw in resolved_frameworks:
@@ -691,6 +709,70 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
         return None
 
     return repo_dir
+
+
+def _is_interactive() -> bool:
+    import sys
+    return sys.stdin.isatty()
+
+
+def _prompt_framework_selection(
+    manifest_frameworks: Optional[List[str]] = None,
+    preferred_frameworks: Optional[List[str]] = None,
+) -> List[str]:
+    detected = sorted(detect_active_frameworks())
+
+    if manifest_frameworks:
+        manifest_set = set(manifest_frameworks)
+        available = [f for f in detected if f in manifest_set]
+        if not available:
+            available = detected
+    else:
+        available = detected
+
+    if not available:
+        return ["opencode"]
+
+    if len(available) == 1:
+        print(f"\n  One framework detected: {available[0]}")
+        return available
+
+    print("\n  Detected frameworks on this system:")
+    for i, fw in enumerate(available, 1):
+        marker = ""
+        if manifest_frameworks and fw in set(manifest_frameworks):
+            marker = "  ← declared in manifest"
+        print(f"    [{i}] {fw}{marker}")
+
+    print("\n  Install to which frameworks?")
+    print(f"    [a] All detected ({len(available)})")
+    print(f"    [1-{len(available)}] Select by number (comma-separated)")
+    print("    [Enter] = a")
+
+    try:
+        choice = input("  > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return available
+
+    if not choice or choice == "a":
+        return available
+
+    indices = []
+    for part in choice.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(available):
+                indices.append(idx)
+            else:
+                print(f"  Invalid selection: {part} (out of range 1-{len(available)})")
+                return available
+
+    if not indices:
+        return available
+
+    return [available[i] for i in indices]
 
 
 def _resolve_install_frameworks(

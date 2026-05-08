@@ -244,3 +244,87 @@ class TestIsGitRemoteUrl:
         assert _is_git_remote_url("http://example.com/repo")
         assert not _is_git_remote_url("/local/path")
         assert not _is_git_remote_url("")
+
+
+class TestIsInteractive:
+    def test_is_interactive_exists(self):
+        from capacium.commands.install import _is_interactive
+        result = _is_interactive()
+        assert isinstance(result, bool)
+
+
+class TestPromptFrameworkSelection:
+    def test_single_framework_no_prompt(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode"})
+        result = _prompt_framework_selection()
+        assert result == ["opencode"]
+
+    def test_empty_detection_returns_opencode(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: set())
+        result = _prompt_framework_selection()
+        assert result == ["opencode"]
+
+    def test_filters_to_manifest_frameworks(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code", "cursor"})
+        monkeypatch.setattr("builtins.input", lambda _: "a")
+        result = _prompt_framework_selection(
+            manifest_frameworks=["opencode", "claude-code"]
+        )
+        assert set(result).issubset({"opencode", "claude-code"})
+        assert len(result) == 2
+
+    def test_all_shortcut_returns_all(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code"})
+        monkeypatch.setattr("builtins.input", lambda _: "a")
+        result = _prompt_framework_selection()
+        assert result == ["claude-code", "opencode"]
+
+    def test_empty_input_returns_all(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code"})
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        result = _prompt_framework_selection()
+        assert result == ["claude-code", "opencode"]
+
+    def test_single_number_selection(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code"})
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+        result = _prompt_framework_selection()
+        assert result == ["opencode"]
+
+    def test_comma_separated_selection(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code", "cursor"})
+        monkeypatch.setattr("builtins.input", lambda _: "2,3")
+        result = _prompt_framework_selection()
+        assert "cursor" in result
+        assert "opencode" in result
+        assert "claude-code" not in result
+
+    def test_out_of_range_falls_back_to_all(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code"})
+        monkeypatch.setattr("builtins.input", lambda _: "99")
+        result = _prompt_framework_selection()
+        assert len(result) == 2
+
+    def test_eof_error_returns_all(self, monkeypatch):
+        from capacium.commands.install import _prompt_framework_selection
+
+        monkeypatch.setattr("capacium.commands.install.detect_active_frameworks", lambda: {"opencode", "claude-code"})
+        monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError))
+        result = _prompt_framework_selection()
+        assert len(result) == 2
