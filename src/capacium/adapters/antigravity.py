@@ -62,13 +62,13 @@ class AntigravityAdapter(FrameworkAdapter):
 
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
         return McpConfigPatcher.remove_json_mcp_server(
-            self.config_path, cap_name, "mcpServers",
+            self.config_path, McpConfigPatcher.build_server_key(cap_name, owner), "mcpServers",
         )
 
-    def capability_exists(self, cap_name: str) -> bool:
-        link_path = self.skills_dir / cap_name
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
         if link_path.exists() and link_path.is_symlink():
             return True
         return McpConfigPatcher.mcp_server_exists_json(
-            self.config_path, cap_name, "mcpServers",
+            self.config_path, McpConfigPatcher.build_server_key(cap_name, owner), "mcpServers",
         )

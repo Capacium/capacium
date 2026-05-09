@@ -42,8 +42,8 @@ class GeminiCLIAdapter(FrameworkAdapter):
                     link_path.unlink()
         return True
 
-    def capability_exists(self, cap_name: str) -> bool:
-        link_path = self.skills_dir / cap_name
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
         return link_path.exists() and link_path.is_symlink()
 
     def list_capabilities(self) -> List[str]:
@@ -104,5 +104,5 @@ class GeminiCLIAdapter(FrameworkAdapter):
         from .mcp_config_patcher import McpConfigPatcher
         config_path = Path.home() / ".gemini" / "settings" / "mcp_config.json"
         return McpConfigPatcher.remove_json_mcp_server(
-            config_path, cap_name, "mcpServers",
+            config_path, McpConfigPatcher.build_server_key(cap_name, owner), "mcpServers",
         )

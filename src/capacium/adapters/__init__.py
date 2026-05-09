@@ -24,6 +24,7 @@ from .goose import GooseAdapter
 from .aider import AiderAdapter
 from .openclaw import OpenClawAdapter
 from .hermes import HermesAdapter
+from .qwen import QwenAdapter
 from .copilot import CopilotAdapter
 from .langchain_bridge import LangChainToolAdapter, FlowiseAdapter
 
@@ -83,6 +84,7 @@ register_adapter("sourcegraph-cody", SourcegraphCodyAdapter)
 register_adapter("antigravity", AntigravityAdapter)
 register_adapter("continue-dev", ContinueDevAdapter)
 register_adapter("codex", CodexAdapter)
+register_adapter("qwen", QwenAdapter)
 register_adapter("gemini-cli", GeminiCLIAdapter)
 
 # ── Tier 2: Specialized / Workflow ─────────────────────────────────────

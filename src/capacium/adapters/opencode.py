@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
 from .base import FrameworkAdapter, _cap_id, ensure_package_dir
+from .mcp_config_patcher import McpConfigPatcher
 
 
 class OpenCodeAdapter(FrameworkAdapter):
@@ -40,20 +41,19 @@ class OpenCodeAdapter(FrameworkAdapter):
                 link_path.unlink()
         return True
 
-    def capability_exists(self, cap_name: str) -> bool:
-        link_path = self.opencode_skills_dir / cap_name
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
         if link_path.exists() and link_path.is_symlink():
             return True
 
-        from .mcp_config_patcher import McpConfigPatcher
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
         return (
-            McpConfigPatcher.mcp_server_exists_json(config_path, cap_name, "mcp")
-            or McpConfigPatcher.mcp_server_exists_json(config_path, cap_name, "mcpServers")
+            McpConfigPatcher.mcp_server_exists_json(config_path, server_key, "mcp")
+            or McpConfigPatcher.mcp_server_exists_json(config_path, server_key, "mcpServers")
         )
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        from .mcp_config_patcher import McpConfigPatcher
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
         if package_dir.exists() and package_dir.resolve() != source_dir.resolve():
             shutil.rmtree(package_dir)
@@ -73,8 +73,6 @@ class OpenCodeAdapter(FrameworkAdapter):
             cap_name, package_dir, mcp_meta,
         )
 
-        # v0.7.2 and older wrote OpenCode MCP servers to the Claude-style
-        # mcpServers block. Remove the stale entry when upgrading/reconciling.
         legacy_servers = config.get("mcpServers")
         if isinstance(legacy_servers, dict):
             legacy_servers.pop(cap_name, None)
@@ -132,7 +130,6 @@ class OpencodeCommandAdapter(FrameworkAdapter):
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner)
 
         md_files = sorted(package_dir.glob("*.md"))
-        # Skip SKILL.md files — those are loaded by the skills adapter, not as commands
         command_files = [f for f in md_files if f.name != "SKILL.md"]
         cmd_file = None
         for f in command_files:

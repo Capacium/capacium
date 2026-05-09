@@ -1,7 +1,8 @@
-"""Codex (OpenAI CLI/IDE) adapter.
+"""Qwen CLI adapter — Skills + MCP.
 
-Skills: ~/.codex/skills/<name>/
-MCP:   ~/.codex/config.toml
+Qwen CLI — Alibaba's open-source AI coding assistant.
+Skills: ~/.qwen/skills/<name>/  (SKILL.md standard, auto-discovered on startup)
+MCP:   ~/.qwen/mcp_config.json → mcpServers
 """
 import json
 import shutil
@@ -13,16 +14,17 @@ from .base import FrameworkAdapter, _cap_id, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
-class CodexAdapter(FrameworkAdapter):
+class QwenAdapter(FrameworkAdapter):
 
     def __init__(self):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
-        self.config_path = Path.home() / ".codex" / "config.toml"
-        self.skills_dir = Path.home() / ".codex" / "skills"
-        self.skills_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dir = Path.home() / ".qwen" / "skills"
+        self.config_path = Path.home() / ".qwen" / "mcp_config.json"
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         link_path = self.skills_dir / _cap_id(cap_name, owner)
@@ -51,31 +53,25 @@ class CodexAdapter(FrameworkAdapter):
         from ..manifest import Manifest
         manifest = Manifest.detect_from_directory(package_dir)
         mcp_meta = manifest.get_mcp_metadata()
-        mcp_meta = McpConfigPatcher.enrich_mcp_meta_for_git(mcp_meta, manifest.repository)
-        entry = McpConfigPatcher.build_mcp_entry(cap_name, package_dir, mcp_meta)
 
-        McpConfigPatcher.backup(self.config_path)
-        config = McpConfigPatcher.read_toml(self.config_path)
-        servers = config.setdefault("mcp_servers", {})
-        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
-        servers[server_key] = entry
-        McpConfigPatcher.write_toml(self.config_path, config)
-        return True
+        return McpConfigPatcher.inject_json_mcp_server(
+            config_path=self.config_path,
+            server_key=McpConfigPatcher.build_server_key(cap_name, owner),
+            mcp_section_key="mcpServers",
+            cap_name=cap_name,
+            source_dir=package_dir,
+            mcp_meta=mcp_meta,
+        )
 
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
-        config = McpConfigPatcher.read_toml(self.config_path)
-        servers = config.get("mcp_servers", {})
-        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
-        if server_key in servers:
-            McpConfigPatcher.backup(self.config_path)
-            del servers[server_key]
-            McpConfigPatcher.write_toml(self.config_path, config)
-        return True
+        return McpConfigPatcher.remove_json_mcp_server(
+            self.config_path, cap_name, "mcpServers",
+        )
 
     def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
         link_path = self.skills_dir / _cap_id(cap_name, owner)
         if link_path.exists() and link_path.is_symlink():
             return True
-        config = McpConfigPatcher.read_toml(self.config_path)
-        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
-        return server_key in config.get("mcp_servers", {})
+        return McpConfigPatcher.mcp_server_exists_json(
+            self.config_path, McpConfigPatcher.build_server_key(cap_name, owner), "mcpServers",
+        )

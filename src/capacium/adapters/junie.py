@@ -40,8 +40,8 @@ class JunieAdapter(FrameworkAdapter):
                 link_path.unlink()
         return True
 
-    def capability_exists(self, cap_name: str) -> bool:
-        link_path = self.skills_dir / cap_name
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
         return link_path.exists() and link_path.is_symlink()
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:

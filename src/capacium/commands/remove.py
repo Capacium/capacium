@@ -34,11 +34,15 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
 
     _remove_sub_capabilities(cap, registry, force)
 
-    framework_name = cap.framework or "opencode"
-    adapter = get_adapter(framework_name)
-    adapter.remove_capability(
-        cap_name, owner=owner, kind=cap.kind.value if cap.kind else "skill"
-    )
+    frameworks = cap.frameworks if cap.frameworks else [cap.framework or "opencode"]
+    for fw_name in frameworks:
+        try:
+            adapter = get_adapter(fw_name)
+        except ValueError:
+            continue
+        adapter.remove_capability(
+            cap_name, owner=owner, kind=cap.kind.value if cap.kind else "skill"
+        )
 
     removed = registry.remove_capability(bare_id, version)
     if not removed:
@@ -67,12 +71,16 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         Path.home() / ".claude" / "commands",
         Path.home() / ".gemini" / "skills",
         Path.home() / ".gemini" / "commands",
+        Path.home() / ".gemini" / "antigravity" / "skills",
+        Path.home() / ".gemini" / "antigravity" / "commands",
         Path.home() / ".cursor" / "skills",
         Path.home() / ".cursor" / "commands",
         Path.home() / ".continue" / "skills",
         Path.home() / ".continue" / "commands",
         Path.home() / ".codex" / "skills",
         Path.home() / ".codex" / "commands",
+        Path.home() / ".qwen" / "skills",
+        Path.home() / ".qwen" / "commands",
         Path.home() / ".agents" / "skills",
         Path.home() / ".agents" / "commands",
     ]
@@ -97,6 +105,15 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
                 command_link.unlink(missing_ok=True)
         elif command_link.exists():
             command_link.unlink(missing_ok=True)
+
+    # Config-backed frameworks (TOML / JSON)
+    for fw_name in ("claude-desktop", "codex", "antigravity", "gemini-cli"):
+        try:
+            adapter = get_adapter(fw_name)
+        except ValueError:
+            continue
+        if adapter.capability_exists(cap_name):
+            adapter.remove_capability(cap_name, kind="mcp-server")
 
 
 def _remove_sub_capabilities(cap, registry: Registry, force: bool = False) -> None:
@@ -128,13 +145,17 @@ def _remove_sub_capabilities(cap, registry: Registry, force: bool = False) -> No
         m_owner = owner_name[0] if len(owner_name) > 1 else "global"
         m_name = owner_name[-1]
 
-        framework = member_cap.framework if member_cap else "opencode"
-        adapter = get_adapter(framework)
-        adapter.remove_capability(
-            m_name,
-            owner=m_owner,
-            kind=member_cap.kind.value if member_cap and member_cap.kind else "skill",
-        )
+        frameworks = member_cap.frameworks if (member_cap and member_cap.frameworks) else [member_cap.framework if member_cap else "opencode"]
+        for fw_name in frameworks:
+            try:
+                adapter = get_adapter(fw_name)
+            except ValueError:
+                continue
+            adapter.remove_capability(
+                m_name,
+                owner=m_owner,
+                kind=member_cap.kind.value if member_cap and member_cap.kind else "skill",
+            )
 
         if member_cap is not None:
             registry.remove_capability(member_cap_id, member_version)

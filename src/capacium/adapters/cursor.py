@@ -64,12 +64,12 @@ class CursorAdapter(FrameworkAdapter):
                     pass
         return True
 
-    def capability_exists(self, cap_name: str) -> bool:
-        link_path = self.skills_dir / cap_name
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
         if link_path.exists() and link_path.is_symlink():
             return True
         return McpConfigPatcher.mcp_server_exists_json(
-            self._get_mcp_path(), cap_name, self.MCP_SECTION_KEY,
+            self._get_mcp_path(), McpConfigPatcher.build_server_key(cap_name, owner), self.MCP_SECTION_KEY,
         )
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
