@@ -1,6 +1,6 @@
 import base64
 from ..registry import Registry
-from ..signing import load_private_key, sign, list_keys
+from ..signing import load_private_key, sign, list_keys, export_public_key_pem
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..models import Kind
 from ._resolve import resolve_cap_id
@@ -46,11 +46,39 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
             exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
         )
 
-    fingerprint_bytes = fingerprint.encode("utf-8")
-    sig_bytes = sign(privkey, fingerprint_bytes)
+    # P0-004: Exchange expects signature over "<canonical_name>|<version>"
+    # (same format used by the admin /sign endpoint for consistency)
+    canonical_name = f"{cap.owner}/{cap.name}"
+    version = cap.version or "0.0.0"
+    message = f"{canonical_name}|{version}".encode("utf-8")
+    sig_bytes = sign(privkey, message)
     sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
 
+    # Store locally
     registry.store_signature(cap.owner, cap.name, cap.version, key_name, sig_b64)
     print(f"Signed {cap.id}@{cap.version} with key '{key_name}'")
     print(f"Signature: {sig_b64[:32]}...")
+
+    # P0-004: POST publisher signature to Exchange so trust_state advances
+    pub_pem = export_public_key_pem(key_name)
+    if pub_pem is None:
+        print("  Warning: could not export public key PEM — skipping Exchange upload.")
+        return True
+
+    try:
+        from ..registry_client import RegistryClient, RegistryClientError
+        client = RegistryClient.from_config()
+        result = client.publisher_sign(
+            owner=cap.owner,
+            name=cap.name,
+            public_key_pem=pub_pem,
+            signature_b64=sig_b64,
+            key_name=key_name,
+        )
+        trust_state = result.get("trust_state", "unknown")
+        print(f"  Exchange updated: trust_state={trust_state}")
+    except Exception as exc:
+        # Non-fatal: local signature is already stored
+        print(f"  Warning: could not upload signature to Exchange: {exc}")
+
     return True

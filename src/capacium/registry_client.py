@@ -69,8 +69,15 @@ class RegistryClient:
 
     @staticmethod
     def from_config() -> "RegistryClient":
-        from .utils.config import get_registry_url
-        return RegistryClient(base_url=get_registry_url())
+        from .utils.config import get_registry_url, load_auth_token
+        url = get_registry_url().rstrip("/")
+        # Strip /v2 suffix — _build_registry_url appends /v2/* paths itself.
+        # config.yaml stores the full URL (e.g. https://api.capacium.xyz/v2)
+        # so without this strip we'd get …/v2/v2/listings.
+        if url.endswith("/v2"):
+            url = url[:-3]
+        token = load_auth_token()
+        return RegistryClient(base_url=url, token=token)
 
     def _get_token(self) -> Optional[str]:
         if self._token:
@@ -360,6 +367,28 @@ class RegistryClient:
     ) -> Dict[str, Any]:
         url = self._build_registry_url("/v2/submit", registry_url)
         payload = {"github_url": github_url}
+        data = json.dumps(payload).encode("utf-8")
+        return self._request(url, method="POST", data=data)
+
+    def publisher_sign(
+        self,
+        owner: str,
+        name: str,
+        public_key_pem: str,
+        signature_b64: str,
+        key_name: str = "",
+        registry_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """P0-004: POST publisher Ed25519 signature to Exchange for verification and storage."""
+        url = self._build_registry_url(
+            f"/v2/capabilities/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}/publisher-sign",
+            registry_url,
+        )
+        payload = {
+            "public_key_pem": public_key_pem,
+            "signature_b64": signature_b64,
+            "key_name": key_name,
+        }
         data = json.dumps(payload).encode("utf-8")
         return self._request(url, method="POST", data=data)
 

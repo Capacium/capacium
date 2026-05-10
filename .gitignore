@@ -27,3 +27,4 @@ src/capacium/marketplace/.next/
 /.claude/
 /.opencode/skills/
 /.gemini/skills/
+perplexity.log

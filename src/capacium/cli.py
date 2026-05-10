@@ -213,6 +213,11 @@ def main():
     key_import_parser = key_sub.add_parser("import", help="Import a key from a PEM file")
     key_import_parser.add_argument("name", help="Key name")
     key_import_parser.add_argument("pem_file", help="Path to PEM file")
+    # P0-003: cap key show [--public] <name> — human-friendly alias for export
+    key_show_parser = key_sub.add_parser("show", help="Show a key (public PEM by default)")
+    key_show_parser.add_argument("name", help="Key name")
+    key_show_parser.add_argument("--public", action="store_true", default=True,
+                                 help="Show public key as PEM (default)")
 
     sign_parser = subparsers.add_parser("sign", help="Sign a capability with an Ed25519 key")
     sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
@@ -510,6 +515,10 @@ def main():
                 sys.exit(0 if success else 1)
             elif sub == "import":
                 success = key_import(args.name, args.pem_file)
+                sys.exit(0 if success else 1)
+            elif sub == "show":
+                # P0-003: alias for export (--public is default and only mode for now)
+                success = key_export(args.name)
                 sys.exit(0 if success else 1)
             else:
                 key_parser.print_help()
