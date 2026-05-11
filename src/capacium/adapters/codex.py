@@ -52,7 +52,15 @@ class CodexAdapter(FrameworkAdapter):
         manifest = Manifest.detect_from_directory(package_dir)
         mcp_meta = manifest.get_mcp_metadata()
         mcp_meta = McpConfigPatcher.enrich_mcp_meta_for_git(mcp_meta, manifest.repository)
-        entry = McpConfigPatcher.build_mcp_entry(cap_name, package_dir, mcp_meta)
+
+        # honour entrypoint for packages with a subdirectory layout (e.g. entrypoint: mcp-server)
+        effective_dir = package_dir
+        if manifest.entrypoint:
+            ep = package_dir / manifest.entrypoint
+            if ep.is_dir():
+                effective_dir = ep
+
+        entry = McpConfigPatcher.build_mcp_entry(cap_name, effective_dir, mcp_meta)
 
         McpConfigPatcher.backup(self.config_path)
         config = McpConfigPatcher.read_toml(self.config_path)
