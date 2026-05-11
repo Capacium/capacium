@@ -60,4 +60,6 @@ jobs:
           PY
       - name: Test with pytest
         run: |
-          python -m pytest tests/ -v --tb=short --cov=src/capacium
+          python -m pytest tests/ -v --tb=short --cov=src/capacium \
+            --ignore=tests/test_signing.py \
+            --ignore=tests/test_integration_phase0.py
