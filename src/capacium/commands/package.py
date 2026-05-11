@@ -43,6 +43,10 @@ def package_capability(manifest_path: Path, output_dir: Path) -> bool:
             if "__pycache__" not in py_file.parts and py_file not in files:
                 files.append(py_file)
 
+    _collect_entrypoint_files(base_dir, manifest, files)
+    _collect_mcp_arg_files(base_dir, manifest, files)
+    _collect_package_manager_files(base_dir, files)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / filename
 
@@ -62,3 +66,50 @@ def package_capability(manifest_path: Path, output_dir: Path) -> bool:
     except Exception as e:
         print(f"Error packaging capability: {e}")
         return False
+
+
+def _collect_entrypoint_files(base_dir: Path, manifest: Manifest, files: list) -> None:
+    entrypoint = getattr(manifest, "entrypoint", None) or ""
+    if not entrypoint:
+        return
+    ep_path = base_dir / entrypoint
+    if not ep_path.exists():
+        return
+    if ep_path.is_dir():
+        for item in sorted(ep_path.rglob("*")):
+            if "__pycache__" not in item.parts and "node_modules" not in item.parts:
+                if item.is_file() and item not in files:
+                    files.append(item)
+    else:
+        if ep_path not in files:
+            files.append(ep_path)
+
+
+def _collect_mcp_arg_files(base_dir: Path, manifest: Manifest, files: list) -> None:
+    mcp = getattr(manifest, "mcp", None) or {}
+    if not isinstance(mcp, dict):
+        return
+    args = mcp.get("args") or []
+    if not isinstance(args, list):
+        return
+    for arg in args:
+        if not isinstance(arg, str):
+            continue
+        p = base_dir / arg
+        if not p.exists():
+            continue
+        if p.is_dir():
+            for item in sorted(p.rglob("*")):
+                if "__pycache__" not in item.parts and "node_modules" not in item.parts:
+                    if item.is_file() and item not in files:
+                        files.append(item)
+        else:
+            if p not in files:
+                files.append(p)
+
+
+def _collect_package_manager_files(base_dir: Path, files: list) -> None:
+    for name in ("package.json", "package-lock.json", "pyproject.toml", "requirements.txt"):
+        p = base_dir / name
+        if p.exists() and p not in files:
+            files.append(p)

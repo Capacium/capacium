@@ -236,6 +236,10 @@ def _resolve_detail(cap_spec: str, registry_url: Optional[str] = None) -> Option
         except Exception:
             pass
 
+    local = _resolve_from_local_registry(cap_spec)
+    if local:
+        return local
+
     client = RegistryClient()
     effective_url = registry_url or get_registry_url()
     try:
@@ -248,6 +252,42 @@ def _resolve_detail(cap_spec: str, registry_url: Optional[str] = None) -> Option
         return None
 
     return _detail_from_registry_detail(detail)
+
+
+def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
+    from ..registry import Registry
+    from ..versioning import VersionManager
+
+    spec = VersionManager.parse_version_spec(cap_spec)
+    owner = spec["owner"]
+    name = spec["skill"]
+    version_spec = spec["version"]
+
+    registry = Registry()
+    cap = registry.get_capability(f"{owner}/{name}", version_spec)
+    if cap is None:
+        return None
+
+    return {
+        "name": cap.name,
+        "owner": cap.owner,
+        "kind": cap.kind.value if cap.kind else "skill",
+        "version": cap.version,
+        "description": "",
+        "fingerprint": cap.fingerprint,
+        "trust": "installed",
+        "stars": None,
+        "forks": None,
+        "license": "",
+        "categories": [],
+        "tags": [],
+        "frameworks": list(cap.frameworks) if cap.frameworks else ([cap.framework] if cap.framework else []),
+        "runtimes": {},
+        "dependencies": {},
+        "source_url": cap.source_url or "",
+        "publisher": "",
+        "updated_at": cap.installed_at.isoformat() if cap.installed_at else "",
+    }
 
 
 def cap_info(cap_spec: str, registry_url: Optional[str] = None, json_output: bool = False):

@@ -146,6 +146,9 @@ class McpConfigPatcher:
                 "args": ["-y", "my-mcp-server"],
                 "env": {}
             }
+
+        Relative args paths are materialized to absolute paths pointing into
+        the installed package directory (source_dir).
         """
         meta = mcp_meta or {}
         transport = meta.get("transport", "stdio")
@@ -158,7 +161,7 @@ class McpConfigPatcher:
 
         # stdio transport (default)
         command = meta.get("command", "")
-        args = meta.get("args", [])
+        args = list(meta.get("args", [])) if meta.get("args") else []
         env = meta.get("env", {})
 
         if not command:
@@ -175,12 +178,29 @@ class McpConfigPatcher:
             else:
                 command = str(source_dir / cap_name)
 
+        # BUG-005: Materialize relative args paths to absolute paths
+        args = McpConfigPatcher._materialize_args_paths(args, source_dir)
+
         entry: Dict[str, Any] = {"command": command}
         if args:
             entry["args"] = args
         if env:
             entry["env"] = env
         return entry
+
+    @staticmethod
+    def _materialize_args_paths(args: list, source_dir: Path) -> list:
+        resolved = []
+        for arg in args:
+            if not isinstance(arg, str):
+                resolved.append(arg)
+                continue
+            potential_path = source_dir / arg
+            if potential_path.exists():
+                resolved.append(str(potential_path.resolve()))
+            else:
+                resolved.append(arg)
+        return resolved
 
     @staticmethod
     def build_opencode_mcp_entry(
@@ -256,6 +276,29 @@ class McpConfigPatcher:
         if server_key in servers:
             cls.backup(config_path)
             del servers[server_key]
+            cls.write_json(config_path, config)
+        return True
+
+    @classmethod
+    def remove_json_mcp_server_all(
+        cls,
+        config_path: Path,
+        cap_name: str,
+        mcp_section_key: str,
+    ) -> bool:
+        """Remove ALL MCP server entries matching cap_name (any owner pattern)."""
+        config = cls.read_json(config_path)
+        servers = config.get(mcp_section_key, {})
+        if not servers:
+            return True
+        keys_to_remove = []
+        for key in list(servers.keys()):
+            if key == cap_name or key.endswith("/" + cap_name):
+                keys_to_remove.append(key)
+        if keys_to_remove:
+            cls.backup(config_path)
+            for key in keys_to_remove:
+                del servers[key]
             cls.write_json(config_path, config)
         return True
 

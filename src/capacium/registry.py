@@ -269,6 +269,18 @@ class Registry:
             rows = cursor.fetchall()
             return [Capability.from_dict(dict(row)) for row in rows]
 
+    def get_by_name(self, name: str) -> Optional[Capability]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM capabilities WHERE name = ? ORDER BY installed_at DESC LIMIT 1",
+                (name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return Capability.from_dict(dict(row))
+            return None
+
     def search_capabilities(self, query: str, kind: Optional[Kind] = None, framework: Optional[str] = None) -> List[Capability]:
         with self._get_connection() as conn:
             cursor = conn.cursor()

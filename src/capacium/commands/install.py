@@ -34,6 +34,16 @@ def install_capability(
     yes: bool = False,
     github_token: Optional[str] = None,
 ) -> bool:
+    # BUG-009: Auto-detect capability name from tarball manifest
+    autodetected_name = None
+    if from_tarball is not None and (not cap_spec or cap_spec.strip() == ""):
+        autodetected_name = _detect_name_from_tarball(from_tarball)
+        if autodetected_name is None:
+            print("Error: could not auto-detect capability name from tarball.")
+            print("  Specify the capability name: cap install --from-tarball <file.tar.gz> <name>")
+            return False
+        cap_spec = autodetected_name
+
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
     cap_name = spec["skill"]
@@ -52,6 +62,14 @@ def install_capability(
 
     storage = StorageManager()
     registry = Registry()
+
+    # BUG-007: Reuse existing owner on --force to prevent duplicate owners
+    if force and owner in ("", "global", "unknown", "any"):
+        existing_by_name = registry.get_by_name(cap_name)
+        if existing_by_name and existing_by_name.owner and existing_by_name.owner != "global":
+            print(f"  --force: reusing existing owner '{existing_by_name.owner}' for {cap_name}")
+            owner = existing_by_name.owner
+            cap_id = f"{owner}/{cap_name}"
 
     # ── Conflict detection ─────────────────────────────────────────
     conflict = check_conflict(cap_name, owner, version_spec)
@@ -214,6 +232,12 @@ def install_capability(
     if errors:
         for e in errors:
             print(f"Warning: {e}")
+
+    # BUG-003: Install npm dependencies for Node-based MCP server packages
+    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+        if not _install_npm_dependencies(package_dir, cap_name):
+            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
+            return False
 
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
@@ -1040,6 +1064,52 @@ def check_conflict(
     return ConflictResult(state=ConflictState.NO_CONFLICT)
 
 
+def _detect_name_from_tarball(tarball_path: str) -> Optional[str]:
+    import tarfile
+    archive = Path(tarball_path)
+    if not archive.exists():
+        return None
+    try:
+        with tarfile.open(archive, "r:gz") as tf:
+            for member in tf.getmembers():
+                if member.name.endswith("capability.yaml") or member.name.endswith("capability.yml"):
+                    if "/" not in member.name and "\\" not in member.name:
+                        f = tf.extractfile(member)
+                        if f:
+                            content = f.read().decode("utf-8", errors="replace")
+                            try:
+                                import yaml
+                                data = yaml.safe_load(content)
+                            except ImportError:
+                                import json
+                                data = json.loads(content)
+                            if isinstance(data, dict) and data.get("name"):
+                                print(f"  Auto-detected capability: {data['name']}")
+                                return str(data["name"])
+                        break
+            # Handle tarballs with a top-level directory
+            members = tf.getmembers()
+            for member in members:
+                parts = member.name.split("/")
+                if len(parts) >= 2 and parts[1] in ("capability.yaml", "capability.yml"):
+                    f = tf.extractfile(member)
+                    if f:
+                        content = f.read().decode("utf-8", errors="replace")
+                        try:
+                            import yaml
+                            data = yaml.safe_load(content)
+                        except ImportError:
+                            import json
+                            data = json.loads(content)
+                        if isinstance(data, dict) and data.get("name"):
+                            print(f"  Auto-detected capability: {data['name']}")
+                            return str(data["name"])
+                    break
+    except Exception:
+        pass
+    return None
+
+
 def _install_from_tarball(
     tarball_path: str,
     storage: StorageManager,
@@ -1091,3 +1161,48 @@ def _install_from_tarball(
     source_url = manifest.repository or _detect_git_remote(package_dir)
     shutil.rmtree(tmp_dir, ignore_errors=True)
     return package_dir, source_url
+
+
+def _has_package_json(package_dir: Path) -> bool:
+    """Check if a package.json exists in the package directory."""
+    return (package_dir / "package.json").exists()
+
+
+def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
+    """Run npm install/ci in the package directory. Returns True on success."""
+    import shutil as sht
+
+    npm_path = sht.which("npm")
+    if npm_path is None:
+        print("  Error: npm is not available on this system.")
+        print(f"  Cannot install Node.js dependencies for MCP server '{cap_name}'.")
+        print("  Install Node.js and npm: https://nodejs.org/")
+        return False
+
+    has_lock = (package_dir / "package-lock.json").exists()
+    if has_lock:
+        cmd = ["npm", "ci", "--production"]
+        print(f"  Running npm ci in {package_dir}...")
+    else:
+        cmd = ["npm", "install", "--production"]
+        print(f"  Running npm install in {package_dir}...")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(package_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"  npm failed: {result.stderr.strip() or result.stdout.strip()}")
+            return False
+        if result.stdout.strip():
+            for line in result.stdout.strip().split("\n")[-3:]:
+                print(f"    {line}")
+        print("  npm dependencies installed successfully.")
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"  npm install timed out or failed: {e}")
+        return False

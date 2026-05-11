@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from ..registry import Registry
 from ..models import Kind
@@ -16,13 +17,14 @@ FRONTEND_ORDER = [
 ]
 
 
-def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = None):
+def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = None, json_output: bool = False):
     registry = Registry()
 
     if framework:
         capabilities = registry.get_by_framework(framework)
         if not capabilities:
-            print(f"No capabilities installed for framework '{framework}'.")
+            if not json_output:
+                print(f"No capabilities installed for framework '{framework}'.")
             return
         label = f" ({framework})"
     elif kind:
@@ -39,10 +41,32 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
         label = ""
 
     if not capabilities:
-        print("No capabilities installed.")
+        if not json_output:
+            print("No capabilities installed.")
         return
 
-    _print_capabilities(capabilities, label)
+    if json_output:
+        _print_capabilities_json(capabilities)
+    else:
+        _print_capabilities(capabilities, label)
+
+
+def _print_capabilities_json(capabilities) -> None:
+    result = []
+    for cap in capabilities:
+        all_frameworks = cap.frameworks if cap.frameworks else ([cap.framework] if cap.framework else [])
+        result.append({
+            "owner": cap.owner,
+            "name": cap.name,
+            "version": cap.version,
+            "kind": cap.kind.value if cap.kind else "skill",
+            "fingerprint": cap.fingerprint,
+            "frameworks": list(all_frameworks),
+            "installed_at": cap.installed_at.isoformat() if cap.installed_at else None,
+            "dependencies": list(cap.dependencies) if cap.dependencies else [],
+            "source_url": cap.source_url or "",
+        })
+    print(json.dumps(result, indent=2, default=str))
 
 
 def _print_capabilities(capabilities, label: str) -> None:

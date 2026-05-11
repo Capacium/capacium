@@ -56,8 +56,11 @@ class CodexAdapter(FrameworkAdapter):
 
         McpConfigPatcher.backup(self.config_path)
         config = McpConfigPatcher.read_toml(self.config_path)
-        servers = config.setdefault("mcp_servers", {})
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+
+        # BUG-004: Remove all existing entries for this capability before writing new one
+        servers = config.setdefault("mcp_servers", {})
+        _remove_matching_server_keys(servers, cap_name)
         servers[server_key] = entry
         McpConfigPatcher.write_toml(self.config_path, config)
         return True
@@ -65,10 +68,12 @@ class CodexAdapter(FrameworkAdapter):
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
         config = McpConfigPatcher.read_toml(self.config_path)
         servers = config.get("mcp_servers", {})
-        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
-        if server_key in servers:
+        if not servers:
+            return True
+
+        removed = _remove_matching_server_keys(servers, cap_name)
+        if removed:
             McpConfigPatcher.backup(self.config_path)
-            del servers[server_key]
             McpConfigPatcher.write_toml(self.config_path, config)
         return True
 
@@ -79,3 +84,13 @@ class CodexAdapter(FrameworkAdapter):
         config = McpConfigPatcher.read_toml(self.config_path)
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
         return server_key in config.get("mcp_servers", {})
+
+
+def _remove_matching_server_keys(servers: dict, cap_name: str) -> bool:
+    keys_to_remove = []
+    for key in list(servers.keys()):
+        if key == cap_name or key.endswith("/" + cap_name):
+            keys_to_remove.append(key)
+    for key in keys_to_remove:
+        del servers[key]
+    return len(keys_to_remove) > 0

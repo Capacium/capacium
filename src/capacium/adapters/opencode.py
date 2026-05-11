@@ -53,6 +53,16 @@ class OpenCodeAdapter(FrameworkAdapter):
             or McpConfigPatcher.mcp_server_exists_json(config_path, server_key, "mcpServers")
         )
 
+
+def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
+    keys_to_remove = []
+    for key in list(servers.keys()):
+        if key == cap_name or key.endswith("/" + cap_name):
+            keys_to_remove.append(key)
+    for key in keys_to_remove:
+        del servers[key]
+    return len(keys_to_remove) > 0
+
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
         if package_dir.exists() and package_dir.resolve() != source_dir.resolve():
@@ -69,13 +79,17 @@ class OpenCodeAdapter(FrameworkAdapter):
         McpConfigPatcher.backup(config_path)
         config = McpConfigPatcher.read_json(config_path)
         servers = config.setdefault("mcp", {})
+
+        # BUG-004: Remove all existing entries for this capability before writing new one
+        _remove_matching_server_keys_json(servers, cap_name)
+
         servers[cap_name] = McpConfigPatcher.build_opencode_mcp_entry(
             cap_name, package_dir, mcp_meta,
         )
 
         legacy_servers = config.get("mcpServers")
         if isinstance(legacy_servers, dict):
-            legacy_servers.pop(cap_name, None)
+            _remove_matching_server_keys_json(legacy_servers, cap_name)
             if not legacy_servers:
                 config.pop("mcpServers", None)
 
@@ -85,13 +99,13 @@ class OpenCodeAdapter(FrameworkAdapter):
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
         from .mcp_config_patcher import McpConfigPatcher
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
-        removed_current = McpConfigPatcher.remove_json_mcp_server(
+        McpConfigPatcher.remove_json_mcp_server_all(
             config_path, cap_name, "mcp",
         )
-        removed_legacy = McpConfigPatcher.remove_json_mcp_server(
+        McpConfigPatcher.remove_json_mcp_server_all(
             config_path, cap_name, "mcpServers",
         )
-        return removed_current and removed_legacy
+        return True
 
     def get_capability_metadata(self, cap_name: str) -> Optional[Dict[str, Any]]:
         link_path = self.opencode_skills_dir / cap_name

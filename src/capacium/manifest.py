@@ -48,8 +48,6 @@ class Manifest:
             else:
                 if "transport" not in self.mcp:
                     errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
-                if "supported_clients" not in self.mcp:
-                    errors.append("mcp section: missing recommended 'supported_clients' field")
         return errors
 
     def get_mcp_metadata(self) -> Dict[str, Any]:

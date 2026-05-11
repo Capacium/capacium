@@ -21,7 +21,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     install_parser = subparsers.add_parser("install", help="Install a capability")
-    install_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
+    install_parser.add_argument("capability", nargs="?", help="Capability specification (owner/name[@version] or name[@version]). Optional when --from-tarball is used.")
     install_parser.add_argument("--version", help="Specific version to install")
     install_parser.add_argument("--source", help="Source directory (defaults to current directory)")
     install_parser.add_argument("--no-lock", action="store_true", help="Bypass lock file enforcement")
@@ -79,6 +79,7 @@ def main():
     list_parser = subparsers.add_parser("list", help="List installed capabilities")
     list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
     list_parser.add_argument("--framework", help="Filter by framework (opencode, claude-code, cursor, etc.)")
+    list_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     search_parser = subparsers.add_parser("search", help="Search for capabilities")
     search_parser.add_argument("query", nargs="?", default="", help="Search query (omit to browse all)")
@@ -256,9 +257,9 @@ def main():
         if args.command == "install":
             from .commands.install import install_capability
             source_dir = Path(args.source) if args.source else None
-            cap_spec = args.capability
+            cap_spec = args.capability or ""
             if args.version:
-                cap_spec = f"{args.capability}@{args.version}"
+                cap_spec = f"{args.capability}@{args.version}" if args.capability else f"@{args.version}"
             success = install_capability(
                 cap_spec,
                 source_dir,
@@ -290,7 +291,7 @@ def main():
 
         elif args.command == "list":
             from .commands.list_capabilities import list_capabilities
-            list_capabilities(kind=args.kind, framework=args.framework)
+            list_capabilities(kind=args.kind, framework=args.framework, json_output=args.json)
             sys.exit(0)
 
         elif args.command == "search":
