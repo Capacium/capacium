@@ -39,9 +39,9 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
                 print(f"  Sub-capability {member_id} not found in registry.")
                 return False
             sub_fingerprints.append(member_cap.fingerprint)
-        fingerprint = compute_bundle_fingerprint(sub_fingerprints)
+        _ = compute_bundle_fingerprint(sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(
+        _ = compute_fingerprint(
             cap.install_path,
             exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
         )
@@ -66,7 +66,7 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
         return True
 
     try:
-        from ..registry_client import RegistryClient, RegistryClientError
+        from ..registry_client import RegistryClient
         client = RegistryClient.from_config()
         result = client.publisher_sign(
             owner=cap.owner,

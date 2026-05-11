@@ -9,6 +9,17 @@ from .base import FrameworkAdapter, _cap_id, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
+def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
+    """Remove all server keys matching cap_name or owner/cap_name pattern."""
+    keys_to_remove = [
+        key for key in list(servers.keys())
+        if key == cap_name or key.endswith("/" + cap_name)
+    ]
+    for key in keys_to_remove:
+        del servers[key]
+    return len(keys_to_remove) > 0
+
+
 class OpenCodeAdapter(FrameworkAdapter):
 
     def __init__(self):
@@ -53,16 +64,6 @@ class OpenCodeAdapter(FrameworkAdapter):
             or McpConfigPatcher.mcp_server_exists_json(config_path, server_key, "mcpServers")
         )
 
-
-def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
-    keys_to_remove = []
-    for key in list(servers.keys()):
-        if key == cap_name or key.endswith("/" + cap_name):
-            keys_to_remove.append(key)
-    for key in keys_to_remove:
-        del servers[key]
-    return len(keys_to_remove) > 0
-
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
         if package_dir.exists() and package_dir.resolve() != source_dir.resolve():
@@ -74,6 +75,13 @@ def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
         manifest = Manifest.detect_from_directory(package_dir)
         mcp_meta = manifest.get_mcp_metadata()
         mcp_meta = McpConfigPatcher.enrich_mcp_meta_for_git(mcp_meta, manifest.repository)
+
+        # BUG-001 follow-up: honour entrypoint for packages with a subdirectory layout
+        if manifest.entrypoint:
+            ep_dir = package_dir / manifest.entrypoint
+            if ep_dir.is_dir():
+                package_dir = ep_dir
+
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
 
         McpConfigPatcher.backup(config_path)
@@ -97,7 +105,6 @@ def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
         return True
 
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
-        from .mcp_config_patcher import McpConfigPatcher
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
         McpConfigPatcher.remove_json_mcp_server_all(
             config_path, cap_name, "mcp",

@@ -10,11 +10,7 @@ Covers the 6 bugs fixed in Phase 0:
   P0-005  ExchangeClient (capacium-mcp) uses correct /v2 endpoints
   P0-006  SQL migration 0004 backfills kind/source (tested via heuristic logic)
 """
-import base64
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -178,10 +174,9 @@ class TestP0003KeyShowSubcommand:
     def test_key_show_subparser_exists(self):
         """'cap key show' must be a recognised subcommand in the CLI parser."""
         # Import just the build_parser section — we don't run main()
-        import argparse
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location(
+        _ = importlib.util.spec_from_file_location(
             "cli",
             Path(__file__).parent.parent / "src" / "capacium" / "cli.py",
         )
@@ -297,7 +292,7 @@ class TestP0005McpExchangeEndpoints:
         return ExchangeClient(base_url="https://api.capacium.xyz")
 
     def test_search_uses_v2_search(self, exchange_client):
-        captured = {}
+        _captured = {}
 
         with patch.object(exchange_client._client, "get") as mock_get:
             mock_get.return_value = MagicMock(

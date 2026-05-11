@@ -26,6 +26,7 @@ class Manifest:
     capabilities: List[Dict[str, str]] = field(default_factory=list)
     checksums: Dict[str, str] = field(default_factory=dict)
     mcp: Dict[str, Any] = field(default_factory=dict)
+    entrypoint: str = ""
 
     @property
     def id(self) -> str:

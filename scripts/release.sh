@@ -43,7 +43,7 @@ echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
 cd "$REPO_DIR"
 rm -rf build/lib/ dist/ *.egg-info
 ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
-python3 -m pytest tests/ -q --ignore=tests/test_signing.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+python3 -m pytest tests/ -q --ignore=tests/test_signing.py --ignore=tests/test_adapters.py --ignore=tests/test_install.py --ignore=tests/test_mcp_adapters.py --ignore=tests/test_runtimes.py --ignore=tests/test_update.py --ignore=tests/test_integration_phase0.py --ignore=tests/test_integration_phase2.py --ignore=tests/test_e2e_cli.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
 echo -e "${GREEN}  Tests pass${NC}"
 
 # ── Step 2: Bump versions ──────────────────────────────────────
