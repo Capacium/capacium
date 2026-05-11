@@ -15,6 +15,7 @@ from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
     infer_required_runtimes,
+    prompt_and_resolve_runtimes,
 )
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
 
@@ -184,7 +185,8 @@ def install_capability(
     source_manifest = Manifest.detect_from_directory(source_dir)
 
     if not skip_runtime_check:
-        if not _preflight_runtimes(source_manifest):
+        interactive_rt = _is_interactive() and not yes
+        if not _preflight_runtimes(source_manifest, interactive=interactive_rt, yes=yes):
             return False
 
     interactive = (
@@ -598,11 +600,20 @@ def _detect_git_remote(source_dir: Path) -> Optional[str]:
     return None
 
 
-def _preflight_runtimes(manifest: Manifest) -> bool:
+def _preflight_runtimes(
+    manifest: Manifest,
+    *,
+    interactive: bool = False,
+    yes: bool = False,
+) -> bool:
     """Resolve runtime requirements before dispatching to adapters.
 
+    In interactive mode (TTY + not --yes) prompts the user to install or
+    upgrade any missing/incompatible runtimes before continuing.  In
+    non-interactive mode prints a report and returns False on failure.
+
     Returns True when all required runtimes are present at acceptable versions
-    (or no runtimes are required). Returns False and prints a report otherwise.
+    (or no runtimes are required).
     """
     requirements = infer_required_runtimes(manifest)
     if not requirements:
@@ -612,6 +623,18 @@ def _preflight_runtimes(manifest: Manifest) -> bool:
     failures = [s for s in statuses if not s.ok]
     if not failures:
         return True
+
+    if interactive or yes:
+        statuses = prompt_and_resolve_runtimes(statuses, yes=yes, resolver=resolver)
+        failures = [s for s in statuses if not s.ok]
+        if not failures:
+            return True
+        # Some runtimes still failing after attempted resolution
+        print()
+        print(format_failure_report(statuses))
+        return False
+
+    # Non-interactive: just report and fail
     print(format_failure_report(statuses))
     return False
 

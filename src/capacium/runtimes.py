@@ -411,5 +411,115 @@ def format_failure_report(
     return "\n".join(lines)
 
 
+def try_install_runtime(status: RuntimeStatus) -> bool:
+    """Attempt to install or upgrade the runtime described by *status*.
+
+    Runs the platform-appropriate install hint as a shell command. Returns True
+    when the process exits with code 0, False otherwise.
+
+    Only runtimes with a known install hint for the current platform can be
+    auto-resolved. For unknown runtimes or missing hints this returns False
+    immediately (no subprocess is spawned).
+    """
+    if status.runtime is None:
+        return False
+    hint = status.runtime.install_hint_for()
+    if not hint:
+        return False
+    print(f"  Running: {hint}")
+    ret = subprocess.run(hint, shell=True, check=False)
+    return ret.returncode == 0
+
+
+def prompt_and_resolve_runtimes(
+    statuses: List[RuntimeStatus],
+    *,
+    yes: bool = False,
+    resolver: Optional["RuntimeResolver"] = None,
+) -> List[RuntimeStatus]:
+    """Interactive loop: show failing runtimes, optionally install, re-check.
+
+    Parameters
+    ----------
+    statuses:
+        The initial resolver output — only failures are acted on.
+    yes:
+        If True, auto-accept without prompting (non-interactive CI mode).
+    resolver:
+        Resolver instance used for the post-install re-check. A fresh default
+        instance is created when None.
+
+    Returns
+    -------
+    Updated list of RuntimeStatus after any install attempts.
+    """
+    failures = [s for s in statuses if not s.ok]
+    if not failures:
+        return statuses
+
+    _rt_sym = {True: "✓", False: "✗"}
+    print()
+    print("  Runtime requirements:")
+    for s in statuses:
+        sym = _rt_sym[s.ok]
+        label = s.version if s.found else "not found"
+        req = f"requires {s.requirement}" if s.requirement and s.requirement != "*" else "any version"
+        upgrade = " (upgrade available)" if s.found and not s.satisfied else ""
+        print(f"    {sym}  {s.name}: {label} — {req}{upgrade}")
+        if not s.ok and s.install_hint:
+            action = "upgrade" if s.found else "install"
+            print(f"         hint: {s.install_hint}  [{action}]")
+
+    # Check which failures have a resolvable install hint
+    resolvable = [s for s in failures if s.runtime and s.runtime.install_hint_for()]
+    unresolvable = [s for s in failures if not (s.runtime and s.runtime.install_hint_for())]
+
+    if unresolvable:
+        print()
+        for s in unresolvable:
+            print(f"  ⚠  {s.name}: no automatic install hint available")
+            if s.runtime and s.runtime.homepage:
+                print(f"     See: {s.runtime.homepage}")
+
+    if not resolvable:
+        print()
+        print("  No runtimes can be auto-installed. Use --skip-runtime-check to bypass.")
+        return statuses
+
+    print()
+    names = ", ".join(s.name for s in resolvable)
+    if yes:
+        print(f"  Auto-installing: {names}")
+        answer = "y"
+    else:
+        try:
+            answer = input(f"  Install/upgrade {names}? [Y/n] ").strip().lower() or "y"
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+
+    if answer not in ("y", "yes"):
+        print("  Skipping. Use --skip-runtime-check to install without runtime checks.")
+        return statuses
+
+    any_installed = False
+    for s in resolvable:
+        action = "Upgrading" if s.found else "Installing"
+        print(f"  {action} {s.name}...")
+        if try_install_runtime(s):
+            print(f"  ✓  {s.name} installed successfully")
+            any_installed = True
+        else:
+            print(f"  ✗  {s.name} install failed — check output above")
+
+    if not any_installed:
+        return statuses
+
+    # Re-check all requirements after install
+    if resolver is None:
+        resolver = RuntimeResolver()
+    requirements = {s.name: s.requirement for s in statuses}
+    return resolver.resolve(requirements)
+
+
 def known_runtime_names() -> List[str]:
     return sorted(RUNTIMES.keys())
