@@ -79,8 +79,24 @@ def install_capability(
             if framework and not _is_framework_already(cap_name, owner, version_spec, framework):
                 _append_framework(cap_name, owner, version_spec, framework)
                 return True
-            print(f"  {conflict.message}")
-            return True
+            # --force: always reinstall (update framework configs, re-run npm, etc.)
+            if force or yes:
+                print(f"  {conflict.message} — reinstalling (--force)")
+                # fall through to installation
+            elif _is_interactive():
+                print(f"  {conflict.message}")
+                if not PromptHandler.ask(
+                    f"'{cap_name}' v{conflict.existing_version or version_spec} is already installed."
+                    " Reinstall to update framework configs?",
+                    default=False,
+                ):
+                    print("  Installation skipped. Use --force to reinstall without prompting.")
+                    return True
+                print("  Reinstalling...")
+                # fall through to installation
+            else:
+                print(f"  {conflict.message}")
+                return True
         auto_skip = yes
         if not auto_skip:
             try:
