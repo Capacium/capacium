@@ -1,6 +1,7 @@
 """cap publish — Upload a capability tarball to the Exchange registry."""
 
 import tarfile
+import time
 from pathlib import Path
 
 from ..manifest import Manifest
@@ -64,9 +65,14 @@ def publish_capability(
     try:
         client = RegistryClient(token=token)
         result = client.publish(payload, registry_url=registry_url)
-        print(f"Published: {result.get('canonical_name', canonical)}")
+        canonical_result = result.get("canonical_name", canonical)
+        print(f"Published: {canonical_result}")
         print(f"  Kind: {result.get('kind', manifest.kind)}")
-        print(f"  URL: https://capacium.xyz/listings/{result.get('canonical_name', canonical)}")
+        print(f"  URL: https://capacium.xyz/listings/{canonical_result}")
+
+        # Fetch and display quality score breakdown
+        _display_quality_score(client, canonical_result, manifest, registry_url)
+
         return True
 
     except RegistryClientError as e:
@@ -88,6 +94,102 @@ def publish_capability(
     except Exception as e:
         print(f"Error: {e}")
         return False
+
+
+def _display_quality_score(
+    client: "RegistryClient",
+    canonical_name: str,
+    manifest: "Manifest",
+    registry_url: "str | None" = None,
+) -> None:
+    """Fetch quality score from the Exchange and display breakdown with context-aware next steps.
+
+    Attempts to retrieve the freshly published listing. Falls back gracefully
+    if the server is unreachable or returns no score yet.
+    """
+    # Give the server a brief moment to commit the listing
+    time.sleep(0.5)
+
+    data: dict = {}
+    try:
+        url = client._build_registry_url(
+            f"/v2/capabilities/{canonical_name}",
+            registry_url,
+        )
+        data = client._request(url)
+    except Exception:
+        # Non-fatal — just skip score display
+        print("  Quality score: pending (score computed within ~5 min)")
+        return
+
+    quality_score: float = data.get("quality_score") or 0.0
+    trust_state: str = data.get("trust_state", "discovered")
+    has_skill_md: bool = bool(data.get("skill_md_content") or data.get("has_skill_md"))
+    source_url: str = data.get("canonical_source_url") or ""
+    install_count: int = data.get("install_count") or 0
+    github_stars: int = data.get("github_stars") or 0
+    description: str = data.get("short_description") or manifest.description or ""
+
+    # ── Factor estimates (client-side, server score takes precedence) ──────
+    # Schema (30): name ✓, kind ✓, version ✓, description, source_url
+    schema_score = 20  # base (name + kind + version always present)
+    if description:
+        schema_score += 5
+    if source_url:
+        schema_score += 5
+    schema_max = 30
+
+    # Maintenance (25): GitHub stars as proxy; unknown without enrichment
+    maintenance_score = 0
+    if github_stars >= 10:
+        maintenance_score = min(25, github_stars // 4)
+    maintenance_max = 25
+
+    # Community (15): install count proxy
+    community_score = min(15, install_count // 2)
+    community_max = 15
+
+    # Docs (5): SKILL.md
+    docs_score = 5 if has_skill_md else 0
+    docs_max = 5
+
+    # Security (25): pending until scanner runs
+    security_score = 0
+    security_max = 25
+
+    computed_total = schema_score + maintenance_score + community_score + docs_score + security_score
+
+    # Use server-provided quality_score if non-zero (it has more context)
+    display_total = int(quality_score) if quality_score > 0 else computed_total
+
+    def _bar(score: int, max_score: int) -> str:
+        if score >= max_score * 0.8:
+            return "✅"
+        if score >= max_score * 0.5:
+            return "⚠️ "
+        return "   "
+
+    print(f"  Trust state:   {trust_state}")
+    print(f"  Quality score: {display_total}/100")
+    print(f"    Schema:      {schema_score:>2}/{schema_max}  {_bar(schema_score, schema_max)}")
+    print(f"    Maintenance: {maintenance_score:>2}/{maintenance_max}  {_bar(maintenance_score, maintenance_max)}")
+    print(f"    Community:   {community_score:>2}/{community_max}  {_bar(community_score, community_max)}")
+    print(f"    Docs:        {docs_score:>2}/{docs_max}  {'✅' if docs_score > 0 else '   (add SKILL.md)'}")
+    print(f"    Security:    {security_score:>2}/{security_max}  (scan pending ~5 min)")
+
+    # Context-aware next step
+    if display_total < 40:
+        missing = []
+        if not has_skill_md:
+            missing.append("SKILL.md (+5)")
+        if not source_url:
+            missing.append("canonical_source_url (+5)")
+        hint = ", ".join(missing) if missing else "fill in more manifest fields"
+        print(f"  Next step: Add {hint} to improve your score")
+    elif display_total < 70:
+        print("  Next step: Security scan auto-runs within 5 min — check trust state shortly")
+    else:
+        print("  Next step: You qualify for verification — scan in progress")
 
 
 def _extract_manifest_from_tarball(tarball_path: Path) -> Manifest | None:

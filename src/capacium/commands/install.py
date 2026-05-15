@@ -194,7 +194,7 @@ def install_capability(
         version = version_spec
 
     existing = registry.get_capability(cap_id, version)
-    if existing:
+    if existing and not (force or yes):
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
