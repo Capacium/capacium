@@ -76,20 +76,25 @@ echo -e "${YELLOW}[4/8] Pushing to main...${NC}"
 git push origin main
 
 echo "  Waiting for CI to pass..."
-sleep 10
-for i in $(seq 1 30); do
-    CONCLUSION=$(gh run list --repo "$GITHUB_REPO" --branch=main --workflow=ci.yml --limit=1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "null")
-    STATUS=$(gh run list --repo "$GITHUB_REPO" --branch=main --workflow=ci.yml --limit=1 --json status --jq '.[0].status' 2>/dev/null || echo "null")
-    if [ "$CONCLUSION" = "success" ]; then
+sleep 5
+
+# Use gh run watch for server-side polling (single API call, no rate-limit burn)
+GH_WORKFLOW_ID=ci.yml
+LATEST_RUN_ID=$(gh run list --repo "$GITHUB_REPO" --branch=main --workflow="$GH_WORKFLOW_ID" --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+if [ -n "$LATEST_RUN_ID" ] && [ "$LATEST_RUN_ID" != "null" ]; then
+    if gh run watch "$LATEST_RUN_ID" --repo "$GITHUB_REPO" --exit-status 2>/dev/null; then
         echo -e "${GREEN}  CI passed${NC}"
-        break
-    elif [ "$CONCLUSION" = "failure" ]; then
-        echo -e "${RED}  CI failed — aborting release${NC}"
-        exit 1
+    else
+        CONCLUSION=$(gh run view "$LATEST_RUN_ID" --repo "$GITHUB_REPO" --json conclusion --jq '.conclusion' 2>/dev/null || echo "unknown")
+        if [ "$CONCLUSION" = "failure" ] || [ "$CONCLUSION" = "cancelled" ] || [ "$CONCLUSION" = "timed_out" ]; then
+            echo -e "${RED}  CI failed (${CONCLUSION}) — aborting release${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}  CI watch exited unexpectedly (${CONCLUSION}), proceeding anyway...${NC}"
     fi
-    echo "  Waiting... (${i}/30) status=${STATUS} conclusion=${CONCLUSION}"
-    sleep 15
-done
+else
+    echo -e "${YELLOW}  Could not find CI run — proceeding anyway${NC}"
+fi
 
 # ── Step 5: Tag and push tag ───────────────────────────────────
 echo -e "${YELLOW}[5/8] Creating tag ${TAG}...${NC}"
