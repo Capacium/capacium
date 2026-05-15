@@ -62,6 +62,15 @@ def main():
         "--token",
         help="GitHub token for private repositories (or set GITHUB_TOKEN)",
     )
+    install_parser.add_argument(
+        "--registry",
+        help="Private registry base URL (e.g. https://registry.acme.com). Overrides default Exchange URL.",
+    )
+    install_parser.add_argument(
+        "--policy",
+        help="Path to a policy.yaml (kind: policy) that must be satisfied before install. "
+             "Exit code 3 = policy violation.",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -133,6 +142,16 @@ def main():
         "--runtimes",
         help="Comma-separated runtimes (e.g. uv:>=0.4.0,node:>=20)",
     )
+    init_parser.add_argument(
+        "--template",
+        choices=["skill", "mcp-server", "bundle"],
+        help="Scaffold from template: skill | mcp-server | bundle. Creates capability.yaml + SKILL.md + README.md.",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing files when using --template",
+    )
 
     registry_parser = subparsers.add_parser("registry", help="Manage Capacium registries")
     registry_sub = registry_parser.add_subparsers(dest="registry_command", help="Registry subcommand")
@@ -157,12 +176,55 @@ def main():
     publish_parser = subparsers.add_parser("publish", help="Publish a capability to the Exchange registry")
     publish_parser.add_argument("package_path", help="Path to .tar.gz, capability.yaml, or directory containing capability.yaml")
     publish_parser.add_argument("--token", help="API token for the Exchange registry (or set CAPACIUM_API_TOKEN)")
-    publish_parser.add_argument("--registry", help="Target registry URL")
+    publish_parser.add_argument(
+        "--registry",
+        help="Target registry URL (default: https://api.capacium.xyz). Use for non-default or self-hosted registries.",
+    )
 
-    marketplace_parser = subparsers.add_parser("marketplace", help="Start the marketplace web UI")
-    marketplace_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
-    marketplace_parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
-    marketplace_parser.add_argument("--open", action="store_true", help="Open browser automatically")
+    marketplace_parser = subparsers.add_parser("marketplace", help="Open the Capacium marketplace in your browser")
+    marketplace_parser.add_argument(
+        "--search",
+        metavar="QUERY",
+        default=None,
+        help="Pre-fill the search box, e.g. --search 'pdf parser'",
+    )
+    marketplace_parser.add_argument(
+        "--url",
+        action="store_true",
+        help="Print the URL instead of opening a browser",
+    )
+    # Legacy flags kept for backwards-compat (ignored by new handler)
+    marketplace_parser.add_argument("--host", default="0.0.0.0", help=argparse.SUPPRESS)
+    marketplace_parser.add_argument("--port", type=int, default=8000, help=argparse.SUPPRESS)
+    marketplace_parser.add_argument("--open", action="store_true", help=argparse.SUPPRESS)
+
+    # SPEC-002: cap validate
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Validate capability.yaml against the v1.0 specification",
+    )
+    validate_parser.add_argument(
+        "path",
+        nargs="?",
+        default="capability.yaml",
+        help="Path to capability.yaml or directory containing one (default: ./capability.yaml)",
+    )
+    validate_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Also check recommended fields (canonical_source_url, license, tags, frameworks)",
+    )
+    validate_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json",
+        help="Output validation result as JSON",
+    )
+    validate_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip remote JSON Schema download (use cached schema if available)",
+    )
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -247,6 +309,50 @@ def main():
         help="Exchange API base URL",
     )
 
+    # P1-003: cap skills-mcp — manage the Capacium skills MCP wrapper
+    skills_mcp_parser = subparsers.add_parser(
+        "skills-mcp",
+        help="Manage the Capacium skills MCP wrapper (exposes installed skills to Claude Desktop)",
+    )
+    skills_mcp_sub = skills_mcp_parser.add_subparsers(
+        dest="skills_mcp_command", help="skills-mcp subcommand"
+    )
+    skills_mcp_start_parser = skills_mcp_sub.add_parser(
+        "start",
+        help="Start the MCP stdio server (passes control to capacium-skills-mcp process)",
+    )
+    skills_mcp_start_parser.add_argument(
+        "--cap-home",
+        default=None,
+        metavar="DIR",
+        help="Capacium package cache directory (default: ~/.capacium/packages)",
+    )
+    skills_mcp_status_parser = skills_mcp_sub.add_parser(
+        "status",
+        help="Show MCP wrapper registration status and installed skills",
+    )
+    skills_mcp_status_parser.add_argument(
+        "--cap-home",
+        default=None,
+        metavar="DIR",
+        help="Capacium package cache directory (default: ~/.capacium/packages)",
+    )
+    skills_mcp_list_parser = skills_mcp_sub.add_parser(
+        "list",
+        help="List installed skills (name, version, description)",
+    )
+    skills_mcp_list_parser.add_argument(
+        "--cap-home",
+        default=None,
+        metavar="DIR",
+        help="Capacium package cache directory (default: ~/.capacium/packages)",
+    )
+    skills_mcp_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON",
+    )
+
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
@@ -260,6 +366,25 @@ def main():
             cap_spec = args.capability or ""
             if args.version:
                 cap_spec = f"{args.capability}@{args.version}" if args.capability else f"@{args.version}"
+
+            # W50-002: policy-as-code enforcement — fetch capability info BEFORE install
+            policy_path = getattr(args, "policy", None)
+            if policy_path and cap_spec:
+                try:
+                    from .commands.policy import enforce_policy
+                    from .commands._resolve import resolve_capability_info
+                    registry_url = getattr(args, "registry", None)
+                    cap_info = resolve_capability_info(cap_spec, registry_url=registry_url)
+                    if cap_info:
+                        enforce_policy(cap_info, policy_path)
+                    # enforce_policy sys.exit(3) on violation; continues if compliant
+                except SystemExit:
+                    raise
+                except Exception as _pol_err:
+                    import sys as _sys
+                    print(f"[cap] Policy check failed: {_pol_err}", file=_sys.stderr)
+                    _sys.exit(3)
+
             success = install_capability(
                 cap_spec,
                 source_dir,
@@ -272,6 +397,7 @@ def main():
                 from_tarball=getattr(args, "from_tarball", None),
                 yes=getattr(args, "yes", False),
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
+                registry_url=getattr(args, "registry", None),
             )
             sys.exit(0 if success else 1)
 
@@ -335,6 +461,20 @@ def main():
             sys.exit(update_cmd(args))
 
         elif args.command == "init":
+            template = getattr(args, "template", None)
+
+            if template:
+                # --template path: scaffold capability.yaml + SKILL.md + README.md
+                from .commands.init import init_from_template
+                success = init_from_template(
+                    template=template,
+                    name=getattr(args, "name", None),
+                    version=getattr(args, "version", None) or "0.1.0",
+                    description=getattr(args, "description", None) or "",
+                    force=getattr(args, "force", False),
+                )
+                sys.exit(0 if success else 1)
+
             from .commands.init import init_capability
 
             frameworks_list = None
@@ -414,6 +554,10 @@ def main():
                 token=token,
             )
             sys.exit(0 if success else 1)
+
+        elif args.command == "validate":
+            from .commands.validate import cmd_validate
+            sys.exit(cmd_validate(args))
 
         elif args.command == "doctor":
             from .commands.doctor import doctor
@@ -497,10 +641,12 @@ def main():
                 sys.exit(1)
 
         elif args.command == "marketplace":
-            print("Capacium Marketplace: https://capacium.xyz")
-            print("Run locally:")
-            print("  cd src/capacium/marketplace && npm run dev")
-            sys.exit(0)
+            from .commands.marketplace import open_marketplace
+            success = open_marketplace(
+                search_query=getattr(args, "search", None),
+                url_only=getattr(args, "url", False),
+            )
+            sys.exit(0 if success else 1)
 
         elif args.command == "key":
             from .commands.key import key_generate, key_list, key_export, key_import
@@ -554,6 +700,35 @@ def main():
                 mcp_main()
             else:
                 mcp_parser.print_help()
+                sys.exit(1)
+
+        elif args.command == "skills-mcp":
+            # P1-003: skills MCP wrapper management
+            from .commands.skills_mcp import (
+                skills_mcp_start,
+                skills_mcp_status,
+                skills_mcp_list,
+            )
+            from pathlib import Path as _Path
+            sub = getattr(args, "skills_mcp_command", None)
+            cap_home_arg = getattr(args, "cap_home", None)
+            cap_home_path = _Path(cap_home_arg).expanduser() if cap_home_arg else None
+
+            if sub == "start":
+                skills_mcp_start(cap_home=cap_home_path)
+                # skills_mcp_start uses os.execv — control does not return here
+                sys.exit(0)
+            elif sub == "status":
+                success = skills_mcp_status(cap_home=cap_home_path)
+                sys.exit(0 if success else 1)
+            elif sub == "list":
+                success = skills_mcp_list(
+                    cap_home=cap_home_path,
+                    json_output=getattr(args, "json", False),
+                )
+                sys.exit(0 if success else 1)
+            else:
+                skills_mcp_parser.print_help()
                 sys.exit(1)
 
         else:

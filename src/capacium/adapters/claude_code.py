@@ -41,8 +41,15 @@ class ClaudeCodeAdapter(FrameworkAdapter):
         return True
 
     def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        # Check skill symlink first
         link_path = self.skills_dir / _cap_id(cap_name, owner)
-        return link_path.exists() and link_path.is_symlink()
+        if link_path.exists() and link_path.is_symlink():
+            return True
+        # Also check MCP server config
+        from .mcp_config_patcher import McpConfigPatcher
+        config_path = Path.home() / ".claude.json"
+        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+        return McpConfigPatcher.mcp_server_exists_json(config_path, server_key, "mcpServers")
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         from .mcp_config_patcher import McpConfigPatcher

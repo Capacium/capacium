@@ -43,8 +43,22 @@ class GeminiCLIAdapter(FrameworkAdapter):
         return True
 
     def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        # Check skill symlink first
         link_path = self.skills_dir / _cap_id(cap_name, owner)
-        return link_path.exists() and link_path.is_symlink()
+        if link_path.exists() and link_path.is_symlink():
+            return True
+        # Also check MCP server config
+        from .mcp_config_patcher import McpConfigPatcher
+        config_path = Path.home() / ".gemini" / "settings" / "mcp_config.json"
+        if config_path.exists():
+            try:
+                import json as _json
+                config = _json.loads(config_path.read_text())
+                server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+                return server_key in config.get("mcpServers", {})
+            except Exception:
+                pass
+        return False
 
     def list_capabilities(self) -> List[str]:
         result = []

@@ -6,8 +6,15 @@ registry and then falling back to Exchange search.
 
 All commands that accept a capability spec should use
 :func:`resolve_cap_spec` to ensure bare names work correctly.
+
+W50-002 addition:
+:func:`resolve_capability_info` fetches the full capability dict from the
+Exchange for policy pre-check before install.
 """
-from typing import Optional, Tuple
+import os
+import urllib.request
+import json
+from typing import Any, Dict, Optional, Tuple
 
 from ..registry import Registry
 from ..registry_client import RegistryClient, RegistryClientError
@@ -87,3 +94,46 @@ def _resolve_owner_via_search(cap_name: str) -> Optional[str]:
         except ValueError:
             pass
         print(f"  Please enter 1-{len(exact)}.")
+
+
+# ---------------------------------------------------------------------------
+# W50-002: Capability info fetch for policy pre-check
+# ---------------------------------------------------------------------------
+
+_DEFAULT_EXCHANGE_URL = "https://api.capacium.xyz"
+
+
+def resolve_capability_info(
+    cap_spec: str,
+    registry_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch capability info from the Exchange for policy pre-check.
+
+    Returns the Exchange API response dict, or None if the capability
+    cannot be resolved (bare name, offline, etc.).
+
+    Failures are soft — if we can't fetch info, the policy check is skipped
+    (caller decides how to handle None).
+    """
+    try:
+        # Strip version spec
+        canonical = cap_spec.split("@")[0].strip()
+        if "/" not in canonical:
+            # Try to resolve owner first
+            owner_guess = _resolve_owner_via_search(canonical)
+            if not owner_guess:
+                return None
+            canonical = f"{owner_guess}/{canonical}"
+
+        parts = canonical.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, name = parts
+
+        base = (registry_url or os.environ.get("CAPACIUM_EXCHANGE_URL", _DEFAULT_EXCHANGE_URL)).rstrip("/")
+        url = f"{base}/v2/capabilities/{owner}/{name}"
+        req = urllib.request.Request(url, headers={"User-Agent": "cap-cli/2 (policy-check)"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None

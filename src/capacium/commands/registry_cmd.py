@@ -51,6 +51,14 @@ def registry_login(registry_url: Optional[str] = None) -> bool:
 
 
 def registry_publish(path: Path, registry_url: Optional[str] = None) -> bool:
+    # P1-010: Deprecation warning — `cap registry publish` is deprecated
+    import sys
+    print(
+        "⚠️  Deprecated: use `cap publish` instead. "
+        "Removing in Capacium 2.0.",
+        file=sys.stderr,
+    )
+
     from .publish import publish_capability
 
     local_manifest = path / "capability.yaml"

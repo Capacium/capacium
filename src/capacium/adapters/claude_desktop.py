@@ -3,8 +3,15 @@
 Config: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
         %APPDATA%/Claude/claude_desktop_config.json (Windows)
         ~/.config/Claude/claude_desktop_config.json (Linux)
+
+Skills in Claude Desktop are exposed via the capacium-skills MCP wrapper.
+`install_skill` copies files to the package cache and idempotently registers
+the wrapper as an mcpServers entry named 'capacium-skills'.
 """
+import json
 import platform
+import shutil
+import sys
 from pathlib import Path
 
 from ..storage import StorageManager
@@ -32,11 +39,51 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
             return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
-        print("Claude Desktop does not support skill symlinking. Use 'mcp-server' kind instead.")
-        return False
+        """Copy capability files into the packages cache and register capacium-skills MCP wrapper.
+
+        Claude Desktop does not support direct skill symlinks. Instead, this method:
+        1. Copies the capability files into ~/.capacium/packages/{owner}/{cap_name}/
+        2. Idempotently adds the 'capacium-skills' MCP server entry to the config file,
+           pointing to `python -m capacium.skills_mcp_wrapper --cap-home ~/.capacium/packages`
+        The wrapper auto-discovers all installed skills at startup.
+        """
+        ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
+        self._ensure_skills_mcp_registered()
+        return True
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
-        return False
+        """Remove skill from package cache. The capacium-skills MCP entry remains (other skills may still be installed)."""
+        try:
+            cap_home = Path.home() / ".capacium" / "packages"
+            skill_dir = cap_home / owner / cap_name
+            if skill_dir.exists():
+                shutil.rmtree(skill_dir, ignore_errors=True)
+        except Exception:
+            pass
+        return True
+
+    def _ensure_skills_mcp_registered(self) -> None:
+        """Idempotently add the capacium-skills MCP server entry to claude_desktop_config.json."""
+        cap_home = Path.home() / ".capacium" / "packages"
+        server_key = "capacium-skills"
+
+        config: dict = {}
+        if self.config_path.exists():
+            try:
+                config = json.loads(self.config_path.read_text())
+            except Exception:
+                config = {}
+
+        mcp_servers = config.setdefault("mcpServers", {})
+
+        # Idempotent: only add if not already present
+        if server_key not in mcp_servers:
+            mcp_servers[server_key] = {
+                "command": sys.executable,
+                "args": ["-m", "capacium.skills_mcp_wrapper", "--cap-home", str(cap_home)],
+            }
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config_path.write_text(json.dumps(config, indent=2))
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)

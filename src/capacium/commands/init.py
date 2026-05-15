@@ -6,6 +6,8 @@ from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
 
+VALID_TEMPLATES = {"skill", "mcp-server", "bundle"}
+
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 VALID_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 VALID_KINDS = {
@@ -354,6 +356,156 @@ def _prompt_with_default(prompt_text: str, default: str) -> str:
     if not value and default:
         return default
     return value
+
+
+def init_from_template(
+    template: str,
+    name: Optional[str] = None,
+    version: str = "0.1.0",
+    description: str = "",
+    force: bool = False,
+) -> bool:
+    """Non-interactive init from a template: skill | mcp-server | bundle.
+
+    Creates capability.yaml + SKILL.md + README.md in the current directory.
+    When `name` is provided, runs fully non-interactive (< 60 seconds).
+    """
+    if template not in VALID_TEMPLATES:
+        print(f"Error: unknown template '{template}'. Choose: {', '.join(sorted(VALID_TEMPLATES))}")
+        return False
+
+    # Resolve name — prompt only if not supplied
+    if not name:
+        print(f"\n  Template: {template}")
+        print(f"  Examples: my-{template}, company-{template}, awesome-tool\n")
+        while True:
+            name = input(f"  Name (kebab-case) [my-{template}]: ").strip() or f"my-{template}"
+            err = _validate_name(name)
+            if err:
+                print(f"  {err}")
+                continue
+            break
+    else:
+        err = _validate_name(name)
+        if err:
+            print(f"Error: {err}")
+            return False
+
+    err = _validate_version(version)
+    if err:
+        print(f"Error: {err}")
+        return False
+
+    output_dir = Path.cwd()
+    cap_yaml = output_dir / "capability.yaml"
+    skill_md = output_dir / "SKILL.md"
+    readme_md = output_dir / "README.md"
+
+    existing = [f for f in [cap_yaml, skill_md] if f.exists()]
+    if existing and not force:
+        print(f"Error: files already exist: {', '.join(f.name for f in existing)}")
+        print("  Use --force to overwrite.")
+        return False
+
+    # Build manifest
+    kind = template
+    manifest = Manifest(
+        kind=kind,
+        name=name,
+        version=version,
+        description=description or f"A {kind} capability",
+        frameworks=[],
+        runtimes={},
+    )
+
+    # For mcp-server template: add mcp_meta section hint via description extension
+    # (full mcp_meta support depends on Manifest model capabilities)
+    if template == "mcp-server":
+        try:
+            manifest.mcp = {
+                "transport": "stdio",
+                "command": "python",
+                "args": ["server.py"],
+            }
+        except AttributeError:
+            pass  # mcp field not in current Manifest model; captured in SKILL.md instead
+
+    manifest.save(cap_yaml)
+    print(f"✅ Created {cap_yaml}")
+
+    # SKILL.md stub
+    _write_skill_md(skill_md, name, kind, version, description)
+    print(f"✅ Created {skill_md}")
+
+    # README.md stub (non-destructive)
+    if not readme_md.exists() or force:
+        _write_readme(readme_md, name, kind, description)
+        print(f"✅ Created {readme_md}")
+
+    print("\n  Next steps:")
+    print("    $ cap validate")
+    print("    $ cap package .")
+    print("    $ cap publish .")
+    print()
+    return True
+
+
+def _write_skill_md(path: Path, name: str, kind: str, version: str, description: str) -> None:
+    """Write a SKILL.md stub with YAML frontmatter."""
+    if kind == "mcp-server":
+        body = (
+            "## Usage\n\n"
+            "Start the server:\n"
+            "```bash\npython server.py\n```\n\n"
+            "## Tools\n\n"
+            "<!-- List the tools this MCP server exposes -->\n\n"
+            "## Configuration\n\n"
+            "<!-- Document transport / command / args -->\n"
+        )
+    elif kind == "bundle":
+        body = (
+            "## Included capabilities\n\n"
+            "<!-- List sub-capabilities in this bundle -->\n\n"
+            "## Installation\n\n"
+            "```bash\ncap install {name}\n```\n"
+        ).format(name=name)
+    else:
+        body = (
+            "## Usage\n\n"
+            "<!-- Describe how to use this skill -->\n\n"
+            "## Examples\n\n"
+            "<!-- Provide usage examples -->\n"
+        )
+
+    content = (
+        f"---\n"
+        f"name: {name}\n"
+        f"version: {version}\n"
+        f"kind: {kind}\n"
+        f"description: {description or f'A {kind} capability'}\n"
+        f"author: \"\"\n"
+        f"tags: []\n"
+        f"---\n\n"
+        f"# {name}\n\n"
+        f"{description or f'A {kind} capability.'}\n\n"
+        f"{body}"
+    )
+    path.write_text(content)
+
+
+def _write_readme(path: Path, name: str, kind: str, description: str) -> None:
+    """Write a README.md stub."""
+    content = (
+        f"# {name}\n\n"
+        f"{description or f'A {kind} capability for Capacium.'}\n\n"
+        f"## Installation\n\n"
+        f"```bash\ncap install {name}\n```\n\n"
+        f"## Usage\n\n"
+        f"<!-- Add usage instructions here -->\n\n"
+        f"## License\n\n"
+        f"Apache-2.0\n"
+    )
+    path.write_text(content)
 
 
 def _prompt_frameworks() -> list:

@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v1.0.0-dev — Phase 1 (2026-05-11)
+
+### Deprecations
+
+- **`cap registry publish` is deprecated.** Use `cap publish` instead.
+  `cap registry publish` now prints a deprecation warning to stderr and
+  delegates to `cap publish` with the same arguments.
+  Will be removed in Capacium 2.0.
+
+### New Features
+
+- **`cap init --template`**: Scaffold a capability in one command.
+  `cap init --template skill|mcp-server|bundle [--name NAME]` creates
+  `capability.yaml`, `SKILL.md`, and `README.md` in the current directory.
+  `mcp-server` template includes `mcp:` section with transport/command stubs.
+  `--force` flag overwrites existing files.
+
+- **`cap publish --registry <url>`**: Publish to a non-default Exchange.
+  Pass any Exchange URL to target self-hosted or staging registries.
+  Previously the `--registry` flag was documented but not wired.
+
+- **Quality score display after publish**: `cap publish` now fetches the
+  quality score from the Exchange immediately after a successful publish and
+  displays all 5 factor scores (Schema/Maintenance/Community/Docs/Security)
+  plus a context-aware next-step hint.
+
+- **ClaudeDesktop skill support (P1-001)**: `cap install --framework claude-desktop`
+  now works for `kind: skill`. Skills are exposed via the `capacium-skills`
+  MCP wrapper registered in `claude_desktop_config.json`. The wrapper
+  (`python -m capacium.skills_mcp_wrapper`) auto-discovers installed skills.
+
+- **capacium-skills MCP wrapper (P1-002)**: New module `capacium.skills_mcp_wrapper`
+  implements a stdio MCP server that exposes all skills installed in the
+  package cache as MCP tools. Start with:
+  `python3 -m capacium.skills_mcp_wrapper --cap-home ~/.capacium/packages`
+
+### Exchange (capacium-exchange)
+
+- **Trust pipeline auto-trigger (P1-008)**: Every POST /v2/publish now
+  triggers an async quality score computation and state machine evaluation.
+  Listings with score ≥ 40 auto-transition `discovered → audited`.
+  Listings with score ≥ 70 auto-transition `audited → verified`.
+  A 5-minute periodic sweep processes crawler-ingested listings.
+  Debounce: re-scoring skipped if last scan was < 24h ago.
+
+- **Badge SVG endpoint (P1-009)**: `GET /badge/{owner}/{name}` returns an
+  SVG badge showing the capability's trust state with color coding:
+  `discovered` (gray) · `audited` (blue) · `verified` (green) · `signed` (gold).
+  Cache-Control: max-age=300. Unknown capability returns a 404 badge SVG.
+
+### Documentation
+
+- **docs/publishing.md rewritten (P1-006)**: New 7-section publisher guide
+  covering prerequisites, `cap init --template`, editing manifests, `cap publish`
+  with expected output, quality score factors, verified trust state, and
+  version updates.
+
 ## Capacium v0.9.0 — 2026-04-30
 
 ### cap install — Edge Cases & Conflict Detection
