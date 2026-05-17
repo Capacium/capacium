@@ -140,10 +140,23 @@ cd "$REPO_DIR"
 
 # ── Step 7: Create GitHub Release ──────────────────────────────
 echo -e "${YELLOW}[7/8] Creating GitHub Release...${NC}"
+
+# Build release notes from commits since last tag
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [ -n "$LAST_TAG" ] && [ "$LAST_TAG" != "$TAG" ]; then
+    COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges 2>/dev/null)
+else
+    COMMITS=$(git log --oneline --no-merges --max-count=10 2>/dev/null)
+fi
+CHANGES=""
+while IFS= read -r line; do
+    [ -n "$line" ] && CHANGES="${CHANGES}- ${line}\n"
+done <<< "$COMMITS"
+
 NOTES="## Capacium v${VERSION}
 
 ### What's Changed
-- See [full changelog](https://github.com/${GITHUB_REPO}/commits/${TAG})
+${CHANGES:-See [full changelog](https://github.com/${GITHUB_REPO}/commits/${TAG})}
 
 ### Install
 \`\`\`bash
@@ -152,16 +165,32 @@ cap -v  # → ${VERSION}
 \`\`\`
 "
 
+RELEASE_TITLE="Capacium v${VERSION}"
+
 if [ "$DRY_RUN" = "--dry-run" ]; then
     echo "  DRY RUN: would create release ${TAG}"
 else
     if gh release view "$TAG" --repo "$GITHUB_REPO" &>/dev/null; then
-        gh release edit "$TAG" --repo "$GITHUB_REPO" --title "Capacium ${TAG}" --notes "$NOTES"
+        gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
     else
-        gh release create "$TAG" --repo "$GITHUB_REPO" --title "Capacium ${TAG}" --notes "$NOTES"
+        gh release create "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
     fi
     echo -e "${GREEN}  Release created${NC}"
 fi
+
+# ── Step 7b: Verify release title matches naming convention ─────
+echo -e "${YELLOW}[7b/8] Verifying release title...${NC}"
+RELEASE_NAME=$(gh release view "$TAG" --repo "$GITHUB_REPO" --json name --jq '.name' 2>/dev/null || echo "")
+if [ "$RELEASE_NAME" != "$RELEASE_TITLE" ]; then
+    echo -e "${RED}  Release title mismatch: expected '${RELEASE_TITLE}', got '${RELEASE_NAME}'${NC}"
+    echo -e "${RED}  Fixing...${NC}"
+    gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" 2>/dev/null || {
+        echo -e "${RED}  Failed to fix title — manual intervention required${NC}"
+        echo "  gh release edit ${TAG} --repo ${GITHUB_REPO} --title '${RELEASE_TITLE}'"
+        exit 1
+    }
+fi
+echo -e "${GREEN}  Title verified: ${RELEASE_TITLE}${NC}"
 
 # ── Step 8: Brew upgrade locally ───────────────────────────────
 echo -e "${YELLOW}[8/8] Upgrading local Brew...${NC}"
