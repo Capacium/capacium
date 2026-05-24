@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.11.0 — Phase 2: Capacium v2 Redesign (2026-05-24)
+
+### New Features
+
+- **`cap export-mcp`** (CAP-008): Export capability manifests as MCP server
+  descriptors. Generates standardized `serverInfo`, `capabilities/tools`,
+  and `transport` sections from `capability.yaml`.
+
+- **`cap export-a2a`** (CAP-008): Export capability manifests as A2A agent
+  cards. Generates `skills`, `provider`, and `capabilities` sections for
+  Google A2A protocol compatibility.
+
+- **`cap adapt`** (CAP-011): Framework adaptation layer with pluggable
+  registry. Adapts capability manifests to target frameworks (mcp-server,
+  a2a-agent, claude-desktop) using capability-aware transformation pipelines.
+
+- **Standards Exporters** (CAP-008): New `capacium.exporters` package with
+  `MCPExporter` and `A2AExporter`. Abstract `BaseExporter` supports
+  `export()`, `can_export()`, and `export_json()` methods. 16 tests.
+
+- **Adaptation Registry** (CAP-011): New `capacium.adaptation` package with
+  `AdaptationRegistry` (3 built-in targets) and `CapabilityAdapter` for
+  framework-agnostic capability transformation. 38 tests.
+
+- **Manifest triggers field** (CAP-003): New `triggers:` section in
+  `capability.yaml` for event-driven capability activation patterns.
+
+- **Manifest pricing field** (CAP-004): New `pricing:` section in
+  `capability.yaml` supporting free/freemium/paid models with tier
+  definitions and usage limits.
+
+- **Resource Kind 5-layer schema** (CAP-002): Progressive disclosure schema
+  for resources — from simple key-value to full conditional evaluation with
+  `ConditionEvaluator`.
+
+- **Broad resource support**: Resource kind detection, condition evaluation,
+  and 5-layer progressive resource schema integrated into CLI.
+
 ## Capacium v1.0.0-dev — Phase 1 (2026-05-11)
 
 ### Deprecations
