@@ -160,7 +160,7 @@ def resolve_frameworks(
             return found
         return [fw]
     if all_frameworks:
-        detected = sorted(detect_active_frameworks())
+        detected = sorted(set(detect_active_frameworks()) | set(manifest_frameworks or []))
         if not detected:
             return ["opencode"] if _framework_supports_kind("opencode", kind) else []
         return _filter_frameworks_by_kind(detected, kind) or (

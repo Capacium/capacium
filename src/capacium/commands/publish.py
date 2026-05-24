@@ -54,8 +54,11 @@ def publish_capability(
         "version": manifest.version,
         "kind": manifest.kind,
         "description": manifest.description or "",
+        "repo_url": manifest.repository or manifest.homepage or "",
         "frameworks": frameworks,
         "dependencies": manifest.dependencies or {},
+        "replaces": manifest.replaces or [],
+        "previous_identities": manifest.previous_identities or [],
     }
 
     canonical = f"{owner}/{manifest.name}"
@@ -122,12 +125,22 @@ def _display_quality_score(
         print("  Quality score: pending (score computed within ~5 min)")
         return
 
-    quality_score: float = data.get("quality_score") or 0.0
+    quality_score_raw = data.get("quality_score") or 0.0
+    try:
+        quality_score = float(quality_score_raw)
+    except (TypeError, ValueError):
+        quality_score = 0.0
     trust_state: str = data.get("trust_state", "discovered")
     has_skill_md: bool = bool(data.get("skill_md_content") or data.get("has_skill_md"))
     source_url: str = data.get("canonical_source_url") or ""
-    install_count: int = data.get("install_count") or 0
-    github_stars: int = data.get("github_stars") or 0
+    try:
+        install_count = int(data.get("install_count") or 0)
+    except (TypeError, ValueError):
+        install_count = 0
+    try:
+        github_stars = int(data.get("github_stars") or 0)
+    except (TypeError, ValueError):
+        github_stars = 0
     description: str = data.get("short_description") or manifest.description or ""
 
     # ── Factor estimates (client-side, server score takes precedence) ──────

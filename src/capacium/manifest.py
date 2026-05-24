@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 
 MANIFEST_FILENAME = "capability.yaml"
@@ -23,10 +23,20 @@ class Manifest:
     frameworks: List[str] = field(default_factory=list)
     dependencies: Dict[str, str] = field(default_factory=dict)
     runtimes: Dict[str, str] = field(default_factory=dict)
+    replaces: List[str] = field(default_factory=list)
+    previous_identities: List[Dict[str, str]] = field(default_factory=list)
     capabilities: List[Dict[str, str]] = field(default_factory=list)
     checksums: Dict[str, str] = field(default_factory=dict)
     mcp: Dict[str, Any] = field(default_factory=dict)
     entrypoint: str = ""
+    triggers: List[Dict[str, Any]] = field(default_factory=list)
+    pricing: Optional[Dict[str, Any]] = None
+    # Resource-specific (only relevant when kind=resource)
+    resource_type: Optional[str] = None
+    resource_format: Optional[str] = None
+    size_hint: Optional[str] = None
+    access: Optional[Dict[str, Any]] = None
+    compatibility: Optional[Dict[str, Any]] = None
 
     @property
     def id(self) -> str:
@@ -49,6 +59,56 @@ class Manifest:
             else:
                 if "transport" not in self.mcp:
                     errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
+        if self.kind == "resource":
+            if not self.description:
+                errors.append("Resource manifest requires a description")
+            _VALID_RESOURCE_TYPES = {
+                "prompt-library", "dataset", "config-template",
+                "model-weights", "tool-index", "embedding",
+            }
+            if self.resource_type and self.resource_type not in _VALID_RESOURCE_TYPES:
+                errors.append(f"Invalid resource_type: {self.resource_type}")
+            _VALID_FORMATS = {"yaml", "json", "csv", "parquet", "binary", "directory"}
+            if self.resource_format and self.resource_format not in _VALID_FORMATS:
+                errors.append(f"Invalid resource format: {self.resource_format}")
+            _VALID_SIZES = {"small", "medium", "large"}
+            if self.size_hint and self.size_hint not in _VALID_SIZES:
+                errors.append(f"Invalid size_hint: {self.size_hint}")
+            # Resources don't need entry points or MCP config
+        # Validate triggers
+        _VALID_TRIGGER_EVENTS = {
+            "file-changed", "schedule", "webhook", "manual", "on-install", "on-update",
+        }
+        if self.triggers:
+            for i, trigger in enumerate(self.triggers):
+                if "event" not in trigger:
+                    errors.append(f"triggers[{i}]: missing required 'event' field")
+                if "action" not in trigger:
+                    errors.append(f"triggers[{i}]: missing required 'action' field")
+                event = trigger.get("event")
+                if event and event not in _VALID_TRIGGER_EVENTS:
+                    errors.append(
+                        f"triggers[{i}]: invalid event '{event}'; "
+                        f"must be one of {sorted(_VALID_TRIGGER_EVENTS)}"
+                    )
+        # Validate pricing
+        _VALID_PRICING_MODELS = {"free", "freemium", "paid", "usage-based", "donation"}
+        if self.pricing is not None:
+            if "model" not in self.pricing:
+                errors.append("pricing: missing required 'model' field")
+            else:
+                model = self.pricing["model"]
+                if model not in _VALID_PRICING_MODELS:
+                    errors.append(
+                        f"pricing: invalid model '{model}'; "
+                        f"must be one of {sorted(_VALID_PRICING_MODELS)}"
+                    )
+                if model == "paid":
+                    price = self.pricing.get("price_usd")
+                    if price is None:
+                        errors.append("pricing: 'paid' model requires 'price_usd' field")
+                    elif not isinstance(price, (int, float)) or price <= 0:
+                        errors.append("pricing: 'price_usd' must be a number greater than 0")
         return errors
 
     def get_mcp_metadata(self) -> Dict[str, Any]:

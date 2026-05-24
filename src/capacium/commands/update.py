@@ -81,9 +81,7 @@ def _check_for_newer_version(cap_id: str, current_version: str, source_url: Opti
             if _parse_version(latest) > _parse_version(current_version):
                 print(f"  Newer version {latest} found via remote tags.")
                 print(f"  Installing {cap_id}@{latest}...")
-                registry = Registry()
-                registry.remove_capability(cap_id, version=current_version)
-                return install_capability(f"{cap_id}@{latest}", yes=True)
+                return install_capability(f"{cap_id}@{latest}", force=True, yes=True)
 
     client = RegistryClient()
     try:
@@ -101,9 +99,7 @@ def _check_for_newer_version(cap_id: str, current_version: str, source_url: Opti
 
     print(f"  Newer version {latest.version} found in registry.")
     print(f"  Installing {cap_id}@{latest.version}...")
-    registry = Registry()
-    registry.remove_capability(cap_id, version=current_version)
-    return install_capability(f"{cap_id}@{latest.version}", yes=True)
+    return install_capability(f"{cap_id}@{latest.version}", force=True, yes=True)
 
 
 def update_capability(

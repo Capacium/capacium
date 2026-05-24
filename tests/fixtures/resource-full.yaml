@@ -1,0 +1,20 @@
+kind: resource
+name: test-dataset
+version: "2.0.0"
+description: "Training dataset for sentiment analysis"
+author: "test-org"
+license: "MIT"
+keywords: ["dataset", "nlp", "sentiment"]
+runtimes: {}
+
+resource_type: dataset
+resource_format: parquet
+size_hint: medium
+access:
+  method: git-submodule
+  path: "data/sentiment/"
+compatibility:
+  frameworks:
+    - claude-code
+    - cursor
+  min_version: "1.0.0"

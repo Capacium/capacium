@@ -34,6 +34,7 @@ def install_capability(
     from_tarball: Optional[str] = None,
     yes: bool = False,
     github_token: Optional[str] = None,
+    registry_url: Optional[str] = None,
 ) -> bool:
     # BUG-009: Auto-detect capability name from tarball manifest
     autodetected_name = None
@@ -45,6 +46,17 @@ def install_capability(
             return False
         cap_spec = autodetected_name
 
+    if source_dir is not None and (not cap_spec or cap_spec.strip() == ""):
+        source_raw = str(source_dir)
+        if not (_is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw)):
+            source_manifest = Manifest.detect_from_directory(source_dir)
+            if source_manifest.name:
+                cap_spec = (
+                    f"{source_manifest.owner}/{source_manifest.name}"
+                    if source_manifest.owner
+                    else source_manifest.name
+                )
+
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
     cap_name = spec["skill"]
@@ -54,7 +66,7 @@ def install_capability(
     # Skip when source/tarball/offline is provided — user brings their own
     if owner in ("", "global", "unknown", "any") and source_dir is None and from_tarball is None and not offline:
         from ._resolve import _resolve_owner_via_search
-        resolved = _resolve_owner_via_search(cap_name)
+        resolved = _resolve_owner_via_search(cap_name, registry_url=registry_url)
         if resolved is not None:
             owner = resolved
         # Fallthrough: owner stays as-is ("global") if registry unreachable or no match
@@ -176,6 +188,7 @@ def install_capability(
             version_spec=version_spec,
             storage=storage,
             github_token=github_token,
+            registry_url=registry_url,
         )
         if source_dir is None:
             # Fallback to current directory
@@ -199,6 +212,10 @@ def install_capability(
         return False
 
     source_manifest = Manifest.detect_from_directory(source_dir)
+    if not cap_name and source_manifest.name:
+        cap_name = source_manifest.name
+        owner = source_manifest.owner or owner or "global"
+        cap_id = f"{owner}/{cap_name}"
 
     if not skip_runtime_check:
         interactive_rt = _is_interactive() and not yes
@@ -265,6 +282,9 @@ def install_capability(
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
 
+    if force:
+        _remove_superseded_versions(registry, cap_name, owner, version)
+
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
@@ -282,7 +302,8 @@ def install_capability(
         source_url=source_url,
     )
 
-    registry.add_capability(cap)
+    if not registry.add_capability(cap):
+        registry.update_capability(cap)
 
     if all_frameworks:
         kind_str = cap.kind.value
@@ -352,7 +373,8 @@ def _install_bundle_members(
             continue
 
         _install_single_sub_cap(
-            sub_name, sub_version, source_path, owner, registry, storage, no_lock
+            sub_name, sub_version, source_path, owner, registry, storage, no_lock,
+            force=force,
         )
 
         sub_cap = registry.get_capability(sub_cap_id, sub_version)
@@ -372,6 +394,7 @@ def _install_single_sub_cap(
     registry: Registry,
     storage: StorageManager,
     no_lock: bool,
+    force: bool = False,
 ) -> None:
     package_dir = storage.get_package_dir(sub_name, version, owner=owner)
     if package_dir.exists():
@@ -416,8 +439,34 @@ def _install_single_sub_cap(
         source_url=source_url,
     )
 
-    registry.add_capability(capacity)
+    if force:
+        _remove_superseded_versions(registry, sub_name, owner, version)
+
+    if not registry.add_capability(capacity):
+        registry.update_capability(capacity)
     StorageManager.write_meta(capacity)
+
+
+def _remove_superseded_versions(
+    registry: Registry,
+    cap_name: str,
+    owner: str,
+    keep_version: str,
+) -> None:
+    """Remove registry/package entries for older versions on force installs."""
+    cap_id = f"{owner}/{cap_name}"
+    for existing in list(registry.list_capabilities()):
+        if (
+            existing.owner != owner
+            or existing.name != cap_name
+            or existing.version == keep_version
+        ):
+            continue
+        old_id = f"{cap_id}@{existing.version}"
+        registry.remove_bundle_references(old_id)
+        registry.remove_capability(cap_id, existing.version)
+        if existing.install_path and existing.install_path.exists():
+            shutil.rmtree(existing.install_path, ignore_errors=True)
 
 
 def _resolve_source_path(source_raw: str, bundle_dir: Path) -> Path:
@@ -662,6 +711,7 @@ def _fetch_from_registry(
     version_spec: str,
     storage: StorageManager,
     github_token: Optional[str] = None,
+    registry_url: Optional[str] = None,
 ) -> tuple[Optional[Path], Optional[str]]:
     """Fetch a capability from the configured Exchange registry.
 
@@ -675,7 +725,7 @@ def _fetch_from_registry(
 
     client = RegistryClient()
     try:
-        remote = client.get_detail(f"{owner}/{cap_name}")
+        remote = client.get_detail(f"{owner}/{cap_name}", registry_url=registry_url)
     except Exception as e:
         msg = str(e).lower()
         if "404" in msg or "not found" in msg:
@@ -719,6 +769,8 @@ def _fetch_from_registry(
         return None, None
 
     manifest = Manifest.detect_from_directory(repo_dir)
+    if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
+        best_version = manifest.version
     if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
         registry_meta = {
             "name": remote.name,
@@ -748,15 +800,20 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
     """
     import tempfile
 
-    tag = version if version.startswith("v") else f"v{version}"
+    tag = "" if version in ("", "0.0.0", "latest", "stable") else (
+        version if version.startswith("v") else f"v{version}"
+    )
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-registry-"))
     clone_url = repo_url
     if github_token and "github.com" in repo_url:
         clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
-    clone_args = ["git", "clone", "--depth=1", "--branch", tag, clone_url, str(tmp_dir / "repo")]
+    clone_args = ["git", "clone", "--depth=1"]
+    if tag:
+        clone_args.extend(["--branch", tag])
+    clone_args.extend([clone_url, str(tmp_dir / "repo")])
 
     display_url = repo_url.replace("https://", "https://***@") if github_token and "github.com" in repo_url else repo_url
-    print(f"  Fetching {display_url}@{version}...")
+    print(f"  Fetching {display_url}" + (f"@{version}" if tag else "@HEAD") + "...")
     try:
         result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
@@ -770,7 +827,7 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
             capture_output=True, text=True, timeout=10,
             cwd=str(repo_dir),
         )
-        if tag not in (tag_result.stdout or "").splitlines():
+        if tag and tag not in (tag_result.stdout or "").splitlines():
             shutil.rmtree(tmp_dir, ignore_errors=True)
             print(f"  Tag {tag} not found in repository.")
             print(f"  Available tags: {', '.join((tag_result.stdout or '').splitlines()[:5])}")

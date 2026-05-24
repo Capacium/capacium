@@ -141,4 +141,4 @@ def test_check_for_newer_version_via_remote(tmp_path):
             "global/test-cap", "1.0.0", str(remote)
         )
         assert result is True
-        mock.assert_called_once_with("global/test-cap@2.0.0", yes=True)
+        mock.assert_called_once_with("global/test-cap@2.0.0", force=True, yes=True)

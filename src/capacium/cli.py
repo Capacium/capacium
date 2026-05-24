@@ -130,7 +130,7 @@ def main():
     init_parser.add_argument("--name", help="Capability name (kebab-case)")
     init_parser.add_argument(
         "--kind",
-        help="Capability kind (skill, tool, prompt, mcp-server, template, bundle, workflow, connector-pack)",
+        help="Capability kind (skill, tool, prompt, mcp-server, template, bundle, workflow, connector-pack, resource)",
     )
     init_parser.add_argument("--version", help="Capability version (semver, e.g. 0.1.0)")
     init_parser.add_argument("--description", help="Capability description")
@@ -144,8 +144,8 @@ def main():
     )
     init_parser.add_argument(
         "--template",
-        choices=["skill", "mcp-server", "bundle"],
-        help="Scaffold from template: skill | mcp-server | bundle. Creates capability.yaml + SKILL.md + README.md.",
+        choices=["skill", "mcp-server", "bundle", "resource"],
+        help="Scaffold from template: skill | mcp-server | bundle | resource. Creates capability.yaml + SKILL.md + README.md.",
     )
     init_parser.add_argument(
         "--force",
@@ -285,6 +285,64 @@ def main():
     sign_parser = subparsers.add_parser("sign", help="Sign a capability with an Ed25519 key")
     sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
     sign_parser.add_argument("key_name", help="Name of the signing key")
+
+    # CAP-008: Standards export commands
+    export_mcp_parser = subparsers.add_parser(
+        "export-mcp",
+        help="Export capability manifest to MCP server descriptor format",
+    )
+    export_mcp_parser.add_argument(
+        "target",
+        help="Path to capability.yaml or directory containing one",
+    )
+
+    export_a2a_parser = subparsers.add_parser(
+        "export-a2a",
+        help="Export capability manifest to A2A agent card format",
+    )
+    export_a2a_parser.add_argument(
+        "target",
+        help="Path to capability.yaml or directory containing one",
+    )
+
+    # CAP-011: Framework adaptation
+    adapt_parser = subparsers.add_parser(
+        "adapt",
+        help="Adapt capability to target framework format",
+    )
+    adapt_parser.add_argument(
+        "target",
+        nargs="?",
+        help="Target framework (mcp-server, a2a-agent, claude-desktop)",
+    )
+    adapt_parser.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to manifest or directory (default: current directory)",
+    )
+    adapt_parser.add_argument(
+        "--transport",
+        default=None,
+        help="Transport type for MCP targets (default: stdio)",
+    )
+    adapt_parser.add_argument(
+        "--command",
+        dest="adapt_command",
+        default=None,
+        help="Command to run the capability",
+    )
+    adapt_parser.add_argument(
+        "--args",
+        dest="adapt_args",
+        default=None,
+        help="Arguments for the command (comma-separated)",
+    )
+    adapt_parser.add_argument(
+        "--list-targets",
+        action="store_true",
+        help="List available adaptation targets",
+    )
 
     subparsers.add_parser("version", help="Print Capacium version")
 
@@ -675,6 +733,68 @@ def main():
             from .commands.sign import sign_capability
             success = sign_capability(args.capability, args.key_name)
             sys.exit(0 if success else 1)
+
+        elif args.command == "adapt":
+            if args.list_targets:
+                from .adaptation import CapabilityAdapter
+                adapter = CapabilityAdapter()
+                for t in adapter.registry.all():
+                    print(f"  {t.name:20s} {t.description}")
+                sys.exit(0)
+            if not args.target:
+                print("Error: target is required (use --list-targets to see options)")
+                sys.exit(1)
+            from .adaptation import CapabilityAdapter
+            from .manifest import Manifest
+            path = Path(args.path)
+            if path.is_dir():
+                manifest = Manifest.detect_from_directory(path)
+            elif path.is_file():
+                manifest = Manifest.load(path)
+            else:
+                print(f"Error: {path} not found")
+                sys.exit(1)
+            adapter = CapabilityAdapter()
+            options = {}
+            if args.transport:
+                options["transport"] = args.transport
+            if getattr(args, "adapt_command", None):
+                options["command"] = args.adapt_command
+            if getattr(args, "adapt_args", None):
+                options["args"] = [a.strip() for a in args.adapt_args.split(",")]
+            try:
+                result = adapter.adapt(manifest, args.target, options if options else None)
+                import json
+                print(json.dumps(result, indent=2))
+                sys.exit(0)
+            except Exception as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        elif args.command in ("export-mcp", "export-a2a"):
+            from .manifest import Manifest
+            target = Path(args.target)
+            if target.is_dir():
+                manifest = Manifest.detect_from_directory(target)
+            elif target.is_file():
+                manifest = Manifest.load(target)
+            else:
+                print(f"Error: {target} not found")
+                sys.exit(1)
+
+            if args.command == "export-mcp":
+                from .exporters import MCPExporter
+                exporter = MCPExporter()
+            else:
+                from .exporters import A2AExporter
+                exporter = A2AExporter()
+
+            if not exporter.can_export(manifest):
+                print(f"Error: manifest kind '{manifest.kind}' cannot be exported to {exporter.format_name}")
+                sys.exit(1)
+
+            print(exporter.export_json(manifest))
+            sys.exit(0)
 
         elif args.command == "version":
             print(f"cap {__version__}")

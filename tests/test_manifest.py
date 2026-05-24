@@ -77,6 +77,149 @@ class TestParseCapId:
         assert parse_cap_id("my-cap") == ("global", "my-cap")
 
 
+class TestTriggers:
+    def test_triggers_from_dict(self):
+        data = {
+            "name": "trigger-cap",
+            "version": "1.0.0",
+            "kind": "skill",
+            "triggers": [
+                {"event": "file-changed", "pattern": "*.py", "action": "run-linter"},
+            ],
+        }
+        m = Manifest.from_dict(data)
+        assert len(m.triggers) == 1
+        assert m.triggers[0]["event"] == "file-changed"
+        assert m.triggers[0]["action"] == "run-linter"
+
+    def test_triggers_valid(self):
+        m = Manifest(
+            name="t",
+            triggers=[
+                {"event": "schedule", "action": "daily-check"},
+                {"event": "on-install", "action": "setup"},
+            ],
+        )
+        assert m.validate() == []
+
+    def test_triggers_missing_event(self):
+        m = Manifest(name="t", triggers=[{"action": "run"}])
+        errors = m.validate()
+        assert any("missing required 'event'" in e for e in errors)
+
+    def test_triggers_missing_action(self):
+        m = Manifest(name="t", triggers=[{"event": "manual"}])
+        errors = m.validate()
+        assert any("missing required 'action'" in e for e in errors)
+
+    def test_triggers_invalid_event(self):
+        m = Manifest(name="t", triggers=[{"event": "invalid-event", "action": "run"}])
+        errors = m.validate()
+        assert any("invalid event 'invalid-event'" in e for e in errors)
+
+    def test_triggers_all_valid_events(self):
+        valid_events = ["file-changed", "schedule", "webhook", "manual", "on-install", "on-update"]
+        for event in valid_events:
+            m = Manifest(name="t", triggers=[{"event": event, "action": "do-stuff"}])
+            assert m.validate() == [], f"Event '{event}' should be valid"
+
+    def test_triggers_empty_list_is_valid(self):
+        m = Manifest(name="t", triggers=[])
+        assert m.validate() == []
+
+    def test_triggers_roundtrip_yaml(self, tmp_path):
+        m = Manifest(
+            name="trigger-rt",
+            version="1.0.0",
+            triggers=[{"event": "webhook", "action": "notify", "pattern": "/api/*"}],
+        )
+        path = tmp_path / "capability.yaml"
+        m.save(path)
+        loaded = Manifest.load(path)
+        assert loaded.triggers == m.triggers
+
+
+class TestPricing:
+    def test_pricing_from_dict(self):
+        data = {
+            "name": "priced-cap",
+            "version": "1.0.0",
+            "kind": "skill",
+            "pricing": {"model": "free"},
+        }
+        m = Manifest.from_dict(data)
+        assert m.pricing is not None
+        assert m.pricing["model"] == "free"
+
+    def test_pricing_none_by_default(self):
+        m = Manifest(name="t")
+        assert m.pricing is None
+        assert m.validate() == []
+
+    def test_pricing_free_valid(self):
+        m = Manifest(name="t", pricing={"model": "free"})
+        assert m.validate() == []
+
+    def test_pricing_freemium_valid(self):
+        m = Manifest(
+            name="t",
+            pricing={
+                "model": "freemium",
+                "features_free": ["basic-scan"],
+                "features_paid": ["deep-analysis"],
+            },
+        )
+        assert m.validate() == []
+
+    def test_pricing_paid_valid(self):
+        m = Manifest(name="t", pricing={"model": "paid", "price_usd": 9.99})
+        assert m.validate() == []
+
+    def test_pricing_paid_missing_price(self):
+        m = Manifest(name="t", pricing={"model": "paid"})
+        errors = m.validate()
+        assert any("requires 'price_usd'" in e for e in errors)
+
+    def test_pricing_paid_zero_price(self):
+        m = Manifest(name="t", pricing={"model": "paid", "price_usd": 0})
+        errors = m.validate()
+        assert any("must be a number greater than 0" in e for e in errors)
+
+    def test_pricing_paid_negative_price(self):
+        m = Manifest(name="t", pricing={"model": "paid", "price_usd": -5})
+        errors = m.validate()
+        assert any("must be a number greater than 0" in e for e in errors)
+
+    def test_pricing_missing_model(self):
+        m = Manifest(name="t", pricing={"price_usd": 10})
+        errors = m.validate()
+        assert any("missing required 'model'" in e for e in errors)
+
+    def test_pricing_invalid_model(self):
+        m = Manifest(name="t", pricing={"model": "subscription"})
+        errors = m.validate()
+        assert any("invalid model 'subscription'" in e for e in errors)
+
+    def test_pricing_all_valid_models(self):
+        for model in ["free", "freemium", "paid", "usage-based", "donation"]:
+            pricing = {"model": model}
+            if model == "paid":
+                pricing["price_usd"] = 5.0
+            m = Manifest(name="t", pricing=pricing)
+            assert m.validate() == [], f"Model '{model}' should be valid"
+
+    def test_pricing_roundtrip_yaml(self, tmp_path):
+        m = Manifest(
+            name="priced-rt",
+            version="1.0.0",
+            pricing={"model": "usage-based", "price_usd": 0.01},
+        )
+        path = tmp_path / "capability.yaml"
+        m.save(path)
+        loaded = Manifest.load(path)
+        assert loaded.pricing == m.pricing
+
+
 class TestFormatCapId:
     def test_format(self):
         assert format_cap_id("alice", "my-cap") == "alice/my-cap"

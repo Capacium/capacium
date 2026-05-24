@@ -48,6 +48,7 @@ TAXONOMY: Dict[str, Dict[str, object]] = {
             "Vector Databases": "Vector embedding storage and search",
             "Knowledge Bases": "Structured knowledge management",
             "Data Processing": "ETL and data transformation",
+        "Resources": "Data assets, configs, and reference material for capabilities",
         },
     },
     "Security & Trust": {
@@ -133,6 +134,7 @@ _KIND_DEFAULTS: Dict[str, str] = {
     "skill": "AI & Agents/Agent Skills",
     "tool": "Developer Tools/CLI Plugins",
     "bundle": "AI & Agents/Agent Workflows",
+    "resource": "Data & Knowledge/Resources",
 }
 
 _FALLBACK_CATEGORY = "Utilities/File Management"

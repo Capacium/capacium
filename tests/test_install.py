@@ -181,6 +181,111 @@ class TestInstallFromSourceFlag:
         )
         assert result is True
 
+    def test_install_from_local_bundle_detects_manifest_identity(self, tmp_home, tmp_path):
+        from capacium.commands.install import install_capability
+        from capacium.registry import Registry
+
+        bundle_dir = tmp_path / "skillweave"
+        skill_dir = bundle_dir / "skills" / "skillweave-blueprint"
+        skill_dir.mkdir(parents=True)
+        (bundle_dir / "capability.yaml").write_text("""\
+kind: bundle
+name: skillweave
+version: 1.0.2
+description: SkillWeave bundle
+frameworks:
+- opencode
+capabilities:
+- name: skillweave-blueprint
+  source: ./skills/skillweave-blueprint
+  version: 1.0.2
+""")
+        (skill_dir / "capability.yaml").write_text("""\
+kind: skill
+name: skillweave-blueprint
+version: 1.0.2
+description: Blueprint skill
+frameworks:
+- opencode
+""")
+        (skill_dir / "SKILL.md").write_text("# Blueprint\n")
+
+        result = install_capability(
+            "",
+            source_dir=bundle_dir,
+            no_lock=True,
+            skip_runtime_check=True,
+            all_frameworks=True,
+            force=True,
+            yes=True,
+        )
+
+        assert result is True
+        registry = Registry()
+        assert registry.get_capability("global/skillweave", "1.0.2") is not None
+        assert registry.get_capability("global/", "1.0.2") is None
+        assert (
+            tmp_home
+            / ".config"
+            / "opencode"
+            / "commands"
+            / "skillweave-blueprint.md"
+        ).exists()
+
+    def test_force_install_removes_superseded_bundle_member_versions(self, tmp_home, tmp_path):
+        from capacium.commands.install import install_capability
+        from capacium.registry import Registry
+
+        def write_bundle(version):
+            bundle_dir = tmp_path / f"skillweave-{version}"
+            skill_dir = bundle_dir / "skills" / "skillweave-blueprint"
+            skill_dir.mkdir(parents=True)
+            (bundle_dir / "capability.yaml").write_text(f"""\
+kind: bundle
+name: skillweave
+version: {version}
+description: SkillWeave bundle
+frameworks:
+- opencode
+capabilities:
+- name: skillweave-blueprint
+  source: ./skills/skillweave-blueprint
+  version: {version}
+""")
+            (skill_dir / "capability.yaml").write_text(f"""\
+kind: skill
+name: skillweave-blueprint
+version: {version}
+description: Blueprint skill
+frameworks:
+- opencode
+""")
+            (skill_dir / "SKILL.md").write_text(f"# Blueprint {version}\n")
+            return bundle_dir
+
+        assert install_capability(
+            "",
+            source_dir=write_bundle("1.0.1"),
+            no_lock=True,
+            skip_runtime_check=True,
+            force=True,
+            yes=True,
+        )
+        assert install_capability(
+            "",
+            source_dir=write_bundle("1.0.2"),
+            no_lock=True,
+            skip_runtime_check=True,
+            force=True,
+            yes=True,
+        )
+
+        registry = Registry()
+        assert registry.get_capability("global/skillweave", "1.0.1") is None
+        assert registry.get_capability("global/skillweave-blueprint", "1.0.1") is None
+        assert registry.get_capability("global/skillweave", "1.0.2") is not None
+        assert registry.get_capability("global/skillweave-blueprint", "1.0.2") is not None
+
     def test_install_rejects_cwd_without_capability(self, tmp_home, tmp_path, capsys, monkeypatch):
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
@@ -327,6 +432,20 @@ class TestPromptFrameworkSelection:
         monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError))
         result = _prompt_framework_selection()
         assert len(result) == 2
+
+    def test_all_frameworks_includes_manifest_frameworks(self, monkeypatch):
+        from capacium.framework_detector import resolve_frameworks
+
+        monkeypatch.setattr(
+            "capacium.framework_detector.detect_active_frameworks",
+            lambda: {"claude-code"},
+        )
+        result = resolve_frameworks(
+            ["opencode"],
+            all_frameworks=True,
+            kind="skill",
+        )
+        assert result == ["claude-code", "opencode"]
 
 
 class TestFrameworkAppend:

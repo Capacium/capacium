@@ -324,7 +324,7 @@ def _local_search(query: str, kind: Optional[str], trust: Optional[str],
 
 
 def _remote_format(raw: Dict[str, Any], json_output: bool) -> None:
-    listings = raw.get("listings", [])
+    listings = raw.get("listings", raw.get("results", []))
     if json_output:
         total = raw.get("total", len(listings))
         sort_val = raw.get("sort", "relevance")
@@ -350,7 +350,7 @@ def _remote_format(raw: Dict[str, Any], json_output: bool) -> None:
             d.setdefault("source_url", d.get("source_url", d.get("repository", "")))
             d.setdefault("id", d.get("id", d.get("canonical_name", f"{d['owner']}/{d['name']}")))
             result_dicts.append(d)
-        print(_search_results_json(result_dicts, total, raw.get("query", ""), sort_val))
+        print(_search_results_json(result_dicts, total, raw.get("query", raw.get("search", "")), sort_val))
         return
 
     if not listings:

@@ -184,7 +184,11 @@ class RegistryClient:
             limit=limit,
             min_stars=min_stars,
         )
-        listings = raw.get("listings", []) if isinstance(raw, dict) else raw
+        listings = (
+            raw.get("listings", raw.get("results", []))
+            if isinstance(raw, dict)
+            else raw
+        )
         if isinstance(listings, dict):
             listings = listings.get("listings", [])
         results = []
@@ -215,7 +219,7 @@ class RegistryClient:
         url = self._build_registry_url("/v2/listings", registry_url)
         params = []
         if query:
-            params.append(f"q={urllib.parse.quote(query)}")
+            params.append(f"search={urllib.parse.quote(query)}")
         if kind:
             params.append(f"kind={urllib.parse.quote(kind)}")
         if framework:

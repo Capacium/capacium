@@ -62,11 +62,14 @@ def _resolve_owner_locally(cap_name: str) -> Optional[str]:
     return None
 
 
-def _resolve_owner_via_search(cap_name: str) -> Optional[str]:
+def _resolve_owner_via_search(
+    cap_name: str,
+    registry_url: Optional[str] = None,
+) -> Optional[str]:
     """Resolve a bare capability name to an owner via Exchange search."""
     client = RegistryClient()
     try:
-        results = client.search(cap_name, limit=20)
+        results = client.search(cap_name, registry_url=registry_url, limit=20)
     except (RegistryClientError, Exception):
         return None
 
@@ -120,7 +123,7 @@ def resolve_capability_info(
         canonical = cap_spec.split("@")[0].strip()
         if "/" not in canonical:
             # Try to resolve owner first
-            owner_guess = _resolve_owner_via_search(canonical)
+            owner_guess = _resolve_owner_via_search(canonical, registry_url=registry_url)
             if not owner_guess:
                 return None
             canonical = f"{owner_guess}/{canonical}"
