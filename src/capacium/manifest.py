@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 
 MANIFEST_FILENAME = "capability.yaml"
@@ -23,10 +23,13 @@ class Manifest:
     frameworks: List[str] = field(default_factory=list)
     dependencies: Dict[str, str] = field(default_factory=dict)
     runtimes: Dict[str, str] = field(default_factory=dict)
+    replaces: List[str] = field(default_factory=list)
+    previous_identities: List[Dict[str, str]] = field(default_factory=list)
     capabilities: List[Dict[str, str]] = field(default_factory=list)
     checksums: Dict[str, str] = field(default_factory=dict)
     mcp: Dict[str, Any] = field(default_factory=dict)
     entrypoint: str = ""
+    triggers: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -49,6 +52,22 @@ class Manifest:
             else:
                 if "transport" not in self.mcp:
                     errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
+        # Validate triggers
+        _VALID_TRIGGER_EVENTS = {
+            "file-changed", "schedule", "webhook", "manual", "on-install", "on-update",
+        }
+        if self.triggers:
+            for i, trigger in enumerate(self.triggers):
+                if "event" not in trigger:
+                    errors.append(f"triggers[{i}]: missing required 'event' field")
+                if "action" not in trigger:
+                    errors.append(f"triggers[{i}]: missing required 'action' field")
+                event = trigger.get("event")
+                if event and event not in _VALID_TRIGGER_EVENTS:
+                    errors.append(
+                        f"triggers[{i}]: invalid event '{event}'; "
+                        f"must be one of {sorted(_VALID_TRIGGER_EVENTS)}"
+                    )
         return errors
 
     def get_mcp_metadata(self) -> Dict[str, Any]:

@@ -77,6 +77,68 @@ class TestParseCapId:
         assert parse_cap_id("my-cap") == ("global", "my-cap")
 
 
+class TestTriggers:
+    def test_triggers_from_dict(self):
+        data = {
+            "name": "trigger-cap",
+            "version": "1.0.0",
+            "kind": "skill",
+            "triggers": [
+                {"event": "file-changed", "pattern": "*.py", "action": "run-linter"},
+            ],
+        }
+        m = Manifest.from_dict(data)
+        assert len(m.triggers) == 1
+        assert m.triggers[0]["event"] == "file-changed"
+        assert m.triggers[0]["action"] == "run-linter"
+
+    def test_triggers_valid(self):
+        m = Manifest(
+            name="t",
+            triggers=[
+                {"event": "schedule", "action": "daily-check"},
+                {"event": "on-install", "action": "setup"},
+            ],
+        )
+        assert m.validate() == []
+
+    def test_triggers_missing_event(self):
+        m = Manifest(name="t", triggers=[{"action": "run"}])
+        errors = m.validate()
+        assert any("missing required 'event'" in e for e in errors)
+
+    def test_triggers_missing_action(self):
+        m = Manifest(name="t", triggers=[{"event": "manual"}])
+        errors = m.validate()
+        assert any("missing required 'action'" in e for e in errors)
+
+    def test_triggers_invalid_event(self):
+        m = Manifest(name="t", triggers=[{"event": "invalid-event", "action": "run"}])
+        errors = m.validate()
+        assert any("invalid event 'invalid-event'" in e for e in errors)
+
+    def test_triggers_all_valid_events(self):
+        valid_events = ["file-changed", "schedule", "webhook", "manual", "on-install", "on-update"]
+        for event in valid_events:
+            m = Manifest(name="t", triggers=[{"event": event, "action": "do-stuff"}])
+            assert m.validate() == [], f"Event '{event}' should be valid"
+
+    def test_triggers_empty_list_is_valid(self):
+        m = Manifest(name="t", triggers=[])
+        assert m.validate() == []
+
+    def test_triggers_roundtrip_yaml(self, tmp_path):
+        m = Manifest(
+            name="trigger-rt",
+            version="1.0.0",
+            triggers=[{"event": "webhook", "action": "notify", "pattern": "/api/*"}],
+        )
+        path = tmp_path / "capability.yaml"
+        m.save(path)
+        loaded = Manifest.load(path)
+        assert loaded.triggers == m.triggers
+
+
 class TestFormatCapId:
     def test_format(self):
         assert format_cap_id("alice", "my-cap") == "alice/my-cap"
