@@ -30,6 +30,7 @@ class Manifest:
     mcp: Dict[str, Any] = field(default_factory=dict)
     entrypoint: str = ""
     triggers: List[Dict[str, Any]] = field(default_factory=list)
+    pricing: Optional[Dict[str, Any]] = None
 
     @property
     def id(self) -> str:
@@ -52,6 +53,10 @@ class Manifest:
             else:
                 if "transport" not in self.mcp:
                     errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
+        if self.kind == "resource":
+            if not self.description:
+                errors.append("Resource manifest requires a description")
+            # Resources don't need entry points or MCP config
         # Validate triggers
         _VALID_TRIGGER_EVENTS = {
             "file-changed", "schedule", "webhook", "manual", "on-install", "on-update",
@@ -68,6 +73,24 @@ class Manifest:
                         f"triggers[{i}]: invalid event '{event}'; "
                         f"must be one of {sorted(_VALID_TRIGGER_EVENTS)}"
                     )
+        # Validate pricing
+        _VALID_PRICING_MODELS = {"free", "freemium", "paid", "usage-based", "donation"}
+        if self.pricing is not None:
+            if "model" not in self.pricing:
+                errors.append("pricing: missing required 'model' field")
+            else:
+                model = self.pricing["model"]
+                if model not in _VALID_PRICING_MODELS:
+                    errors.append(
+                        f"pricing: invalid model '{model}'; "
+                        f"must be one of {sorted(_VALID_PRICING_MODELS)}"
+                    )
+                if model == "paid":
+                    price = self.pricing.get("price_usd")
+                    if price is None:
+                        errors.append("pricing: 'paid' model requires 'price_usd' field")
+                    elif not isinstance(price, (int, float)) or price <= 0:
+                        errors.append("pricing: 'price_usd' must be a number greater than 0")
         return errors
 
     def get_mcp_metadata(self) -> Dict[str, Any]:
