@@ -286,6 +286,25 @@ def main():
     sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
     sign_parser.add_argument("key_name", help="Name of the signing key")
 
+    # CAP-008: Standards export commands
+    export_mcp_parser = subparsers.add_parser(
+        "export-mcp",
+        help="Export capability manifest to MCP server descriptor format",
+    )
+    export_mcp_parser.add_argument(
+        "target",
+        help="Path to capability.yaml or directory containing one",
+    )
+
+    export_a2a_parser = subparsers.add_parser(
+        "export-a2a",
+        help="Export capability manifest to A2A agent card format",
+    )
+    export_a2a_parser.add_argument(
+        "target",
+        help="Path to capability.yaml or directory containing one",
+    )
+
     subparsers.add_parser("version", help="Print Capacium version")
 
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
@@ -675,6 +694,31 @@ def main():
             from .commands.sign import sign_capability
             success = sign_capability(args.capability, args.key_name)
             sys.exit(0 if success else 1)
+
+        elif args.command in ("export-mcp", "export-a2a"):
+            from .manifest import Manifest
+            target = Path(args.target)
+            if target.is_dir():
+                manifest = Manifest.detect_from_directory(target)
+            elif target.is_file():
+                manifest = Manifest.load(target)
+            else:
+                print(f"Error: {target} not found")
+                sys.exit(1)
+
+            if args.command == "export-mcp":
+                from .exporters import MCPExporter
+                exporter = MCPExporter()
+            else:
+                from .exporters import A2AExporter
+                exporter = A2AExporter()
+
+            if not exporter.can_export(manifest):
+                print(f"Error: manifest kind '{manifest.kind}' cannot be exported to {exporter.format_name}")
+                sys.exit(1)
+
+            print(exporter.export_json(manifest))
+            sys.exit(0)
 
         elif args.command == "version":
             print(f"cap {__version__}")
