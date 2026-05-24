@@ -58,6 +58,45 @@ frameworks:
             assert result is True
             instance.publish.assert_called_once()
 
+    def test_publish_includes_identity_migration_fields(self, tmp_path):
+        cap_yaml = tmp_path / "capability.yaml"
+        cap_yaml.write_text("""\
+kind: bundle
+name: skillweave
+version: 1.0.2
+description: SkillWeave bundle
+owner: LangeVC
+repository: https://github.com/LangeVC/skillweave
+replaces:
+  - typelicious/skillweave
+previous_identities:
+  - owner: typelicious
+    name: skillweave
+    repository: https://github.com/typelicious/skillweave
+""")
+
+        with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+            instance = mock_client.return_value
+            instance.publish.return_value = {
+                "canonical_name": "LangeVC/skillweave",
+                "kind": "bundle",
+                "trust_state": "discovered",
+                "created": True,
+            }
+            result = publish_capability(cap_yaml)
+            assert result is True
+
+            payload = instance.publish.call_args.args[0]
+            assert payload["repo_url"] == "https://github.com/LangeVC/skillweave"
+            assert payload["replaces"] == ["typelicious/skillweave"]
+            assert payload["previous_identities"] == [
+                {
+                    "owner": "typelicious",
+                    "name": "skillweave",
+                    "repository": "https://github.com/typelicious/skillweave",
+                }
+            ]
+
     def test_publish_conflict_409(self, tmp_path):
         import tarfile
 

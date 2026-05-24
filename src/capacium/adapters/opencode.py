@@ -26,20 +26,23 @@ class OpenCodeAdapter(FrameworkAdapter):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
         self.opencode_skills_dir = Path.home() / ".opencode" / "skills"
+        self.commands_dir = Path.home() / ".config" / "opencode" / "commands"
         self.opencode_skills_dir.mkdir(parents=True, exist_ok=True)
+        self.commands_dir.mkdir(parents=True, exist_ok=True)
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
 
         link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
-        success = self.symlink_manager.create_symlink(package_dir, link_path)
+        skill_success = self.symlink_manager.create_symlink(package_dir, link_path)
+        command_success = self._create_command_link(cap_name, package_dir)
 
         metadata = self._extract_capability_metadata(package_dir)
         metadata_path = package_dir / ".capacium-meta.json"
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        return success
+        return skill_success and command_success
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
         link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
@@ -50,11 +53,19 @@ class OpenCodeAdapter(FrameworkAdapter):
                 shutil.rmtree(link_path)
             else:
                 link_path.unlink()
+        command_path = self.commands_dir / f"{cap_name}.md"
+        if command_path.exists() or command_path.is_symlink():
+            if command_path.is_symlink():
+                self.symlink_manager.remove_symlink(command_path)
+            else:
+                command_path.unlink()
         return True
 
     def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
         link_path = self.opencode_skills_dir / _cap_id(cap_name, owner)
         if link_path.exists() and link_path.is_symlink():
+            return True
+        if (self.commands_dir / f"{cap_name}.md").exists():
             return True
 
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
@@ -123,6 +134,13 @@ class OpenCodeAdapter(FrameworkAdapter):
                 with open(metadata_path) as f:
                     return json.load(f)
         return None
+
+    def _create_command_link(self, cap_name: str, package_dir: Path) -> bool:
+        command_source = package_dir / "SKILL.md"
+        if not command_source.exists():
+            return True
+        command_path = self.commands_dir / f"{cap_name}.md"
+        return self.symlink_manager.create_symlink(command_source, command_path)
 
     def _extract_capability_metadata(self, cap_dir: Path) -> Dict[str, Any]:
         metadata = {

@@ -39,19 +39,14 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
                 print(f"  Sub-capability {member_id} not found in registry.")
                 return False
             sub_fingerprints.append(member_cap.fingerprint)
-        _ = compute_bundle_fingerprint(sub_fingerprints)
+        fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
-        _ = compute_fingerprint(
+        fingerprint = compute_fingerprint(
             cap.install_path,
             exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
         )
 
-    # P0-004: Exchange expects signature over "<canonical_name>|<version>"
-    # (same format used by the admin /sign endpoint for consistency)
-    canonical_name = f"{cap.owner}/{cap.name}"
-    version = cap.version or "0.0.0"
-    message = f"{canonical_name}|{version}".encode("utf-8")
-    sig_bytes = sign(privkey, message)
+    sig_bytes = sign(privkey, fingerprint.encode("utf-8"))
     sig_b64 = base64.b64encode(sig_bytes).decode("ascii")
 
     # Store locally
@@ -67,12 +62,18 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
 
     try:
         from ..registry_client import RegistryClient
+        # P0-004: Exchange expects signature over "<canonical_name>|<version>"
+        # (same format used by the admin /sign endpoint for consistency).
+        canonical_name = f"{cap.owner}/{cap.name}"
+        version = cap.version or "0.0.0"
+        exchange_message = f"{canonical_name}|{version}".encode("utf-8")
+        exchange_sig_b64 = base64.b64encode(sign(privkey, exchange_message)).decode("ascii")
         client = RegistryClient.from_config()
         result = client.publisher_sign(
             owner=cap.owner,
             name=cap.name,
             public_key_pem=pub_pem,
-            signature_b64=sig_b64,
+            signature_b64=exchange_sig_b64,
             key_name=key_name,
         )
         trust_state = result.get("trust_state", "unknown")

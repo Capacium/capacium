@@ -43,6 +43,7 @@ class Kind(Enum):
     WORKFLOW = "workflow"
     MCP_SERVER = "mcp-server"
     CONNECTOR_PACK = "connector-pack"
+    RESOURCE = "resource"
 
 
 

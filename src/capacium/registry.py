@@ -360,6 +360,15 @@ class Registry:
             )
             conn.commit()
 
+    def remove_bundle_references(self, capability_ref: str) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM bundle_members WHERE bundle_id = ? OR member_id = ?",
+                (capability_ref, capability_ref),
+            )
+            conn.commit()
+
     def get_reference_count(self, member_id: str) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()

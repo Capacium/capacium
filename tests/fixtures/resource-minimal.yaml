@@ -1,0 +1,4 @@
+kind: resource
+name: test-prompt-library
+version: "1.0.0"
+description: "A collection of prompt templates for code review"

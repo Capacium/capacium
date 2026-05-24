@@ -1,0 +1,8 @@
+kind: resource
+name: test-dataset
+version: "2.0.0"
+description: "Training dataset for sentiment analysis"
+author: "test-org"
+license: "MIT"
+keywords: ["dataset", "nlp", "sentiment"]
+runtimes: {}

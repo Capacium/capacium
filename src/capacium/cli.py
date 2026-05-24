@@ -130,7 +130,7 @@ def main():
     init_parser.add_argument("--name", help="Capability name (kebab-case)")
     init_parser.add_argument(
         "--kind",
-        help="Capability kind (skill, tool, prompt, mcp-server, template, bundle, workflow, connector-pack)",
+        help="Capability kind (skill, tool, prompt, mcp-server, template, bundle, workflow, connector-pack, resource)",
     )
     init_parser.add_argument("--version", help="Capability version (semver, e.g. 0.1.0)")
     init_parser.add_argument("--description", help="Capability description")
@@ -144,8 +144,8 @@ def main():
     )
     init_parser.add_argument(
         "--template",
-        choices=["skill", "mcp-server", "bundle"],
-        help="Scaffold from template: skill | mcp-server | bundle. Creates capability.yaml + SKILL.md + README.md.",
+        choices=["skill", "mcp-server", "bundle", "resource"],
+        help="Scaffold from template: skill | mcp-server | bundle | resource. Creates capability.yaml + SKILL.md + README.md.",
     )
     init_parser.add_argument(
         "--force",

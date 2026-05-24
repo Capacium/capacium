@@ -6,7 +6,7 @@ from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
 
-VALID_TEMPLATES = {"skill", "mcp-server", "bundle"}
+VALID_TEMPLATES = {"skill", "mcp-server", "bundle", "resource"}
 
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 VALID_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -19,6 +19,7 @@ VALID_KINDS = {
     "bundle",
     "workflow",
     "connector-pack",
+    "resource",
 }
 
 
@@ -241,7 +242,7 @@ def init_skill() -> bool:
 
     manifest.name = _prompt_required("Capability name (kebab-case)", "my-capability")
 
-    print("\n  Available kinds: skill, bundle, tool, prompt, template, workflow, mcp-server, connector-pack")
+    print("\n  Available kinds: skill, bundle, tool, prompt, template, workflow, mcp-server, connector-pack, resource")
     default_kind = "skill"
     manifest.kind = _prompt_with_default("Kind", default_kind).strip() or default_kind
 
@@ -469,6 +470,13 @@ def _write_skill_md(path: Path, name: str, kind: str, version: str, description:
             "## Installation\n\n"
             "```bash\ncap install {name}\n```\n"
         ).format(name=name)
+    elif kind == "resource":
+        body = (
+            "## Contents\n\n"
+            "<!-- Describe the data assets this resource provides -->\n\n"
+            "## Usage\n\n"
+            "<!-- How other capabilities can depend on this resource -->\n"
+        )
     else:
         body = (
             "## Usage\n\n"
