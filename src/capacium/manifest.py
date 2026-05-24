@@ -31,6 +31,12 @@ class Manifest:
     entrypoint: str = ""
     triggers: List[Dict[str, Any]] = field(default_factory=list)
     pricing: Optional[Dict[str, Any]] = None
+    # Resource-specific (only relevant when kind=resource)
+    resource_type: Optional[str] = None
+    resource_format: Optional[str] = None
+    size_hint: Optional[str] = None
+    access: Optional[Dict[str, Any]] = None
+    compatibility: Optional[Dict[str, Any]] = None
 
     @property
     def id(self) -> str:
@@ -56,6 +62,18 @@ class Manifest:
         if self.kind == "resource":
             if not self.description:
                 errors.append("Resource manifest requires a description")
+            _VALID_RESOURCE_TYPES = {
+                "prompt-library", "dataset", "config-template",
+                "model-weights", "tool-index", "embedding",
+            }
+            if self.resource_type and self.resource_type not in _VALID_RESOURCE_TYPES:
+                errors.append(f"Invalid resource_type: {self.resource_type}")
+            _VALID_FORMATS = {"yaml", "json", "csv", "parquet", "binary", "directory"}
+            if self.resource_format and self.resource_format not in _VALID_FORMATS:
+                errors.append(f"Invalid resource format: {self.resource_format}")
+            _VALID_SIZES = {"small", "medium", "large"}
+            if self.size_hint and self.size_hint not in _VALID_SIZES:
+                errors.append(f"Invalid size_hint: {self.size_hint}")
             # Resources don't need entry points or MCP config
         # Validate triggers
         _VALID_TRIGGER_EVENTS = {

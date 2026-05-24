@@ -1,4 +1,4 @@
-"""Tests for the resource kind (CAP-001)."""
+"""Tests for the resource kind (CAP-001 + CAP-002)."""
 
 from pathlib import Path
 
@@ -89,3 +89,133 @@ class TestResourceInCLIInit:
 
     def test_validate_kind_rejects_invalid(self):
         assert _validate_kind("invalid-kind") is not None
+
+
+class TestResourceSchema:
+    """CAP-002: Resource kind 5-layer progressive schema."""
+
+    def test_load_resource_standard(self):
+        m = Manifest.load(FIXTURES_DIR / "resource-standard.yaml")
+        assert m.kind == "resource"
+        assert m.name == "test-config-templates"
+        assert m.resource_type == "config-template"
+        assert m.resource_format == "yaml"
+        assert m.access == {"method": "file", "path": "templates/"}
+        errors = m.validate()
+        assert errors == []
+
+    def test_load_resource_full_layers(self):
+        m = Manifest.load(FIXTURES_DIR / "resource-full.yaml")
+        assert m.kind == "resource"
+        assert m.name == "test-dataset"
+        assert m.resource_type == "dataset"
+        assert m.resource_format == "parquet"
+        assert m.size_hint == "medium"
+        assert m.access == {"method": "git-submodule", "path": "data/sentiment/"}
+        assert m.compatibility == {
+            "frameworks": ["claude-code", "cursor"],
+            "min_version": "1.0.0",
+        }
+        errors = m.validate()
+        assert errors == []
+
+    def test_invalid_resource_type_rejected(self):
+        m = Manifest(
+            kind="resource",
+            name="bad-type",
+            version="1.0.0",
+            description="Has bad resource_type",
+            resource_type="magic-beans",
+        )
+        errors = m.validate()
+        assert any("Invalid resource_type: magic-beans" in e for e in errors)
+
+    def test_invalid_resource_format_rejected(self):
+        m = Manifest(
+            kind="resource",
+            name="bad-format",
+            version="1.0.0",
+            description="Has bad format",
+            resource_format="xlsx",
+        )
+        errors = m.validate()
+        assert any("Invalid resource format: xlsx" in e for e in errors)
+
+    def test_invalid_size_hint_rejected(self):
+        m = Manifest(
+            kind="resource",
+            name="bad-size",
+            version="1.0.0",
+            description="Has bad size hint",
+            size_hint="enormous",
+        )
+        errors = m.validate()
+        assert any("Invalid size_hint: enormous" in e for e in errors)
+
+    def test_resource_no_mcp_fields_required(self):
+        m = Manifest(
+            kind="resource",
+            name="no-mcp",
+            version="1.0.0",
+            description="Resource without MCP",
+            resource_type="prompt-library",
+            resource_format="yaml",
+            size_hint="small",
+        )
+        errors = m.validate()
+        assert errors == []
+        assert m.mcp == {}
+        assert m.entrypoint == ""
+
+    def test_valid_resource_types_accepted(self):
+        for rt in ("prompt-library", "dataset", "config-template",
+                    "model-weights", "tool-index", "embedding"):
+            m = Manifest(
+                kind="resource",
+                name="rt-test",
+                version="1.0.0",
+                description="Testing resource type",
+                resource_type=rt,
+            )
+            errors = m.validate()
+            assert not any("resource_type" in e for e in errors), f"resource_type {rt} should be valid"
+
+    def test_valid_formats_accepted(self):
+        for fmt in ("yaml", "json", "csv", "parquet", "binary", "directory"):
+            m = Manifest(
+                kind="resource",
+                name="fmt-test",
+                version="1.0.0",
+                description="Testing format",
+                resource_format=fmt,
+            )
+            errors = m.validate()
+            assert not any("resource format" in e for e in errors), f"format {fmt} should be valid"
+
+    def test_valid_size_hints_accepted(self):
+        for sz in ("small", "medium", "large"):
+            m = Manifest(
+                kind="resource",
+                name="sz-test",
+                version="1.0.0",
+                description="Testing size hint",
+                size_hint=sz,
+            )
+            errors = m.validate()
+            assert not any("size_hint" in e for e in errors), f"size_hint {sz} should be valid"
+
+    def test_resource_fields_none_by_default(self):
+        m = Manifest(kind="resource", name="defaults", version="1.0.0", description="Defaults")
+        assert m.resource_type is None
+        assert m.resource_format is None
+        assert m.size_hint is None
+        assert m.access is None
+        assert m.compatibility is None
+
+    def test_resource_validation_skips_for_non_resource(self):
+        """Resource-specific validation should not fire for kind=skill."""
+        m = Manifest(kind="skill", name="a-skill", version="1.0.0", description="")
+        errors = m.validate()
+        assert not any("resource_type" in e for e in errors)
+        assert not any("resource format" in e for e in errors)
+        assert not any("size_hint" in e for e in errors)

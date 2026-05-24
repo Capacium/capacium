@@ -6,3 +6,15 @@ author: "test-org"
 license: "MIT"
 keywords: ["dataset", "nlp", "sentiment"]
 runtimes: {}
+
+resource_type: dataset
+resource_format: parquet
+size_hint: medium
+access:
+  method: git-submodule
+  path: "data/sentiment/"
+compatibility:
+  frameworks:
+    - claude-code
+    - cursor
+  min_version: "1.0.0"

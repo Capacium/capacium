@@ -1,0 +1,13 @@
+kind: resource
+name: test-config-templates
+version: "1.0.0"
+description: "Reusable configuration templates for CI/CD pipelines"
+author: "test-org"
+license: "Apache-2.0"
+keywords: ["config", "ci-cd", "templates"]
+
+resource_type: config-template
+resource_format: yaml
+access:
+  method: file
+  path: "templates/"
