@@ -1,6 +1,5 @@
 """Tests for CAP-011: Framework adaptation layer."""
 
-import json
 import pytest
 
 from capacium.manifest import Manifest
