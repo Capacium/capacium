@@ -1,4 +1,3 @@
-import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -8,6 +7,7 @@ from typing import List, Optional
 from ..registry import Registry
 from ..storage import StorageManager
 from ..versioning import VersionManager
+from ..utils.copytree import safe_copytree
 from ..fingerprint import compute_fingerprint
 from ..manifest import Manifest
 from ..adapters import get_adapters_for_manifest
@@ -181,13 +181,46 @@ def _resolve_installed_capability(registry, raw_spec: str, cap_id: str, cap_name
     return None
 
 
+def _node_modules_missing(package_dir: Path) -> bool:
+    """Check if package.json exists but node_modules is missing (npm-based MCP server)."""
+    pkg_json = package_dir / "package.json"
+    node_mod = package_dir / "node_modules"
+    return pkg_json.exists() and not node_mod.exists()
+
+
+def _restore_node_modules(package_dir: Path) -> bool:
+    """Run npm install in package_dir if node_modules was stripped by safe_copytree."""
+    pkg_json = package_dir / "package.json"
+    if not pkg_json.exists():
+        return True
+    node_mod = package_dir / "node_modules"
+    if node_mod.exists():
+        return True
+    print(f"  Restoring node_modules for {package_dir.name}...")
+    try:
+        result = subprocess.run(
+            ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"  npm install failed: {result.stderr.strip()}")
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        print("  npm not available — node_modules not restored")
+        return False
+
+
 def _reconcile_adapter_config(cap, manifest: Manifest) -> bool:
     adapters = get_adapters_for_manifest(manifest)
     frameworks = manifest.frameworks or [cap.framework or "opencode"]
 
     with tempfile.TemporaryDirectory() as td:
         source_copy = Path(td) / cap.name
-        shutil.copytree(cap.install_path, source_copy)
+        safe_copytree(cap.install_path, source_copy)
         for fw, adapter in zip(frameworks, adapters):
             success = adapter.install_capability(
                 cap.name,
@@ -199,5 +232,9 @@ def _reconcile_adapter_config(cap, manifest: Manifest) -> bool:
             if not success:
                 print(f"Failed to reconcile capability for {fw}.")
                 return False
+            if manifest.kind == "mcp-server":
+                package_dir = StorageManager().get_package_dir(cap.name, cap.version, owner=cap.owner)
+                if package_dir and _node_modules_missing(package_dir):
+                    _restore_node_modules(package_dir)
 
     return True
