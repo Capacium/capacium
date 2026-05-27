@@ -19,7 +19,7 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
 }
 
 FRAMEWORK_KINDS: Dict[str, Set[str]] = {
-    "claude-desktop": {"mcp-server"},
+    "claude-desktop": {"mcp-server", "skill"},
 }
 """Frameworks whose default kinds differ from the universal set.
 

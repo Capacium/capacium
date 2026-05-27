@@ -106,6 +106,21 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         elif command_link.exists():
             command_link.unlink(missing_ok=True)
 
+        # Owner-Prefix symlinks: skills/<owner>/<cap_name>
+        for item in list(parent_dir.iterdir()):
+            if not item.is_dir():
+                continue
+            owner_link = item / cap_name
+            if owner_link.is_symlink():
+                target = Path(owner_link).resolve()
+                if not target.exists() or str(target).startswith(str(cache_root)):
+                    owner_link.unlink(missing_ok=True)
+            owner_cmd_link = item / f"{cap_name}.md"
+            if owner_cmd_link.is_symlink():
+                target = Path(owner_cmd_link).resolve()
+                if not target.exists() or str(target).startswith(str(cache_root)):
+                    owner_cmd_link.unlink(missing_ok=True)
+
     # Config-backed frameworks (TOML / JSON)
     for fw_name in ("claude-desktop", "codex", "antigravity", "gemini-cli"):
         try:
