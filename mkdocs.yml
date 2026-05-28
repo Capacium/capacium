@@ -56,6 +56,7 @@ nav:
       - capability.yaml: manifest.md
       - Bundles: bundles.md
   - Trust Model:
+      - Overview: trust-model.md
       - Signing: signing.md
       - Lock Files: lockfile.md
   - Adapters: adapters.md
@@ -63,7 +64,12 @@ nav:
   - Registry: registry.md
   - Publishing: publishing.md
   - Marketplace: marketplace.md
+  - Exchange:
+      - Exchange Overview: exchange.md
+      - API Reference: api-reference.md
+      - Crawler: crawler.md
   - Architecture:
+      - Overview: architecture.md
       - Repo Topology: repo-topology.md
       - Core Boundary: core-boundary.md
       - Bridge Boundary: bridge-boundary.md

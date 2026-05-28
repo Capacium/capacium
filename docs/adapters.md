@@ -164,20 +164,145 @@ for the JSON-based MCP configs (~80% of adapters):
 YAML adapters (`goose`, `aider`) implement an analogous pipeline inline using
 PyYAML when available, with a graceful JSON fallback.
 
+## Registration API
+
+Adapters can be registered and queried programmatically:
+
+```python
+from capacium.adapters import register_adapter, get_adapter, list_registered_adapters
+from capacium.adapters.base import FrameworkAdapter
+
+class MyAdapter(FrameworkAdapter):
+    def install_skill(self, cap_name, version, source_dir, owner="global"):
+        ...
+        return True
+
+    def remove_skill(self, cap_name, owner="global"):
+        return True
+
+    def install_mcp_server(self, cap_name, version, source_dir, owner="global"):
+        ...
+        return True
+
+    def remove_mcp_server(self, cap_name, owner="global"):
+        return True
+
+    def capability_exists(self, cap_name):
+        return False
+
+register_adapter("my-framework", MyAdapter)
+
+# Get a specific adapter
+adapter = get_adapter("my-framework")
+
+# List all 28 registered adapters
+for name in list_registered_adapters():
+    print(name)
+```
+
+Custom adapters registered via `register_adapter()` are treated identically to built-in adapters by `cap install`, `cap remove`, and `cap update`.
+
+## Complete Adapter Matrix
+
+Capacium ships **28 registered adapters** across 4 tiers. The tables below record each adapter's MCP config path, config format, and capabilities.
+
+### Tier 1 — Development & Engineering
+
+| Adapter ID | Skills | MCP | MCP Config Path | Format | Section Key |
+|-----------|:------:|:---:|-----------------|--------|-------------|
+| `opencode` | ✅ symlink | ✅ | `~/.config/opencode/opencode.json` | JSON | `mcp` (native), legacy `mcpServers` |
+| `opencode-command` | ✅ commands | ❌ | `~/.config/opencode/commands/` | — | — |
+| `claude-desktop` | ❌ | ✅ | `~/Library/Application Support/Claude/claude_desktop_config.json` | JSON | `mcpServers` |
+| `claude-code` | ✅ symlink | ✅ | `~/.claude.json` | JSON | `mcpServers` |
+| `cursor` | ✅ rules | ✅ | `./.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global) | JSON | `mcpServers` |
+| `windsurf` | ❌ | ✅ | `~/.codeium/windsurf/mcp_config.json` | JSON | `mcpServers` |
+| `cline` | ❌ | ✅ | `~/.vscode/mcp.json` | JSON | `servers` |
+| `zed` | ❌ | ✅ | `~/.config/zed/settings.json` | JSON | `context_servers` |
+| `sourcegraph-cody` | ❌ | ✅ | `~/.cody/mcp.json` | JSON | `mcpServers` |
+| `antigravity` | ✅ symlink | ✅ | `~/.gemini/antigravity/mcp_config.json` | JSON | `mcpServers` |
+| `continue-dev` | ✅ providers | ✅ | `~/.continue/config.json` | JSON | `mcpServers` |
+| `codex` | ✅ symlink | ✅ | `~/.codex/config.toml` | **TOML** | `mcp_servers` |
+| `gemini-cli` | ✅ symlink | ✅ | `~/.gemini/settings/mcp_config.json` | JSON | `mcpServers` |
+
+### Tier 2 — Specialized / Workflow
+
+| Adapter ID | Skills | MCP | MCP Config Path | Format | Section Key |
+|-----------|:------:|:---:|-----------------|--------|-------------|
+| `librechat` | ❌ | ✅ | `~/.librechat/mcp_servers.json` | JSON | `mcpServers` |
+| `chainlit` | ❌ | ✅ | `~/.chainlit/mcp_config.json` | JSON | `mcpServers` |
+| `cherry-studio` | ❌ | ✅ | `~/.cherry-studio/mcp_servers.json` | JSON | `mcpServers` |
+| `nextchat` | ❌ | ✅ | `~/.nextchat/mcp_config.json` | JSON | `mcpServers` |
+| `desktop-commander` | ❌ | ✅ | `~/.commander/mcp.json` | JSON | `mcpServers` |
+| `notebooklm` | ❌ | ⚠️ stub | Manual — copies source, prints instructions | — | — |
+| `lutra` | ❌ | ⚠️ stub | Manual — copies source, prints instructions | — | — |
+| `serge` | ❌ | ⚠️ stub | Manual — copies source, prints instructions | — | — |
+| `mcp-remote` | ❌ | ⚠️ stub | `npx mcp-remote <url>` — no local config patch | — | — |
+
+### Tier 3 — Extended Skill Clients
+
+| Adapter ID | Skills | MCP | MCP Config Path | Format | Section Key |
+|-----------|:------:|:---:|-----------------|--------|-------------|
+| `roo-code` | ❌ | ✅ | `~/.roo-code/mcp.json` | JSON | `mcpServers` |
+| `goose` | ❌ | ✅ | `~/.config/goose/config.yaml` | **YAML** | `mcpServers` |
+| `aider` | ❌ | ✅ | `~/.aider.conf.yml` | **YAML** | `mcp-servers` |
+| `openclaw` | ❌ | ✅ | `~/.openclaw/mcp_config.json` | JSON | `mcpServers` |
+| `junie` | ✅ symlink | ✅ | `~/.junie/mcp_config.json` | JSON | `mcpServers` |
+
+### Tier 4 — Agent Flow Bridges
+
+| Adapter ID | Skills | MCP | Export Path | Format |
+|-----------|:------:|:---:|-------------|--------|
+| `langchain` | ✅ JSON tool def | ✅ JSON tool def | `~/.capacium/langchain-exports/<name>.tool.json` | JSON |
+| `flowise` | ✅ JSON node def | ✅ JSON node def | `~/.capacium/flowise-exports/<name>.tool.json` | JSON |
+
+### Capability Summary
+
+| Category | Count | Adapters |
+|----------|:-----:|----------|
+| Skills + MCP (both) | **10** | opencode, claude-code, cursor, antigravity, continue-dev, codex, gemini-cli, junie, langchain, flowise |
+| Skills only | **1** | opencode-command |
+| MCP only | **13** | claude-desktop, windsurf, cline, zed, sourcegraph-cody, librechat, chainlit, cherry-studio, nextchat, desktop-commander, roo-code, goose, aider, openclaw |
+| Stub (neither) | **4** | notebooklm, lutra, serge, mcp-remote |
+
+### Notable Deviations
+
+- **3 non-standard MCP section keys**: `cline` → `servers`, `zed` → `context_servers`, `aider` → `mcp-servers`
+- **3 non-JSON config formats**: `codex` uses **TOML**, `goose` and `aider` use **YAML**
+- **`opencode`** is the only adapter using a non-standard MCP schema (`{"type": "local", "command": [...], "enabled": true}`) under the `mcp` key
+- **`gemini-cli`** uses `capabilities` directory name instead of `skills`
+- **`cursor`** uses `.mdc` rule files (not symlinks) for skills; `continue-dev` uses `contextProviders` in JSON config
+
+## Skills Directory Map
+
+The framework detector maps framework names to their skill symlink directories:
+
+| Framework | Skills Path | Detection Trigger |
+|-----------|-------------|-------------------|
+| `claude-code` | `~/.claude/skills` | `CLAUDE.md` or `~/.claude/` |
+| `cursor` | `./.cursor/skills` | `.cursorrules` or `./.cursor/` |
+| `gemini-cli` | `~/.gemini/capabilities` | `~/.gemini/` |
+| `opencode` | `./.opencode/skills` | `AGENTS.md` or `./.opencode/` |
+| `openclaw` | `~/.openclaw/skills` | `~/.openclaw/` |
+| `continue-dev` | `~/.continue/skills` | `~/.continue/` |
+| `antigravity` | `~/.gemini/antigravity/skills` | `~/.gemini/antigravity/` |
+| `codex` | `~/.codex/skills` | `~/.codex/` |
+| `windsurf` | `~/.windsurf/skills` | `~/.windsurf/` |
+| `junie` | `~/.junie/skills` | `~/.junie/` |
+
+### Framework Aliases
+
+| Alias | Canonical Name |
+|--------|---------------|
+| `opencode-command` | `opencode` |
+| `claude-code-command` | `claude-code` |
+| `gemini-cli-command` | `gemini-cli` |
+
 ## Closing remaining gaps
 
 If you want to upgrade a 🟨 or ⛔ adapter:
 
-- **`opencode-command`** — would only matter if Opencode commands gain MCP
-  semantics upstream; until then the partial status is correct.
-- **`librechat`** — needs a maintainer to validate the actual `librechat.yaml`
-  format against current LibreChat versions, then patch in place rather than
-  via sidecar.
-- **`openclaw`** — wait for OpenClaw to publish a stable config-file
-  specification, then update the path.
-- **`langchain` / `flowise`** — by-design exports; promoting them would
-  require a separate "import this JSON" hook each framework would have to
-  call. Not a gap so much as the wrong shape for in-place patching.
-- **`notebooklm` / `lutra` / `serge` / `mcp-remote`** — these clients don't
-  have a local config to patch. Promotion would require those vendors to ship
-  one. The stubs are the correct shape until then.
+- **`opencode-command`** — would only matter if Opencode commands gain MCP semantics upstream; until then the partial status is correct.
+- **`librechat`** — needs a maintainer to validate the actual `librechat.yaml` format against current LibreChat versions, then patch in place rather than via sidecar.
+- **`openclaw`** — wait for OpenClaw to publish a stable config-file specification, then update the path.
+- **`langchain` / `flowise`** — by-design exports; promoting them would require a separate "import this JSON" hook each framework would have to call. Not a gap so much as the wrong shape for in-place patching.
+- **`notebooklm` / `lutra` / `serge` / `mcp-remote`** — these clients don't have a local config to patch. Promotion would require those vendors to ship one. The stubs are the correct shape until then.

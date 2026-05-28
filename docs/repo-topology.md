@@ -1,29 +1,38 @@
 # Capacium Multi-Repo Topology
 
-Capacium is decomposed into **six repositories** that form a hub-and-spoke architecture. The `capacium` core repo is the single dependency hub — every other repo depends on it for the manifest schema, kind enums, and packaging conventions. Downstream repos (`capacium-exchange`, `capacium-crawler`) depend on core and may optionally depend on each other. Platform-specific adapters (`capacium-bridge`, `homebrew-tap`, `capacium-action-validate`) depend only on core and release independently.
+Capacium is decomposed into **ten repositories** that form a hub-and-spoke architecture. The `capacium-models` shared library is the leaf node with zero dependencies — imported by all backend repos. The `capacium` core repo provides the CLI, manifest schema, and packaging conventions. Platform repos (`capacium-exchange`, `capacium-crawler`, `capacium-app`) compose the network layer.
 
 ## Dependency Graph
 
 ```mermaid
 graph TD
-    CORE["capacium (core)<br/>CLI, manifest, packaging"] --> EXCHANGE["capacium-exchange<br/>Exchange API server"]
-    CORE --> CRAWLER["capacium-crawler<br/>Agent discovery crawler"]
+    MODELS["capacium-models<br/>Shared domain models (zero deps)"] --> EXCHANGE["capacium-exchange<br/>Exchange API server"]
+    MODELS --> CRAWLER["capacium-crawler<br/>Discovery crawler"]
+    CORE["capacium (core)<br/>CLI, manifest, packaging"] --> EXCHANGE
+    CORE --> CRAWLER
     CORE --> ACTION["capacium-action-validate<br/>GitHub Action"]
     CORE --> TAP["homebrew-tap<br/>Homebrew formula"]
+    CORE --> GITHUB["capacium-github-app<br/>Webhook server"]
     EXCHANGE --> BRIDGE["capacium-bridge<br/>WordPress plugin"]
+    EXCHANGE --> APP["capacium-app<br/>Marketplace web UI"]
+    EXCHANGE --> MCP["capacium-mcp<br/>MCP server for AI agents"]
     CRAWLER --> EXCHANGE
 ```
 
 ## Repository Inventory
 
-| Repo | Domain | Stack | CI | Tests | Visibility |
-|------|--------|-------|----|-------|------------|
-| `capacium` | Core CLI, manifest, packaging, verification, lock system | Python 3.10+ stdlib-only | GitHub Actions | pytest (296+ tests) | public |
-| `capacium-exchange` | Exchange API server, listing CRUD, trust state machine, faceted search | FastAPI, SQLAlchemy, PostgreSQL, stdlib | GitHub Actions | pytest + httpx | public |
-| `capacium-crawler` | Agent network crawler, GitHub source, normalizer, classifier, dedup | Python 3.10+ stdlib-only (urllib) | GitHub Actions | pytest + responses mock | public |
-| `capacium-bridge` | WordPress plugin — Exchange client, listing sync | PHP 8.0+, WordPress plugin API | GitHub Actions (PHPUnit) | PHPUnit | public |
-| `homebrew-tap` | Homebrew formula for `cap` CLI | Ruby (Homebrew DSL) | GitHub Actions (brew test-bot) | brew test | public |
-| `capacium-action-validate` | GitHub Composite Action for manifest validation | YAML (composite action), Docker | GitHub Actions (self-test) | integration (action self-test) | public |
+| Repo | Domain | Stack | CI |
+|------|--------|-------|----|
+| `capacium` | Core CLI, manifest, packaging, verification, lock system | Python 3.10+ stdlib-only | GitHub Actions |
+| `capacium-models` | Shared domain models (zero deps) | Python 3.10+ stdlib-only | pytest |
+| `capacium-exchange` | Exchange API server, listing CRUD, trust states, faceted search | FastAPI, SQLAlchemy, PostgreSQL | GitHub Actions |
+| `capacium-crawler` | Discovery crawler, normalizer, dedup, ingest pipeline | Python 3.10+, httpx, Playwright | GitHub Actions |
+| `capacium-app` | Marketplace web UI | Next.js (TypeScript) | Vercel |
+| `capacium-mcp` | MCP server bridging AI agents to Exchange | Python 3.10+, httpx | pytest |
+| `capacium-bridge` | WordPress plugin — Exchange client, listing sync | PHP 7.4+, WordPress API | GitHub Actions (PHPUnit) |
+| `capacium-github-app` | GitHub webhook server — auto-detect capability.yaml | Python 3.12+ (stdlib) | pytest |
+| `homebrew-tap` | Homebrew formula for `cap` CLI | Ruby (Homebrew DSL) | GitHub Actions (brew test-bot) |
+| `capacium-action-validate` | GitHub Action for manifest validation | YAML (composite action) | GitHub Actions (self-test) |
 
 ## Release Coordination Rules
 
@@ -47,9 +56,13 @@ graph TD
 | Repo | CI Trigger | Artifacts | Docker | Notes |
 |------|-----------|-----------|--------|-------|
 | `capacium` | PR + push to main | PyPI package, GitHub release | No | `--skip-runtime-check` on PR CI to avoid host runtime pre-flight |
+| `capacium-models` | PR + push to main | PyPI package | No | Zero-dependency library |
 | `capacium-exchange` | PR + push to main | PyPI package, Docker image | Yes (FastAPI) | Integration tests require PostgreSQL service container |
-| `capacium-crawler` | PR + push to main | PyPI package | No | Mocks external APIs in CI (responses library) |
+| `capacium-crawler` | PR + push to main | PyPI package, Docker image | Yes | Mocks external APIs in CI |
+| `capacium-app` | PR + push to main | Vercel deployment | No | Next.js, TypeScript |
+| `capacium-mcp` | PR + push to main | PyPI package | No | MCP server |
 | `capacium-bridge` | PR + push to main | WordPress plugin ZIP | No | PHPUnit tests in CI with WP test suite |
+| `capacium-github-app` | PR + push to main | Docker image | Yes | Webhook server |
 | `homebrew-tap` | New `capacium` release + manual | Formula update PR | No | `brew test-bot` runs in CI |
 | `capacium-action-validate` | PR + push to main | Action metadata (action.yml) | Optional Docker | Self-tests via `act` or workflow dispatch |
 
@@ -88,11 +101,33 @@ Each repo's CI pipeline is fully independent. No cross-repo CI triggers exist. W
 - Claim preparation and owner detection
 - Rate limiting and backoff logic
 
+### Belongs in `capacium-models`
+- Domain model dataclasses: `Listing`, `TrustState`, `TrustMachine`, `Publisher`
+- Search types: `SearchQuery`, `ExchangeSearch`
+- MCP metadata types
+- Enums shared across backend repos
+- Must remain zero-dependency (stdlib only)
+
+### Belongs in `capacium-app`
+- Marketplace web UI (Next.js, TypeScript)
+- Browse, search, publisher dashboard
+- Connects to Exchange API for data
+
+### Belongs in `capacium-mcp`
+- MCP server tools and resources
+- AI agent ↔ Exchange bridge
+- Agent-side capability discovery
+
 ### Belongs in `capacium-bridge`
 - WordPress admin UI for Exchange
 - Listing sync from Exchange to WordPress
 - Shortcodes/blocks for listing display
 - WordPress plugin activation/deactivation hooks
+
+### Belongs in `capacium-github-app`
+- GitHub webhook event handling (push, release, installation)
+- Auto-detection of repos with `capability.yaml`
+- Metadata sync from GitHub to Exchange
 
 ### Belongs in `homebrew-tap`
 - Homebrew formula for `cap` CLI
@@ -106,7 +141,8 @@ Each repo's CI pipeline is fully independent. No cross-repo CI triggers exist. W
 
 ### Ambiguous cases
 - **CLI → Exchange REST client**: The client model classes live in `capacium` (shared with the CLI). HTTP transport lives in `capacium`. The Exchange API routes live in `capacium-exchange`. This split keeps the core stdlib-only.
-- **Shared types**: `Kind`, `TrustState`, `Capability` model, `Listing` — currently defined in `capacium` and imported by other repos via PyPI dependency. If drift becomes problematic, consider extracting a `capacium-types` shared library.
+- **Shared types**: `Kind`, `TrustState`, `Capability` model, `Listing` — defined in `capacium-models` (the zero-dependency shared library) and imported by exchange, crawler, and other backend repos.
+- **Marketplace UI**: The local marketplace web UI (`cap marketplace`) lives in core as a lightweight embedded server. The hosted marketplace (`capacium-app`) is the primary user-facing web UI, running as a standalone Next.js application.
 
 ## Naming Conventions
 
