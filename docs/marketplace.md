@@ -101,6 +101,26 @@ The hosted marketplace at [capacium.xyz](https://capacium.xyz) provides:
 - **Analytics dashboard**: Install counts, trust scores, revenue metrics
 - **Category browse**: Drill down by taxonomy categories and tags
 
+## Marketplace Economics
+
+Capacium v2 introduces a built-in monetization layer with publisher-controlled pricing and a progressive fee model:
+
+| Revenue Tier | Platform Fee | Publisher Keeps |
+|-------------|-------------|-----------------|
+| $0 – $10K | 0% | 97.5% |
+| $10K – $100K | 10% | 87.5% |
+| $100K – $1M | 7% | 90.5% |
+| $1M+ | 5% | 92.5% |
+
+Key differentiators:
+
+- **0% cold-start tier** — Publishers pay nothing on their first $10,000 in revenue. Designed to attract early publishers and solve the marketplace chicken-and-egg problem.
+- **Progressive fee reduction** — Fees decrease as publisher revenue grows, rewarding success and preventing defection to direct sales at scale.
+- **Publisher-controlled pricing** — Publishers set their own prices (free, one-time, subscription, or usage-based). Capacium never controls or overrides publisher pricing.
+- **Stripe Connect integration** — Transparent 2.5% payment processing at all tiers. License keys generated server-side, verified at `cap install`.
+
+[Read the full Monetization & Economics page →](monetization.md)
+
 ## Programmatic Server
 
 ```python

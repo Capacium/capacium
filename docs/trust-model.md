@@ -191,6 +191,36 @@ discovered ──▶ audited ──▶ verified ──▶ signed
 
 This pipeline applies trust progressively, allowing `cap search` to filter by trust state and consumers to make informed decisions about capability provenance.
 
+## v2: Unified Trust Model
+
+Capacium v2 unifies the currently divergent trust systems (Exchange 4-state, Models 5-state) into a single 5-state pipeline:
+
+```
+draft → pending_review → verified → signed → deprecated
+```
+
+| State | Description | Maps From |
+|-------|-------------|----------|
+| **draft** | Initial state, basic metadata extracted | Exchange `discovered`, Models `indexed` |
+| **pending_review** | Awaiting quality and security audit | Exchange `audited`, Models `claimed` |
+| **verified** | GitHub ownership confirmed, fingerprint validated | Exchange `verified` |
+| **signed** | Ed25519 cryptographic signature by publisher | Exchange `signed` |
+| **deprecated** | No longer maintained or superseded | (new) |
+
+### Composite Trust Scoring
+
+Unified trust includes a composite score weighted across five dimensions:
+
+| Dimension | Weight | What it Measures |
+|-----------|--------|-----------------|
+| Schema validation | 30% | Manifest correctness, required fields, format compliance |
+| Security audit | 25% | Dependency vulnerabilities, injection risks, permission scope |
+| Maintenance activity | 25% | Commit frequency, response to issues, recency of updates |
+| Community engagement | 15% | Stars, forks, contributors, downstream dependents |
+| Documentation quality | 5% | README completeness, examples, API docs |
+
+This composite score is preserved from the current trust system and provides a quantitative trust signal alongside the qualitative state progression.
+
 ## End-to-End Trust Flow
 
 ```

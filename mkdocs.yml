@@ -1,5 +1,6 @@
 site_name: Capacium
-site_description: Capability Packaging System for AI agents — CLI, manifest format, trust model, and framework adapters
+site_description: Capability infrastructure for the agent ecosystem — packaging, discovery, verification, and trust
+site_author: fusionaize.com
 site_url: https://docs.capacium.xyz
 repo_url: https://github.com/Capacium/capacium
 repo_name: Capacium/capacium
@@ -7,21 +8,23 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  logo: assets/logo-white.svg
+  favicon: assets/logo-white.svg
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: deep purple
-      accent: indigo
+    - media: "(prefers-color-scheme)"
+      scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: deep purple
-      accent: indigo
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
-        name: Switch to light mode
+        name: Switch to dark mode
   features:
     - navigation.instant
     - navigation.tracking
@@ -32,6 +35,9 @@ theme:
     - content.code.annotate
     - search.suggest
     - search.highlight
+
+extra_css:
+  - assets/brand-colors.css
 
 markdown_extensions:
   - admonition
@@ -51,6 +57,8 @@ nav:
   - Home: index.md
   - Getting Started:
       - Quick Start: getting-started.md
+  - Vision & Roadmap:
+      - v2 Vision: vision.md
   - CLI Reference: cli-reference.md
   - Manifest Spec:
       - capability.yaml: manifest.md
@@ -63,19 +71,23 @@ nav:
   - Runtimes: runtimes.md
   - Registry: registry.md
   - Publishing: publishing.md
-  - Marketplace: marketplace.md
+  - Marketplace:
+      - Marketplace: marketplace.md
+      - Monetization: monetization.md
   - Exchange:
       - Exchange Overview: exchange.md
       - API Reference: api-reference.md
       - Crawler: crawler.md
   - Architecture:
       - Overview: architecture.md
+      - Document Model v2: document-model.md
       - Repo Topology: repo-topology.md
       - Core Boundary: core-boundary.md
       - Bridge Boundary: bridge-boundary.md
       - Exchange Boundary: exchange-boundary.md
       - Crawler Boundary: crawler-boundary.md
       - Tap Boundary: tap-boundary.md
+  - Maintained By: maintained-by.md
   - Contributing:
       - Contributing: https://github.com/Capacium/capacium/blob/main/CONTRIBUTING.md
 

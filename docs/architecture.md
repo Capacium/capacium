@@ -130,6 +130,34 @@ src/capacium/
     └── ...
 ```
 
+## v2 Architecture: Document Model & Adaptation Layer
+
+Capacium v2 introduces two architectural upgrades:
+
+### Document Model v2
+
+The registry moves from a flat listing table to a structured **Repository → Capability** hierarchy:
+
+- **Repository** — Container for GitHub metadata (stars, license, topics) shared by all capabilities in a repo
+- **Capability** — The listing entity with a canonical name (`owner/repo` or `owner/repo::capability-name`)
+- **CapabilitySource** — M:N junction tracking which discovery sources found which capabilities
+
+This enables proper multi-skill repo handling, deduplication (from ~1M raw listings to ~60K deduped capabilities), and cross-source merging.
+
+[Read the full Document Model specification →](document-model.md)
+
+### Capability IR & Framework Adaptation Layer
+
+A **Capability Intermediate Representation** (Capability IR) provides a framework-agnostic JSON representation of any capability. Framework adapters implement a common `CapabilityAdapter` interface with `adapt()` and `reverse_adapt()` methods, enabling:
+
+- `cap adapt --target mcp-server` — Generate MCP server definitions
+- `cap adapt --target a2a-agent` — Generate A2A Agent Cards
+- `cap export-a2a`, `cap export-ag2`, `cap export-mcp` — Standards-compliant exports
+
+This positions Capacium as a standards aggregation layer: define once, deploy to any framework.
+
+[Read the Capacium v2 Vision →](vision.md)
+
 ## Network Flow
 
 ```
