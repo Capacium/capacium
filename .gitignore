@@ -29,3 +29,6 @@ src/capacium/marketplace/.next/
 /.opencode/skills/
 /.gemini/skills/
 perplexity.log
+
+# AI codebase-analysis cache
+.understand-anything/
