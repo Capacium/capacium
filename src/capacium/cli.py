@@ -345,6 +345,33 @@ def main():
     export_parser.add_argument("--target", required=True, help="Export target (mcp-server, a2a-agent, aws-agentcore, opencode)")
     export_parser.add_argument("--output", help="Write to file instead of stdout")
 
+    license_parser = subparsers.add_parser("license", help="Manage license keys for paid capabilities")
+    license_sub = license_parser.add_subparsers(dest="license_command", help="License subcommand")
+
+    license_issue_parser = license_sub.add_parser("issue", help="Issue a new license")
+    license_issue_parser.add_argument("capability", help="Capability identifier (owner/name)")
+    license_issue_parser.add_argument("--publisher", required=True, help="Publisher identifier")
+    license_issue_parser.add_argument("--licensee", required=True, help="Licensee identifier")
+    license_issue_parser.add_argument("--type", choices=["free", "trial", "standard", "enterprise"], default="free", help="License type")
+    license_issue_parser.add_argument("--duration", type=int, help="Duration in days")
+    license_issue_parser.add_argument("--max-uses", type=int, help="Maximum uses")
+    license_issue_parser.add_argument("--registry", help="Registry URL")
+
+    license_validate_parser = license_sub.add_parser("validate", help="Validate a license token")
+    license_validate_parser.add_argument("token", help="License token to validate")
+    license_validate_parser.add_argument("--capability", required=True, help="Capability identifier")
+    license_validate_parser.add_argument("--registry", help="Registry URL")
+
+    license_revoke_parser = license_sub.add_parser("revoke", help="Revoke a license")
+    license_revoke_parser.add_argument("license_id", help="License ID to revoke")
+    license_revoke_parser.add_argument("--reason", default="", help="Revocation reason")
+    license_revoke_parser.add_argument("--registry", help="Registry URL")
+
+    license_list_parser = license_sub.add_parser("list", help="List licenses")
+    license_list_parser.add_argument("--licensee", help="Filter by licensee ID")
+    license_list_parser.add_argument("--capability", help="Filter by capability ID")
+    license_list_parser.add_argument("--registry", help="Registry URL")
+
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
     mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
@@ -770,6 +797,40 @@ def main():
         elif args.command == "export":
             from .commands.export import export_generic
             success = export_generic(args.capability, args.target, output=args.output)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "license":
+            from .commands.license import (
+                license_issue, license_validate, license_revoke, license_list,
+            )
+            sub = getattr(args, "license_command", None)
+            if sub == "issue":
+                success = license_issue(
+                    args.capability, args.publisher, args.licensee,
+                    license_type=args.type,
+                    duration_days=args.duration,
+                    max_uses=args.max_uses,
+                    registry_url=args.registry,
+                )
+            elif sub == "validate":
+                success = license_validate(
+                    args.token, args.capability,
+                    registry_url=args.registry,
+                )
+            elif sub == "revoke":
+                success = license_revoke(
+                    args.license_id, reason=args.reason,
+                    registry_url=args.registry,
+                )
+            elif sub == "list":
+                success = license_list(
+                    licensee_id=args.licensee,
+                    capability_id=args.capability,
+                    registry_url=args.registry,
+                )
+            else:
+                print("Error: specify a license subcommand (issue, validate, revoke, list)")
+                sys.exit(1)
             sys.exit(0 if success else 1)
 
         elif args.command == "version":
