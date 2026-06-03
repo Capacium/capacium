@@ -65,11 +65,12 @@ class CodexAdapter(FrameworkAdapter):
         McpConfigPatcher.backup(self.config_path)
         config = McpConfigPatcher.read_toml(self.config_path)
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+        server_key_normalized = server_key.replace("/", "-")
 
         # BUG-004: Remove all existing entries for this capability before writing new one
         servers = config.setdefault("mcp_servers", {})
         _remove_matching_server_keys(servers, cap_name)
-        servers[server_key] = entry
+        servers[server_key_normalized] = entry
         McpConfigPatcher.write_toml(self.config_path, config)
         return True
 

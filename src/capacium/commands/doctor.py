@@ -49,6 +49,7 @@ def _print_capability_section(
     cap_id = f"{cap.owner}/{cap.name}@{cap.version}"
     if not statuses:
         print(f"{CHECK} {cap_id}  (no runtime requirements)")
+        _check_stdout_hygiene(cap)
         return True
     all_ok = all(s.ok for s in statuses)
     header_mark = CHECK if all_ok else CROSS
@@ -62,7 +63,25 @@ def _print_capability_section(
             hint = s.runtime.install_hint_for()
             if hint:
                 print(f"          install: {hint}")
+    _check_stdout_hygiene(cap)
     return all_ok
+
+
+def _check_stdout_hygiene(cap: Capability) -> None:
+    """Warn if MCP server packages log to stdout (protocol violation for stdio MCP)."""
+    if cap.kind and cap.kind.value != "mcp-server":
+        return
+    install_path = cap.install_path
+    if install_path is None or not Path(install_path).exists():
+        return
+    for py_file in Path(install_path).rglob("*.py"):
+        try:
+            content = py_file.read_text(errors="replace")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if "StreamHandler(sys.stdout)" in content or "StreamHandler(sys." in content and "stdout" in content:
+            print("     [warn] MCP server logs to stdout — may corrupt protocol")
+            break
 
 
 def _resolve_for(cap: Capability, resolver: RuntimeResolver) -> List[RuntimeStatus]:

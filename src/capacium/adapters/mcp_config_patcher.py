@@ -181,6 +181,16 @@ class McpConfigPatcher:
         # BUG-005: Materialize relative args paths to absolute paths
         args = McpConfigPatcher._materialize_args_paths(args, source_dir)
 
+        # BUG-002: For uvx packages with --from, prefer local install path
+        if command == "uvx" and "--from" in args:
+            from_idx = args.index("--from")
+            if from_idx + 1 < len(args):
+                pkg_spec = args[from_idx + 1]
+                if "git+" not in pkg_spec and not pkg_spec.startswith("/"):
+                    args[from_idx + 1] = str(source_dir) + (
+                        pkg_spec[pkg_spec.index("[") :] if "[" in pkg_spec else ""
+                    )
+
         entry: Dict[str, Any] = {"command": command}
         if args:
             entry["args"] = args

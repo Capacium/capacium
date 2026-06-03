@@ -30,7 +30,7 @@ def lock_capability(cap_spec: str, update: bool = False) -> bool:
 
     fingerprint = compute_fingerprint(
         cap.install_path,
-        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", LOCK_FILENAME]
+        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", LOCK_FILENAME, "node_modules"]
     )
 
     locked_deps = []
@@ -83,7 +83,7 @@ def enforce_lock(cap_spec: str, no_lock: bool = False) -> bool:
 
     actual_fp = compute_fingerprint(
         cap.install_path,
-        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", LOCK_FILENAME]
+        exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", LOCK_FILENAME, "node_modules"]
     )
     if actual_fp != lock_file.fingerprint:
         print(f"ERROR: Fingerprint mismatch for {cap_spec}")

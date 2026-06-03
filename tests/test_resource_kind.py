@@ -219,3 +219,26 @@ class TestResourceSchema:
         assert not any("resource_type" in e for e in errors)
         assert not any("resource format" in e for e in errors)
         assert not any("size_hint" in e for e in errors)
+
+
+class TestCapInitKindResource:
+    def test_cap_init_kind_resource_produces_valid_manifest(self, tmp_path):
+        import subprocess
+        result = subprocess.run(
+            [
+                "python3", "-m", "capacium.cli", "init",
+                "--name", "test-init-res",
+                "--kind", "resource",
+                "--version", "1.0.0",
+                "--description", "A test resource from cap init",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, f"cap init failed: {result.stderr}"
+        m = Manifest.load(tmp_path / "capability.yaml")
+        assert m.kind == "resource"
+        assert m.name == "test-init-res"
+        errors = m.validate()
+        assert errors == []

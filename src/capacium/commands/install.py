@@ -268,19 +268,21 @@ def install_capability(
         for e in errors:
             print(f"Warning: {e}")
 
-    # BUG-003: Install npm dependencies for Node-based MCP server packages
-    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
-        if not _install_npm_dependencies(package_dir, cap_name):
-            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
-            return False
-
+    _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
             manifest, owner, package_dir, registry, storage, no_lock, force=force
         )
         fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
+        print(f"  Computing fingerprint for {cap_name}...")
+        fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
+
+    # BUG-003: Install npm dependencies for Node-based MCP server packages
+    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+        if not _install_npm_dependencies(package_dir, cap_name):
+            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
+            return False
 
     if force:
         _remove_superseded_versions(registry, cap_name, owner, version)
@@ -422,7 +424,7 @@ def _install_single_sub_cap(
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
+        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"])
 
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
     source_url = sub_manifest.repository or _detect_git_remote(source_path)

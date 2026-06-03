@@ -286,65 +286,91 @@ def main():
     sign_parser.add_argument("capability", help="Capability specification (owner/name[@version])")
     sign_parser.add_argument("key_name", help="Name of the signing key")
 
-    # CAP-008: Standards export commands
-    export_mcp_parser = subparsers.add_parser(
-        "export-mcp",
-        help="Export capability manifest to MCP server descriptor format",
-    )
-    export_mcp_parser.add_argument(
-        "target",
-        help="Path to capability.yaml or directory containing one",
-    )
-
-    export_a2a_parser = subparsers.add_parser(
-        "export-a2a",
-        help="Export capability manifest to A2A agent card format",
-    )
-    export_a2a_parser.add_argument(
-        "target",
-        help="Path to capability.yaml or directory containing one",
-    )
-
     # CAP-011: Framework adaptation
     adapt_parser = subparsers.add_parser(
         "adapt",
-        help="Adapt capability to target framework format",
+        help="Adapt a capability to a target framework format (MCP, A2A, AWS, etc.)",
     )
     adapt_parser.add_argument(
-        "target",
+        "capability",
         nargs="?",
-        help="Target framework (mcp-server, a2a-agent, claude-desktop)",
+        help="Capability canonical name (owner/name) or local path",
     )
     adapt_parser.add_argument(
-        "path",
-        nargs="?",
-        default=".",
-        help="Path to manifest or directory (default: current directory)",
+        "--target",
+        required=False,
+        help="Target framework: mcp-server, a2a-agent, aws-agentcore, opencode, claude-desktop",
     )
     adapt_parser.add_argument(
-        "--transport",
-        default=None,
-        help="Transport type for MCP targets (default: stdio)",
+        "--output",
+        help="Write output to file instead of stdout",
     )
     adapt_parser.add_argument(
-        "--command",
-        dest="adapt_command",
-        default=None,
-        help="Command to run the capability",
+        "--json",
+        action="store_true",
+        help="Output as JSON",
     )
     adapt_parser.add_argument(
-        "--args",
-        dest="adapt_args",
-        default=None,
-        help="Arguments for the command (comma-separated)",
+        "--registry",
+        help="Registry URL to fetch capability metadata from",
     )
     adapt_parser.add_argument(
         "--list-targets",
         action="store_true",
         help="List available adaptation targets",
     )
+    # Legacy args kept for backward compat
+    adapt_parser.add_argument("path", nargs="?", default=".", help=argparse.SUPPRESS)
+    adapt_parser.add_argument("--transport", default=None, help=argparse.SUPPRESS)
+    adapt_parser.add_argument("--command", dest="adapt_command", default=None, help=argparse.SUPPRESS)
+    adapt_parser.add_argument("--args", dest="adapt_args", default=None, help=argparse.SUPPRESS)
 
     subparsers.add_parser("version", help="Print Capacium version")
+
+    # Export subcommands
+    export_a2a_parser = subparsers.add_parser("export-a2a", help="Export capability as A2A Agent Card")
+    export_a2a_parser.add_argument("capability", help="Capability canonical name (owner/name)")
+    export_a2a_parser.add_argument("--output", help="Write to file instead of stdout")
+
+    export_aws_parser = subparsers.add_parser("export-aws", help="Export capability as AWS AgentCore Registry descriptor")
+    export_aws_parser.add_argument("capability", help="Capability canonical name (owner/name)")
+    export_aws_parser.add_argument("--output", help="Write to file instead of stdout")
+
+    export_mcp_parser = subparsers.add_parser("export-mcp", help="Export capability as MCP server descriptor")
+    export_mcp_parser.add_argument("capability", help="Capability canonical name (owner/name)")
+    export_mcp_parser.add_argument("--output", help="Write to file instead of stdout")
+
+    export_parser = subparsers.add_parser("export", help="Generic capability export")
+    export_parser.add_argument("capability", help="Capability canonical name (owner/name)")
+    export_parser.add_argument("--target", required=True, help="Export target (mcp-server, a2a-agent, aws-agentcore, opencode)")
+    export_parser.add_argument("--output", help="Write to file instead of stdout")
+
+    license_parser = subparsers.add_parser("license", help="Manage license keys for paid capabilities")
+    license_sub = license_parser.add_subparsers(dest="license_command", help="License subcommand")
+
+    license_issue_parser = license_sub.add_parser("issue", help="Issue a new license")
+    license_issue_parser.add_argument("capability", help="Capability identifier (owner/name)")
+    license_issue_parser.add_argument("--publisher", required=True, help="Publisher identifier")
+    license_issue_parser.add_argument("--licensee", required=True, help="Licensee identifier")
+    license_issue_parser.add_argument("--type", choices=["free", "trial", "standard", "enterprise"], default="free", help="License type")
+    license_issue_parser.add_argument("--duration", type=int, help="Duration in days")
+    license_issue_parser.add_argument("--max-uses", type=int, help="Maximum uses")
+    license_issue_parser.add_argument("--registry", help="Registry URL")
+
+    license_validate_parser = license_sub.add_parser("validate", help="Validate a license token")
+    license_validate_parser.add_argument("token", help="License token to validate")
+    license_validate_parser.add_argument("--capability", required=True, help="Capability identifier")
+    license_validate_parser.add_argument("--registry", help="Registry URL")
+
+    license_revoke_parser = license_sub.add_parser("revoke", help="Revoke a license")
+    license_revoke_parser.add_argument("license_id", help="License ID to revoke")
+    license_revoke_parser.add_argument("--reason", default="", help="Revocation reason")
+    license_revoke_parser.add_argument("--registry", help="Registry URL")
+
+    license_list_parser = license_sub.add_parser("list", help="List licenses")
+    license_list_parser.add_argument("--licensee", help="Filter by licensee ID")
+    license_list_parser.add_argument("--capability", help="Filter by capability ID")
+    license_list_parser.add_argument("--registry", help="Registry URL")
 
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
@@ -736,65 +762,76 @@ def main():
 
         elif args.command == "adapt":
             if args.list_targets:
-                from .adaptation import CapabilityAdapter
-                adapter = CapabilityAdapter()
-                for t in adapter.registry.all():
-                    print(f"  {t.name:20s} {t.description}")
+                from .adapters.capability_adapter import list_adapters
+                for t in list_adapters():
+                    print(f"  {t}")
                 sys.exit(0)
-            if not args.target:
-                print("Error: target is required (use --list-targets to see options)")
+            cap = args.capability or args.path
+            if cap == "." or not cap:
+                print("Error: capability canonical name required (e.g. owner/name)")
                 sys.exit(1)
-            from .adaptation import CapabilityAdapter
-            from .manifest import Manifest
-            path = Path(args.path)
-            if path.is_dir():
-                manifest = Manifest.detect_from_directory(path)
-            elif path.is_file():
-                manifest = Manifest.load(path)
+            from .commands.adapt import adapt_capability
+            success = adapt_capability(
+                canonical=cap,
+                target=args.target,
+                registry_url=args.registry,
+                json_output=args.json,
+            )
+            sys.exit(0 if success else 1)
+
+        elif args.command == "export-a2a":
+            from .commands.export import export_a2a
+            success = export_a2a(args.capability, output=args.output)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "export-aws":
+            from .commands.export import export_aws
+            success = export_aws(args.capability, output=args.output)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "export-mcp":
+            from .commands.export import export_mcp
+            success = export_mcp(args.capability, output=args.output)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "export":
+            from .commands.export import export_generic
+            success = export_generic(args.capability, args.target, output=args.output)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "license":
+            from .commands.license import (
+                license_issue, license_validate, license_revoke, license_list,
+            )
+            sub = getattr(args, "license_command", None)
+            if sub == "issue":
+                success = license_issue(
+                    args.capability, args.publisher, args.licensee,
+                    license_type=args.type,
+                    duration_days=args.duration,
+                    max_uses=args.max_uses,
+                    registry_url=args.registry,
+                )
+            elif sub == "validate":
+                success = license_validate(
+                    args.token, args.capability,
+                    registry_url=args.registry,
+                )
+            elif sub == "revoke":
+                success = license_revoke(
+                    args.license_id, reason=args.reason,
+                    registry_url=args.registry,
+                )
+            elif sub == "list":
+                success = license_list(
+                    licensee_id=args.licensee,
+                    capability_id=args.capability,
+                    registry_url=args.registry,
+                )
             else:
-                print(f"Error: {path} not found")
+                print("Error: specify a license subcommand (issue, validate, revoke, list)")
                 sys.exit(1)
-            adapter = CapabilityAdapter()
-            options = {}
-            if args.transport:
-                options["transport"] = args.transport
-            if getattr(args, "adapt_command", None):
-                options["command"] = args.adapt_command
-            if getattr(args, "adapt_args", None):
-                options["args"] = [a.strip() for a in args.adapt_args.split(",")]
-            try:
-                result = adapter.adapt(manifest, args.target, options if options else None)
-                import json
-                print(json.dumps(result, indent=2))
-                sys.exit(0)
-            except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
-
-        elif args.command in ("export-mcp", "export-a2a"):
-            from .manifest import Manifest
-            target = Path(args.target)
-            if target.is_dir():
-                manifest = Manifest.detect_from_directory(target)
-            elif target.is_file():
-                manifest = Manifest.load(target)
-            else:
-                print(f"Error: {target} not found")
-                sys.exit(1)
-
-            if args.command == "export-mcp":
-                from .exporters import MCPExporter
-                exporter = MCPExporter()
-            else:
-                from .exporters import A2AExporter
-                exporter = A2AExporter()
-
-            if not exporter.can_export(manifest):
-                print(f"Error: manifest kind '{manifest.kind}' cannot be exported to {exporter.format_name}")
-                sys.exit(1)
-
-            print(exporter.export_json(manifest))
-            sys.exit(0)
+            sys.exit(0 if success else 1)
 
         elif args.command == "version":
             print(f"cap {__version__}")
