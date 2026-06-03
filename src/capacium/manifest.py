@@ -1,10 +1,15 @@
 import json
+import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 
 MANIFEST_FILENAME = "capability.yaml"
+
+
+_VALID_OPERATOR_TYPES = {"ai", "human", "hybrid"}
+_RESOURCE_DATA_ASSET_FIELDS = {"resource_type", "resource_format", "size_hint", "access", "compatibility"}
 
 
 @dataclass
@@ -31,6 +36,7 @@ class Manifest:
     entrypoint: str = ""
     triggers: List[Dict[str, Any]] = field(default_factory=list)
     pricing: Optional[Dict[str, Any]] = None
+    operator_type: Optional[str] = None
     # Resource-specific (only relevant when kind=resource)
     resource_type: Optional[str] = None
     resource_format: Optional[str] = None
@@ -60,20 +66,42 @@ class Manifest:
                 if "transport" not in self.mcp:
                     errors.append("mcp section: missing required 'transport' field (stdio, sse, or streamable-http)")
         if self.kind == "resource":
-            if not self.description:
-                errors.append("Resource manifest requires a description")
-            _VALID_RESOURCE_TYPES = {
-                "prompt-library", "dataset", "config-template",
-                "model-weights", "tool-index", "embedding",
-            }
-            if self.resource_type and self.resource_type not in _VALID_RESOURCE_TYPES:
-                errors.append(f"Invalid resource_type: {self.resource_type}")
-            _VALID_FORMATS = {"yaml", "json", "csv", "parquet", "binary", "directory"}
-            if self.resource_format and self.resource_format not in _VALID_FORMATS:
-                errors.append(f"Invalid resource format: {self.resource_format}")
-            _VALID_SIZES = {"small", "medium", "large"}
-            if self.size_hint and self.size_hint not in _VALID_SIZES:
-                errors.append(f"Invalid size_hint: {self.size_hint}")
+            if self.operator_type is not None:
+                if self.operator_type not in _VALID_OPERATOR_TYPES:
+                    errors.append(
+                        f"Invalid operator_type '{self.operator_type}'; "
+                        f"must be one of {sorted(_VALID_OPERATOR_TYPES)}"
+                    )
+                for field_name in _RESOURCE_DATA_ASSET_FIELDS:
+                    if getattr(self, field_name) is not None and getattr(self, field_name) != {}:
+                        errors.append(
+                            f"Resource with operator_type='{self.operator_type}' is agent-persona; "
+                            f"data-asset field '{field_name}' must not be set"
+                        )
+                if not self.description:
+                    errors.append("Agent-persona resource manifest requires a description")
+            else:
+                warnings.warn(
+                    "Resource kind without operator_type is treated as data-asset (legacy). "
+                    "Set operator_type: ai|human|hybrid for agent-persona resources. "
+                    "Data-asset resource kind will be deprecated in a future version.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                if not self.description:
+                    errors.append("Resource manifest requires a description")
+                _VALID_RESOURCE_TYPES = {
+                    "prompt-library", "dataset", "config-template",
+                    "model-weights", "tool-index", "embedding",
+                }
+                if self.resource_type and self.resource_type not in _VALID_RESOURCE_TYPES:
+                    errors.append(f"Invalid resource_type: {self.resource_type}")
+                _VALID_FORMATS = {"yaml", "json", "csv", "parquet", "binary", "directory"}
+                if self.resource_format and self.resource_format not in _VALID_FORMATS:
+                    errors.append(f"Invalid resource format: {self.resource_format}")
+                _VALID_SIZES = {"small", "medium", "large"}
+                if self.size_hint and self.size_hint not in _VALID_SIZES:
+                    errors.append(f"Invalid size_hint: {self.size_hint}")
             # Resources don't need entry points or MCP config
         # Validate triggers
         _VALID_TRIGGER_EVENTS = {
