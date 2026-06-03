@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .adapt import adapt_capability, _split_canonical
+from .adapt import _split_canonical
 
 
 def export_a2a(
@@ -84,7 +84,7 @@ def _export(
         return False
 
     try:
-        cap_data = client.detail(canonical)
+        cap_data = client.get_detail(canonical)
     except Exception:
         print(f"Error: could not fetch '{canonical}' from registry.", file=sys.stderr)
         return False

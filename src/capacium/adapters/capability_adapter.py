@@ -7,10 +7,13 @@ adapt() and reverse_adapt() for round-trip fidelity.
 
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
+
+
+class ManifestSchemaError(ValueError):
+    """Raised when a manifest field fails schema validation at the IR layer."""
 
 
 @dataclass
@@ -41,11 +44,15 @@ class CapabilityIR:
     repository: str = ""
     license: str = ""
 
+    _VALID_OPERATOR_TYPES = {"ai", "human", "hybrid"}
+
     @classmethod
-    def from_manifest(cls, manifest: Dict[str, Any]) -> "CapabilityIR":
+    def from_manifest(cls, manifest: Dict[str, Any], canonical: Optional[str] = None) -> "CapabilityIR":
+        name = manifest.get("name", "")
+        owner = manifest.get("owner", manifest.get("publisher_id", ""))
         ir = cls(
-            name=manifest.get("name", ""),
-            owner=manifest.get("owner", manifest.get("publisher_id", "")),
+            name=name,
+            owner=owner,
             kind=manifest.get("kind", "skill"),
             description=manifest.get("description", manifest.get("short_description", "")),
             version=manifest.get("version", "0.1.0"),
@@ -56,7 +63,12 @@ class CapabilityIR:
             repository=manifest.get("repository", manifest.get("canonical_source_url", "")),
             license=manifest.get("license", manifest.get("github_license", "")),
         )
-        ir.canonical = f"{ir.owner}/{ir.name}" if ir.owner else ir.name
+        if canonical:
+            ir.canonical = canonical
+        elif "::" in name and owner:
+            ir.canonical = f"{owner}/{name}"
+        else:
+            ir.canonical = f"{owner}/{name}" if owner else name
 
         for cap in manifest.get("capabilities", []):
             ir.tools.append({"name": cap.get("name", ""), "description": cap.get("description", ""), "source": cap.get("source", "")})
@@ -67,7 +79,13 @@ class CapabilityIR:
             ir.mcp_command = mcp.get("command", "")
             ir.mcp_args = mcp.get("args", mcp.get("supported_clients", []))
 
-        ir.operator_type = manifest.get("operator_type")
+        operator_type = manifest.get("operator_type")
+        if operator_type is not None:
+            if operator_type not in cls._VALID_OPERATOR_TYPES:
+                raise ManifestSchemaError(
+                    f"Invalid operator_type '{operator_type}'; must be one of {sorted(cls._VALID_OPERATOR_TYPES)}"
+                )
+            ir.operator_type = operator_type
         ir.persona = manifest.get("persona")
         ir.behavior = manifest.get("behavior")
         ir.endpoints = manifest.get("endpoints")

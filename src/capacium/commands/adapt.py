@@ -41,30 +41,30 @@ def adapt_capability(
 
     # Fetch capability data from Exchange
     try:
-        cap_data = client.detail(canonical)
+        cap_data = client.get_detail(canonical)
     except Exception:
         print(f"Error: could not fetch capability '{canonical}' from registry.")
         return False
 
-    # Fallback: construct from search if detail fails
-    if not cap_data:
-        cap_data = {"owner": owner, "name": name, "kind": "skill", "description": ""}
+    if cap_data is None:
+        print(f"Error: capability '{canonical}' not found.")
+        return False
 
     raw = {
-        "owner": cap_data.owner if hasattr(cap_data, "owner") else owner,
-        "name": cap_data.name if hasattr(cap_data, "name") else name,
-        "kind": cap_data.kind if hasattr(cap_data, "kind") else "skill",
-        "description": cap_data.description if hasattr(cap_data, "description") else "",
-        "version": cap_data.version if hasattr(cap_data, "version") else "0.1.0",
-        "frameworks": cap_data.frameworks if hasattr(cap_data, "frameworks") else [],
-        "runtimes": cap_data.runtimes if hasattr(cap_data, "runtimes") else {},
-        "dependencies": cap_data.dependencies if hasattr(cap_data, "dependencies") else {},
-        "tags": cap_data.tags if hasattr(cap_data, "tags") else [],
-        "repository": cap_data.repository if hasattr(cap_data, "repository") else "",
+        "owner": cap_data.owner,
+        "name": cap_data.name,
+        "kind": cap_data.kind,
+        "description": cap_data.description,
+        "version": cap_data.version,
+        "frameworks": cap_data.frameworks,
+        "runtimes": cap_data.runtimes,
+        "dependencies": cap_data.dependencies,
+        "tags": cap_data.tags,
+        "repository": cap_data.repository,
         "license": getattr(cap_data, "license", ""),
     }
 
-    ir = CapabilityIR.from_manifest(raw)
+    ir = CapabilityIR.from_manifest(raw, canonical=canonical)
     adapted = adapter.adapt(ir)
 
     # Round-trip verification
@@ -77,9 +77,9 @@ def adapt_capability(
         ):
             pass  # verified
         else:
-            print(f"Warning: round-trip verification shows drift between IR and adapted output.", file=None)
+            print("Warning: round-trip verification shows drift between IR and adapted output.", file=None)
     except Exception:
-        print(f"Warning: reverse_adapt() failed — adapted output may not round-trip cleanly.", file=None)
+        print("Warning: reverse_adapt() failed — adapted output may not round-trip cleanly.", file=None)
 
     if json_output:
         print(json.dumps(adapted, indent=2))
