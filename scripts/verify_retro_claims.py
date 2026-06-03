@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import os
 import re
 import sys
@@ -70,7 +69,7 @@ def _probe_endpoint_registered(target: str, *, repo_root: Path) -> Tuple[bool, s
     pattern = target
     src_dir = repo_root / "src"
     if not src_dir.exists():
-        return False, f"no src/ directory"
+        return False, "no src/ directory"
     matches = []
     for py_file in src_dir.rglob("*.py"):
         try:
