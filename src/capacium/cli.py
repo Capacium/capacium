@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .commands.registry import add_registry_parser
 
 
 def main():
@@ -153,13 +154,7 @@ def main():
         help="Overwrite existing files when using --template",
     )
 
-    registry_parser = subparsers.add_parser("registry", help="Manage Capacium registries")
-    registry_sub = registry_parser.add_subparsers(dest="registry_command", help="Registry subcommand")
-    registry_sub.add_parser("login", help="Authenticate with an Exchange registry")
-    registry_publish_parser = registry_sub.add_parser("publish", help="Publish a capability to a registry")
-    registry_publish_parser.add_argument("path", nargs="?", default=".", help="Path to capability directory (default: current directory)")
-    registry_publish_parser.add_argument("--registry", help="Target registry URL")
-    registry_sub.add_parser("status", help="Show connected registry information")
+    add_registry_parser(subparsers)
 
     verify_parser = subparsers.add_parser("verify", help="Verify capability fingerprint")
     verify_parser.add_argument("capability", nargs="?", help="Capability to verify (omit for --all)")
@@ -585,23 +580,14 @@ def main():
             sys.exit(0 if success else 1)
 
         elif args.command == "registry":
-            sub = getattr(args, "registry_command", None)
-            if sub == "login":
-                from .commands.registry_cmd import registry_login
-                success = registry_login()
-                sys.exit(0 if success else 1)
-            elif sub == "publish":
-                from .commands.registry_cmd import registry_publish
-                registry_arg = getattr(args, "registry", None)
-                success = registry_publish(Path(args.path), registry_url=registry_arg)
-                sys.exit(0 if success else 1)
-            elif sub == "status":
+            if hasattr(args, 'registry_action') and args.registry_action:
+                from .commands.registry import handle_registry
+                handle_registry(args)
+                sys.exit(0)
+            else:
                 from .commands.registry_cmd import registry_status
                 success = registry_status()
                 sys.exit(0 if success else 1)
-            else:
-                registry_parser.print_help()
-                sys.exit(1)
 
         elif args.command == "verify":
             from .commands.verify import verify_capability
