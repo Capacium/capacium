@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.13.0 — Stream F + G CLI hardening (2026-06-03)
+
+Closes the Stream F (Adapters / Manifest) and Stream G (Manifest schema +
+retro discipline) findings from the v2 Fix-PRD code review
+(`.skillweave/capacium-v2-execution/code-review-findings.md`).
+
+### New Features (delivered via PR #10, Phases E2 + F1 + F2)
+
+- **`cap license` subcommands**: `issue`, `validate`, `revoke`, `list` —
+  talk to the Exchange `/v2/licenses/*` endpoints. Tokens carry the
+  canonical kid from envctl (set by capacium-exchange Stream A wiring).
+- **`cap adapt` + `cap export-{a2a,aws,mcp}`**: framework adaptation via
+  CapabilityIR + adapter ABC. Round-trip verified for 5 adapters
+  (MCP, A2A, AWS AgentCore, OpenCode, Claude Desktop).
+
+### Bug Fixes & Security
+
+- **FIX-F-003 — CapabilityIR.canonical for multi-skill repos**:
+  `from_manifest()` accepts optional `canonical=` param; detects `::` in
+  name to avoid double-suffixing.
+- **FIX-F-004 — typed `client.get_detail()`**: fixed method name mismatch.
+  Removed all `hasattr(cap_data, …)` branches.
+- **FIX-F-005 — operator_type enum validation**: validated against
+  `{ai, human, hybrid}` per DECISION-001. Invalid → `ManifestSchemaError`.
+- **FIX-F-006 — `cap export-aws` ↔ `aws-agentcore` adapter naming**:
+  verified consistency between CLI flag and adapter registry key.
+- **FIX-G-001 — kind:resource disambiguation** (`manifest.py`):
+  `operator_type` field switches between agent-persona path and legacy
+  data-asset path with `DeprecationWarning`.
+- **FIX-G-002 — `cap init --kind resource` smoke test**: new test using
+  `tmp_path` catches scaffold regressions.
+
+### Infrastructure
+
+- **FIX-G-003 — retro claims CI verifier**
+  (`scripts/verify_retro_claims.py`): parses retro markdown for ✅ claims
+  and runs smoke probes (`file_exists`, `function_callable`,
+  `endpoint_registered`). Prevents retro / shipped-code drift.
+
+### Distribution
+
+Install via git+https (primary channel per launch-prd §2 distribution
+decision):
+
+```bash
+pip install "capacium @ git+https://github.com/Capacium/capacium.git@v0.13.0"
+pipx install git+https://github.com/Capacium/capacium.git@v0.13.0
+```
+
+PyPI publishing deferred until Capacium org approved at PyPI.
+
 ## Capacium v0.11.0 — Phase 2: Capacium v2 Redesign (2026-05-24)
 
 ### New Features
