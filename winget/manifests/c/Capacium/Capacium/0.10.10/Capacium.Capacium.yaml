@@ -1,0 +1,48 @@
+PackageIdentifier: Capacium.Capacium
+PackageVersion: 0.10.10
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
+
+PackageName: Capacium
+Publisher: Capacium
+PublisherUrl: https://github.com/Capacium/capacium
+PublisherSupportUrl: https://github.com/Capacium/capacium/issues
+Author: Capacium
+PackageUrl: https://github.com/Capacium/capacium
+License: MIT
+LicenseUrl: https://github.com/Capacium/capacium/blob/main/LICENSE
+Copyright: Copyright (c) Capacium
+ShortDescription: Capability Packaging System for AI agent capabilities
+
+Moniker: capacium
+Tags:
+  - cli
+  - ai
+  - agents
+  - packaging
+  - capabilities
+  - pipx
+
+ReleaseDate: 2025-06-05
+
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://github.com/Capacium/capacium/archive/refs/tags/v0.10.10.tar.gz
+    InstallerSha256: f54d90f6bcaba4eea4cd0ba6c7f4e83f277c17db25dc2ae2be31a18c412e24cd
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: cap
+        PortableCommandAlias: cap
+    InstallerLocale: en-US
+
+  - Architecture: arm64
+    InstallerType: zip
+    InstallerUrl: https://github.com/Capacium/capacium/archive/refs/tags/v0.10.10.tar.gz
+    InstallerSha256: f54d90f6bcaba4eea4cd0ba6c7f4e83f277c17db25dc2ae2be31a18c412e24cd
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: cap
+        PortableCommandAlias: cap
+    InstallerLocale: en-US

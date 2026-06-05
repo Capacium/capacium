@@ -1,0 +1,23 @@
+{
+    "version": "0.13.0",
+    "description": "Capability Packaging System for AI agent capabilities",
+    "homepage": "https://github.com/Capacium/capacium",
+    "license": "MIT",
+    "url": "https://github.com/Capacium/capacium/archive/refs/tags/v0.13.0.tar.gz",
+    "hash": "sha256:4030cb89017916ca571908ca29382b3c769e15337f992d04ec8bfd4c270141b9",
+    "depends": "python",
+    "installer": {
+        "script": "pip install --target=$dir ."
+    },
+    "bin": "cap",
+    "checkver": {
+        "github": "https://github.com/Capacium/capacium"
+    },
+    "autoupdate": {
+        "url": "https://github.com/Capacium/capacium/archive/refs/tags/v$version.tar.gz",
+        "hash": {
+            "url": "https://github.com/Capacium/capacium/releases/download/v$version/capacium-v$version-checksums.sha256",
+            "mode": "extract"
+        }
+    }
+}
