@@ -1,0 +1,9 @@
+PackageIdentifier: Capacium.Capacium
+PackageVersion: 0.14.0
+PackageLocale: en-US
+Publisher: Capacium
+PackageName: Capacium
+License: Apache-2.0
+ShortDescription: Capability Packaging System — package, distribute, and manage AI agent capabilities
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

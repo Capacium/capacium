@@ -1,0 +1,31 @@
+PackageIdentifier: Capacium.Capacium
+PackageVersion: 0.14.0
+PackageLocale: en-US
+Publisher: Capacium
+PublisherUrl: https://capacium.xyz
+PublisherSupportUrl: https://github.com/Capacium/capacium/issues
+PrivacyUrl: https://capacium.xyz/legal/privacy
+Author: Capacium
+PackageName: Capacium
+PackageUrl: https://capacium.xyz
+License: Apache-2.0
+LicenseUrl: https://github.com/Capacium/capacium/blob/main/LICENSE
+Copyright: Copyright (c) Capacium
+ShortDescription: Capability Packaging System — package, distribute, and manage AI agent capabilities
+Description: Capacium brings npm/brew-style packaging to AI agent capabilities — skills, MCP servers, prompts, workflows. SHA-256 fingerprinting and Ed25519 signing for supply chain integrity.
+Moniker: capacium
+Tags:
+  - cli
+  - ai
+  - agent
+  - capability
+  - package-manager
+  - developer-tools
+ReleaseDate: 2026-06-05
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://github.com/Capacium/capacium/releases/download/v0.14.0/capacium-win-x64.zip
+    InstallerSha256: PLACEHOLDER
+ManifestType: installer
+ManifestVersion: 1.9.0
