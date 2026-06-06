@@ -1,0 +1,25 @@
+name: capacium
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: devel
+priority: optional
+maintainer: Capacium <hello@capacium.xyz>
+description: |
+  Capability Packaging System for AI agent capabilities.
+  Package, distribute, and manage skills, MCP servers, prompts,
+  and workflows for AI coding agents.
+homepage: https://capacium.xyz
+license: Apache-2.0
+depends:
+  - python3
+contents:
+  - src: ./dist/capacium
+    dst: /usr/bin/cap
+  - src: ./src/capacium/cli.py
+    dst: /usr/share/capacium/cli.py
+  - src: ./src/capacium/
+    dst: /usr/share/capacium/src/capacium/
+    type: tree
+scripts:
+  postinstall: ./scripts/postinstall.sh
