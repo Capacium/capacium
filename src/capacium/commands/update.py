@@ -186,25 +186,47 @@ def _resolve_installed_capability(registry, raw_spec: str, cap_id: str, cap_name
 
 
 def _node_modules_missing(package_dir: Path) -> bool:
-    """Check if package.json exists but node_modules is missing (npm-based MCP server)."""
-    pkg_json = package_dir / "package.json"
-    node_mod = package_dir / "node_modules"
-    return pkg_json.exists() and not node_mod.exists()
+    """Check if package.json exists but node_modules is missing (npm-based MCP server).
+
+    Entrypoint-aware: checks at both the resolved entrypoint directory and its
+    parent in case ``node_modules`` is hoisted to the workspace root.
+    """
+    from ..adapters.mcp_config_patcher import McpConfigPatcher
+
+    runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
+    pkg_json = runtime_dir / "package.json"
+    if not pkg_json.exists():
+        return False
+    node_mod = runtime_dir / "node_modules"
+    if not node_mod.exists():
+        parent_nm = runtime_dir.parent / "node_modules"
+        if not parent_nm.exists():
+            return True
+    return False
 
 
 def _restore_node_modules(package_dir: Path) -> bool:
-    """Run npm install in package_dir if node_modules was stripped by safe_copytree."""
-    pkg_json = package_dir / "package.json"
+    """Run npm install in the package directory if node_modules was stripped by safe_copytree.
+
+    Entrypoint-aware: resolves to the entrypoint subdirectory when declared.
+    """
+    from ..adapters.mcp_config_patcher import McpConfigPatcher
+
+    runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
+    pkg_json = runtime_dir / "package.json"
     if not pkg_json.exists():
         return True
-    node_mod = package_dir / "node_modules"
+    node_mod = runtime_dir / "node_modules"
     if node_mod.exists():
         return True
-    print(f"  Restoring node_modules for {package_dir.name}...")
+    parent_nm = runtime_dir.parent / "node_modules"
+    if parent_nm.exists() and parent_nm.is_dir():
+        return True
+    print(f"  Restoring node_modules for {runtime_dir.name}...")
     try:
         result = subprocess.run(
             ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"],
-            cwd=package_dir,
+            cwd=runtime_dir,
             capture_output=True,
             text=True,
             timeout=120,

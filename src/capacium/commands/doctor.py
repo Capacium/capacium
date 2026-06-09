@@ -131,4 +131,14 @@ def doctor(cap_spec: Optional[str] = None) -> bool:
         print("All runtimes look healthy.")
     else:
         print("Some runtimes are missing or out of date — see above.")
+
+    try:
+        from .repair import _find_stale_entries
+        stale = _find_stale_entries()
+        if stale:
+            print(f"\n[info] {len(stale)} potentially stale MCP config entr{'y' if len(stale) == 1 else 'ies'} detected.")
+            print("  Run `cap repair` to review and clean up.")
+    except Exception:
+        pass
+
     return overall_ok

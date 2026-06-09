@@ -130,7 +130,61 @@ class TestBuildMcpEntry:
 
         entry = McpConfigPatcher.build_mcp_entry("entrypoint-mcp", tmp_path, {})
 
-        assert entry == {"command": "npx", "args": ["-y", str(runtime_dir)]}
+        assert entry["command"] == "npx"
+        assert entry["args"] == ["-y", str(runtime_dir)]
+        assert "cwd" in entry
+
+    def test_cwd_is_set_in_stdio_entry(self, tmp_path):
+        entry = McpConfigPatcher.build_mcp_entry(
+            "test-server", tmp_path,
+            {"command": "npx", "args": ["-y", "test-server"], "transport": "stdio"}
+        )
+        assert "cwd" in entry
+        assert entry["cwd"] == str(tmp_path)
+
+    def test_cwd_not_set_for_sse_transport(self, tmp_path):
+        entry = McpConfigPatcher.build_mcp_entry(
+            "test-server", tmp_path,
+            {"transport": "sse", "url": "http://example.com/mcp"}
+        )
+        assert "cwd" not in entry
+
+    def test_cwd_falls_back_to_parent_for_workspace_node_modules(self, tmp_path):
+        """When entrypoint is subdirectory with package.json but no node_modules,
+        and parent has hoisted node_modules, CWD resolves to parent."""
+        sub = tmp_path / "mcp-server"
+        sub.mkdir()
+        (sub / "package.json").write_text('{"bin": {"mcp": "dist/cli.js"}}')
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / ".install").write_text("ok")
+        (tmp_path / "capability.yaml").write_text(
+            "kind: mcp-server\nname: workspace-mcp\nversion: 1.0.0\n"
+            "entrypoint: mcp-server\nmcp:\n  transport: stdio\n"
+        )
+        entry = McpConfigPatcher.build_mcp_entry("workspace-mcp", tmp_path, {})
+        assert "cwd" in entry
+        assert entry["cwd"] == str(tmp_path)
+
+    def test_cwd_stays_at_entrypoint_when_node_modules_present(self, tmp_path):
+        """When subdirectory has its own node_modules, CWD stays there."""
+        sub = tmp_path / "mcp-server"
+        sub.mkdir()
+        (sub / "package.json").write_text('{"bin": {"mcp": "dist/cli.js"}}')
+        (sub / "node_modules").mkdir()
+        (tmp_path / "capability.yaml").write_text(
+            "kind: mcp-server\nname: self-contained\nversion: 1.0.0\n"
+            "entrypoint: mcp-server\nmcp:\n  transport: stdio\n"
+        )
+        entry = McpConfigPatcher.build_mcp_entry("self-contained", tmp_path, {})
+        assert entry["cwd"] == str(sub)
+
+    def test_cwd_not_applied_for_sse_transport(self, tmp_path):
+        """SSE transport entries do not include cwd."""
+        entry = McpConfigPatcher.build_mcp_entry(
+            "test-server", tmp_path,
+            {"transport": "sse", "url": "http://example.com/mcp"}
+        )
+        assert "cwd" not in entry
 
 
 class TestInjectAndRemoveMcpServer:
@@ -203,7 +257,8 @@ class TestInjectAndRemoveMcpServer:
         )
 
         servers = json.loads(config.read_text())["mcpServers"]
-        assert servers == {"helallao-perplexity-ai": {"command": "new"}}
+        assert servers["helallao-perplexity-ai"]["command"] == "new"
+        assert "cwd" in servers["helallao-perplexity-ai"]
 
     def test_remove_mcp_server(self, tmp_path):
         config = tmp_path / "config.json"

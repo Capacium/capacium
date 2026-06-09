@@ -142,3 +142,61 @@ def test_check_for_newer_version_via_remote(tmp_path):
         )
         assert result is True
         mock.assert_called_once_with("global/test-cap@2.0.0", force=True, yes=True)
+
+
+def test_reconcile_rewrites_entry_for_new_entrypoint(tmp_home, tmp_path, monkeypatch):
+    """When a capability update adds an entrypoint: field, config entries
+    are rewritten to point to the entrypoint subdirectory."""
+    source = tmp_path / "entry-evolve"
+    source.mkdir()
+    (source / "capability.yaml").write_text(
+        "kind: mcp-server\n"
+        "name: entry-evolve\n"
+        "version: 1.0.0\n"
+        "frameworks: [opencode]\n"
+        "mcp:\n  transport: stdio\n  command: npx\n"
+    )
+
+    from capacium.commands.install import install_capability
+    assert install_capability(
+        "EntryEvolve/entry-evolve",
+        source_dir=source,
+        no_lock=True,
+        skip_runtime_check=True,
+        force=True,
+        yes=True,
+    ) is True
+
+    config_path = tmp_home / ".config" / "opencode" / "opencode.json"
+
+    data = json.loads(config_path.read_text())
+    assert data["mcp"]["entry-evolve"]["type"] == "local"
+
+    from capacium.registry import Registry
+    registry = Registry()
+    cap = registry.get_capability("EntryEvolve/entry-evolve")
+    assert cap is not None
+    install_path = cap.install_path
+    assert install_path is not None
+    assert install_path.exists()
+
+    sub = install_path / "server"
+    sub.mkdir()
+    (sub / "package.json").write_text('{"bin": {"serve": "dist/cli.js"}}')
+    (install_path / "capability.yaml").write_text(
+        "kind: mcp-server\n"
+        "name: entry-evolve\n"
+        "version: 1.0.0\n"
+        "frameworks: [opencode]\n"
+        "entrypoint: server\n"
+        "mcp:\n  transport: stdio\n  command: npx\n"
+    )
+
+    from capacium.commands.update import update_capability
+    assert update_capability("entry-evolve", skip_runtime_check=True) is True
+
+    data = json.loads(config_path.read_text())
+    full_entry = data["mcp"]["entry-evolve"]
+    assert full_entry["type"] == "local"
+    assert full_entry["enabled"] is True
+    assert full_entry["command"][0] == "npx"

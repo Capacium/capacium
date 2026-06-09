@@ -231,6 +231,28 @@ def main():
         help="Optional capability spec (owner/name) to check; defaults to all",
     )
 
+    repair_parser = subparsers.add_parser(
+        "repair",
+        help="Detect and fix stale/orphaned MCP server entries in framework configs",
+    )
+    repair_parser.add_argument(
+        "capability",
+        nargs="?",
+        help="Optional capability spec (owner/name) to check; defaults to all",
+    )
+    repair_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="List issues without making changes",
+    )
+    repair_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompts and repair all detected issues",
+    )
+    repair_parser.add_argument(
+        "--json", action="store_true",
+        help="Output as JSON (for programmatic use)",
+    )
+
     runtimes_parser = subparsers.add_parser(
         "runtimes",
         help="Inspect or print install hints for known host runtimes",
@@ -632,6 +654,11 @@ def main():
         elif args.command == "doctor":
             from .commands.doctor import doctor
             success = doctor(args.capability)
+            sys.exit(0 if success else 1)
+
+        elif args.command == "repair":
+            from .commands.repair import repair
+            success = repair(args)
             sys.exit(0 if success else 1)
 
         elif args.command == "runtimes":

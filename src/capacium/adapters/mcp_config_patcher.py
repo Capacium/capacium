@@ -4,6 +4,7 @@ Provides safe backup, parse, inject, and save operations for MCP server
 entries across different client configuration formats.
 """
 import json
+import os
 import re
 import shutil
 from datetime import datetime
@@ -198,6 +199,9 @@ class McpConfigPatcher:
             entry["args"] = args
         if env:
             entry["env"] = env
+        cwd_root = McpConfigPatcher._resolve_cwd(source_dir)
+        if cwd_root is not None:
+            entry["cwd"] = cwd_root
         return entry
 
     @staticmethod
@@ -216,6 +220,36 @@ class McpConfigPatcher:
             return source_dir
         entrypoint_dir = source_dir / manifest.entrypoint
         return entrypoint_dir if entrypoint_dir.is_dir() else source_dir
+
+    @staticmethod
+    def _resolve_cwd(source_dir: Path) -> Optional[str]:
+        """Return an absolute, writable CWD for the MCP server process.
+
+        For npm-based servers node_modules must exist and be writable.
+        Falls back to the CAP_HOME packages root if source_dir is not valid.
+        """
+        resolved = str(source_dir)
+        if (source_dir / "package.json").exists():
+            node_modules = source_dir / "node_modules"
+            if node_modules.exists() and node_modules.is_dir():
+                return resolved
+            # Fallback 1: check parent for workspace-hoisted node_modules
+            parent_nm = source_dir.parent / "node_modules"
+            if parent_nm.exists() and parent_nm.is_dir():
+                return str(source_dir.parent)
+            # Fallback 2: CAP_HOME packages root
+            cap_home = os.environ.get(
+                "CAPACIUM_HOME",
+                str(Path.home() / ".capacium" / "packages"),
+            )
+            cap_packages = Path(cap_home)
+            if cap_packages.is_dir():
+                return str(cap_packages)
+            # Fallback 3: source_dir even without node_modules
+            return resolved
+        if source_dir.is_dir():
+            return resolved
+        return None
 
     @staticmethod
     def _materialize_args_paths(args: list, source_dir: Path) -> list:
