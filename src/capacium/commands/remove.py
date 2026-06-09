@@ -71,6 +71,7 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         Path.home() / ".claude" / "commands",
         Path.home() / ".gemini" / "skills",
         Path.home() / ".gemini" / "commands",
+        Path.home() / ".gemini" / "config" / "skills",
         Path.home() / ".gemini" / "antigravity" / "skills",
         Path.home() / ".gemini" / "antigravity" / "commands",
         Path.home() / ".cursor" / "skills",

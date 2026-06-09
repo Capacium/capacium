@@ -43,7 +43,11 @@ def get_adapter(name: str) -> FrameworkAdapter:
 
 
 def get_adapter_for_manifest(manifest) -> FrameworkAdapter:
-    frameworks = getattr(manifest, "frameworks", None) or []
+    frameworks = (
+        manifest.get_target_frameworks()
+        if hasattr(manifest, "get_target_frameworks")
+        else getattr(manifest, "frameworks", None) or []
+    )
     if not frameworks:
         return get_adapter("opencode")
     for fw in frameworks:
@@ -53,7 +57,11 @@ def get_adapter_for_manifest(manifest) -> FrameworkAdapter:
 
 
 def get_adapters_for_manifest(manifest) -> List[FrameworkAdapter]:
-    frameworks = getattr(manifest, "frameworks", None) or []
+    frameworks = (
+        manifest.get_target_frameworks()
+        if hasattr(manifest, "get_target_frameworks")
+        else getattr(manifest, "frameworks", None) or []
+    )
     if not frameworks:
         return [get_adapter("opencode")]
     adapters = []

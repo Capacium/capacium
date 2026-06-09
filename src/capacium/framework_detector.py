@@ -10,7 +10,7 @@ FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
     "opencode": Path.cwd() / ".opencode" / "skills",
     "openclaw": Path.home() / ".openclaw" / "skills",
     "continue-dev": Path.home() / ".continue" / "skills",
-    "antigravity": Path.home() / ".gemini" / "antigravity" / "skills",
+    "antigravity": Path.home() / ".gemini" / "config" / "skills",
     "codex": Path.home() / ".codex" / "skills",
     "junie": Path.home() / ".junie" / "skills",
     "hermes": Path.home() / ".hermes" / "skills",
@@ -61,7 +61,10 @@ def _detect_continue_dev() -> bool:
 
 
 def _detect_antigravity() -> bool:
-    return (Path.home() / ".gemini" / "antigravity").is_dir()
+    return (
+        (Path.home() / ".gemini" / "config").is_dir()
+        or (Path.home() / ".gemini" / "antigravity").is_dir()
+    )
 
 
 def _detect_codex() -> bool:

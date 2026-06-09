@@ -29,8 +29,10 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
     """Walk cap_home and return metadata for every installed skill.
 
     Expected layout:
-        cap_home / <owner> / <skill_name> / capability.yaml
-        cap_home / <owner> / <skill_name> / SKILL.md      (optional)
+        cap_home / <owner> / <skill_name> / <version> / capability.yaml
+        cap_home / <owner> / <skill_name> / <version> / SKILL.md
+
+    The legacy unversioned layout is also supported.
     """
     skills: List[Dict[str, Any]] = []
     if not cap_home.exists():
@@ -39,14 +41,25 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
     for owner_dir in sorted(cap_home.iterdir()):
         if not owner_dir.is_dir() or owner_dir.name.startswith("."):
             continue
-        for skill_dir in sorted(owner_dir.iterdir()):
-            if not skill_dir.is_dir() or skill_dir.name.startswith("."):
-                continue
-            cap_yaml = skill_dir / "capability.yaml"
-            if not cap_yaml.exists():
+        for capability_dir in sorted(owner_dir.iterdir()):
+            if not capability_dir.is_dir() or capability_dir.name.startswith("."):
                 continue
 
+            version_dirs = [
+                child
+                for child in capability_dir.iterdir()
+                if child.is_dir() and (child / "capability.yaml").exists()
+            ]
+            if (capability_dir / "capability.yaml").exists():
+                version_dirs.append(capability_dir)
+            if not version_dirs:
+                continue
+
+            skill_dir = max(version_dirs, key=_version_dir_key)
+            cap_yaml = skill_dir / "capability.yaml"
             data = _parse_yaml_simple(cap_yaml)
+            if data.get("kind", "skill") != "skill":
+                continue
             description = data.get("description", "")
 
             skill_md_path = skill_dir / "SKILL.md"
@@ -64,6 +77,17 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
             })
 
     return skills
+
+
+def _version_dir_key(path: Path) -> tuple:
+    """Sort semantic version directories without external dependencies."""
+    parts = []
+    for part in path.name.removeprefix("v").split("-")[0].split("."):
+        try:
+            parts.append((1, int(part)))
+        except ValueError:
+            parts.append((0, part))
+    return tuple(parts)
 
 
 def _parse_yaml_simple(path: Path) -> Dict[str, str]:

@@ -145,6 +145,17 @@ class Manifest:
             return {}
         return dict(self.mcp)
 
+    def get_target_frameworks(self) -> List[str]:
+        """Return declared frameworks plus MCP-supported clients."""
+        frameworks = list(self.frameworks)
+        if self.kind == "mcp-server":
+            supported_clients = self.mcp.get("supported_clients", [])
+            if isinstance(supported_clients, list):
+                frameworks.extend(
+                    client for client in supported_clients if isinstance(client, str)
+                )
+        return list(dict.fromkeys(frameworks))
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Manifest":
         kind_raw = data.pop("kind", None)

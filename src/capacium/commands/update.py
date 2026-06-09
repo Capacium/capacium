@@ -1,5 +1,4 @@
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -7,13 +6,17 @@ from typing import List, Optional
 from ..registry import Registry
 from ..storage import StorageManager
 from ..versioning import VersionManager
-from ..utils.copytree import safe_copytree
 from ..fingerprint import compute_fingerprint
 from ..manifest import Manifest
-from ..adapters import get_adapters_for_manifest
+from ..adapters import get_adapter
 from ..models import Kind
 from ..registry_client import RegistryClient, RegistryClientError
-from ..commands.install import _preflight_runtimes, install_capability
+from ..commands.install import (
+    _has_package_json,
+    _install_npm_dependencies,
+    _preflight_runtimes,
+    install_capability,
+)
 from ._resolve import resolve_cap_id
 
 
@@ -141,10 +144,11 @@ def update_capability(
     if not success:
         return False
 
-    frameworks = manifest.frameworks or [cap.framework or "opencode"]
+    frameworks = _reconcile_frameworks(cap, manifest)
     cap.fingerprint = current_fingerprint
     cap.kind = Kind(manifest.kind) if manifest.kind else cap.kind
     cap.framework = frameworks[0]
+    cap.frameworks = frameworks
     cap.installed_at = datetime.now()
     registry.update_capability(cap)
     StorageManager.write_meta(cap)
@@ -215,26 +219,37 @@ def _restore_node_modules(package_dir: Path) -> bool:
 
 
 def _reconcile_adapter_config(cap, manifest: Manifest) -> bool:
-    adapters = get_adapters_for_manifest(manifest)
-    frameworks = manifest.frameworks or [cap.framework or "opencode"]
+    frameworks = _reconcile_frameworks(cap, manifest)
+    package_dir = cap.install_path
 
-    with tempfile.TemporaryDirectory() as td:
-        source_copy = Path(td) / cap.name
-        safe_copytree(cap.install_path, source_copy)
-        for fw, adapter in zip(frameworks, adapters):
-            success = adapter.install_capability(
-                cap.name,
-                cap.version,
-                source_copy,
-                owner=cap.owner,
-                kind=manifest.kind or cap.kind.value,
-            )
-            if not success:
-                print(f"Failed to reconcile capability for {fw}.")
-                return False
-            if manifest.kind == "mcp-server":
-                package_dir = StorageManager().get_package_dir(cap.name, cap.version, owner=cap.owner)
-                if package_dir and _node_modules_missing(package_dir):
-                    _restore_node_modules(package_dir)
+    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+        if not _install_npm_dependencies(package_dir, cap.name):
+            return False
+
+    for fw in frameworks:
+        try:
+            adapter = get_adapter(fw)
+        except ValueError:
+            print(f"Unknown framework adapter '{fw}'.")
+            return False
+        success = adapter.install_capability(
+            cap.name,
+            cap.version,
+            package_dir,
+            owner=cap.owner,
+            kind=manifest.kind or cap.kind.value,
+        )
+        if not success:
+            print(f"Failed to reconcile capability for {fw}.")
+            return False
 
     return True
+
+
+def _reconcile_frameworks(cap, manifest: Manifest) -> List[str]:
+    frameworks = list(cap.frameworks) if cap.frameworks else []
+    if cap.framework and cap.framework not in frameworks:
+        frameworks.append(cap.framework)
+    frameworks.extend(manifest.get_target_frameworks())
+    frameworks = list(dict.fromkeys(frameworks))
+    return frameworks or ["opencode"]

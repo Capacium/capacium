@@ -92,13 +92,19 @@ class CodexAdapter(FrameworkAdapter):
             return True
         config = McpConfigPatcher.read_toml(self.config_path)
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
-        return server_key in config.get("mcp_servers", {})
+        server_key_normalized = server_key.replace("/", "-")
+        servers = config.get("mcp_servers", {})
+        return server_key in servers or server_key_normalized in servers
 
 
 def _remove_matching_server_keys(servers: dict, cap_name: str) -> bool:
     keys_to_remove = []
     for key in list(servers.keys()):
-        if key == cap_name or key.endswith("/" + cap_name):
+        if (
+            key == cap_name
+            or key.endswith("/" + cap_name)
+            or key.endswith("-" + cap_name)
+        ):
             keys_to_remove.append(key)
     for key in keys_to_remove:
         del servers[key]

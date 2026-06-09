@@ -278,7 +278,7 @@ class TestDoctor:
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         from capacium.commands.install import install_capability
         cap_spec = f"test-org/{name}"
-        ok = install_capability(cap_spec, source_dir=src, skip_runtime_check=True, force=True)
+        ok = install_capability(cap_spec, source_dir=src, skip_runtime_check=True, force=True, yes=True)
         assert ok is True
         return src
 
@@ -391,7 +391,7 @@ class TestInstallPreflight:
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         from capacium.commands.install import install_capability
         success = install_capability(
-            "test-org/needs-uv-bypass", source_dir=src, skip_runtime_check=True, force=True
+            "test-org/needs-uv-bypass", source_dir=src, skip_runtime_check=True, force=True, yes=True
         )
         assert success is True
 

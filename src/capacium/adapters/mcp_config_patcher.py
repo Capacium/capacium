@@ -4,6 +4,7 @@ Provides safe backup, parse, inject, and save operations for MCP server
 entries across different client configuration formats.
 """
 import json
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -150,6 +151,7 @@ class McpConfigPatcher:
         Relative args paths are materialized to absolute paths pointing into
         the installed package directory (source_dir).
         """
+        source_dir = McpConfigPatcher.resolve_entrypoint_dir(source_dir)
         meta = mcp_meta or {}
         transport = meta.get("transport", "stdio")
 
@@ -181,15 +183,15 @@ class McpConfigPatcher:
         # BUG-005: Materialize relative args paths to absolute paths
         args = McpConfigPatcher._materialize_args_paths(args, source_dir)
 
-        # BUG-002: For uvx packages with --from, prefer local install path
+        # For uvx packages with --from, prefer the installed local package.
         if command == "uvx" and "--from" in args:
             from_idx = args.index("--from")
             if from_idx + 1 < len(args):
                 pkg_spec = args[from_idx + 1]
-                if "git+" not in pkg_spec and not pkg_spec.startswith("/"):
-                    args[from_idx + 1] = str(source_dir) + (
-                        pkg_spec[pkg_spec.index("[") :] if "[" in pkg_spec else ""
-                    )
+                if not pkg_spec.startswith("/"):
+                    extras_match = re.match(r"^[^\[\s]+(\[[^\]]+\])?", pkg_spec)
+                    extras = extras_match.group(1) if extras_match and extras_match.group(1) else ""
+                    args[from_idx + 1] = f"{source_dir}{extras}"
 
         entry: Dict[str, Any] = {"command": command}
         if args:
@@ -197,6 +199,23 @@ class McpConfigPatcher:
         if env:
             entry["env"] = env
         return entry
+
+    @staticmethod
+    def resolve_entrypoint_dir(source_dir: Path) -> Path:
+        """Return the manifest entrypoint directory when one is declared."""
+        manifest_path = source_dir / "capability.yaml"
+        if not manifest_path.exists():
+            return source_dir
+        try:
+            from ..manifest import Manifest
+
+            manifest = Manifest.detect_from_directory(source_dir)
+        except Exception:
+            return source_dir
+        if not manifest.entrypoint:
+            return source_dir
+        entrypoint_dir = source_dir / manifest.entrypoint
+        return entrypoint_dir if entrypoint_dir.is_dir() else source_dir
 
     @staticmethod
     def _materialize_args_paths(args: list, source_dir: Path) -> list:
@@ -250,10 +269,13 @@ class McpConfigPatcher:
     def build_server_key(cls, cap_name: str, owner: str = "global") -> str:
         """Return the server key used in framework config files.
 
-        ``owner/cap_name`` when owner is not ``"global"``, else bare ``cap_name``.
+        ``owner-cap_name`` when owner is not ``"global"``, else bare
+        ``cap_name``. Client-facing MCP identifiers must not contain path
+        separators.
         """
-        from .base import _cap_id
-        return _cap_id(cap_name, owner)
+        if owner and owner != "global":
+            return f"{owner}-{cap_name}"
+        return cap_name
 
     @classmethod
     def inject_json_mcp_server(
@@ -269,6 +291,13 @@ class McpConfigPatcher:
         cls.backup(config_path)
         config = cls.read_json(config_path)
         servers = config.setdefault(mcp_section_key, {})
+        for key in list(servers):
+            if (
+                key == cap_name
+                or key.endswith("/" + cap_name)
+                or key.endswith("-" + cap_name)
+            ):
+                del servers[key]
         servers[server_key] = cls.build_mcp_entry(cap_name, source_dir, mcp_meta)
         cls.write_json(config_path, config)
         return True
@@ -303,7 +332,11 @@ class McpConfigPatcher:
             return True
         keys_to_remove = []
         for key in list(servers.keys()):
-            if key == cap_name or key.endswith("/" + cap_name):
+            if (
+                key == cap_name
+                or key.endswith("/" + cap_name)
+                or key.endswith("-" + cap_name)
+            ):
                 keys_to_remove.append(key)
         if keys_to_remove:
             cls.backup(config_path)

@@ -1,6 +1,7 @@
 """Google Antigravity adapter.
 
-Skills: ~/.gemini/antigravity/skills/<name>/SKILL.md
+Skills: ~/.gemini/config/skills/<name>/SKILL.md
+MCP:    ~/.gemini/config/mcp_config.json
 """
 import json
 import shutil
@@ -17,8 +18,9 @@ class AntigravityAdapter(FrameworkAdapter):
     def __init__(self):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
-        self.config_path = Path.home() / ".gemini" / "antigravity" / "mcp_config.json"
-        self.skills_dir = Path.home() / ".gemini" / "antigravity" / "skills"
+        self.config_path = Path.home() / ".gemini" / "config" / "mcp_config.json"
+        self.skills_dir = Path.home() / ".gemini" / "config" / "skills"
+        self.legacy_skills_dir = Path.home() / ".gemini" / "antigravity" / "skills"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
@@ -34,14 +36,15 @@ class AntigravityAdapter(FrameworkAdapter):
         return success
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
-        link_path = self.skills_dir / _cap_id(cap_name, owner)
-        if link_path.exists():
-            if link_path.is_symlink():
-                self.symlink_manager.remove_symlink(link_path)
-            elif link_path.is_dir():
-                shutil.rmtree(link_path)
-            else:
-                link_path.unlink()
+        for skills_dir in (self.skills_dir, self.legacy_skills_dir):
+            link_path = skills_dir / _cap_id(cap_name, owner)
+            if link_path.exists() or link_path.is_symlink():
+                if link_path.is_symlink():
+                    self.symlink_manager.remove_symlink(link_path)
+                elif link_path.is_dir():
+                    shutil.rmtree(link_path)
+                else:
+                    link_path.unlink()
         return True
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
@@ -66,9 +69,10 @@ class AntigravityAdapter(FrameworkAdapter):
         )
 
     def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
-        link_path = self.skills_dir / _cap_id(cap_name, owner)
-        if link_path.exists() and link_path.is_symlink():
-            return True
+        for skills_dir in (self.skills_dir, self.legacy_skills_dir):
+            link_path = skills_dir / _cap_id(cap_name, owner)
+            if link_path.exists() and link_path.is_symlink():
+                return True
         return McpConfigPatcher.mcp_server_exists_json(
             self.config_path, McpConfigPatcher.build_server_key(cap_name, owner), "mcpServers",
         )

@@ -236,7 +236,7 @@ def install_capability(
         except Exception:
             pass
         resolved_frameworks = _prompt_framework_selection(
-            source_manifest.frameworks,
+            source_manifest.get_target_frameworks(),
             preferred_frameworks=preferred,
         )
     else:
@@ -248,25 +248,52 @@ def install_capability(
         print(f"  Error: '{source_manifest.kind or 'skill'}' kind is not supported by the selected framework(s).")
         return False
 
-    installed_frameworks: set[str] = set()
-    for fw in resolved_frameworks:
-        if fw not in installed_frameworks:
-            installed_frameworks.add(fw)
-            try:
-                from ..adapters import get_adapter
-                adapter = get_adapter(fw)
-            except ValueError:
-                continue
-            success = adapter.install_capability(cap_name, version, source_dir, owner=owner, kind=source_manifest.kind or "skill")
-            if not success:
-                print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
+    from ..adapters.base import ensure_package_dir
 
-    package_dir = storage.get_package_dir(cap_name, version, owner=owner)
+    package_dir = ensure_package_dir(
+        storage, cap_name, version, source_dir, owner=owner,
+    )
     manifest = Manifest.detect_from_directory(package_dir)
     errors = manifest.validate()
     if errors:
         for e in errors:
             print(f"Warning: {e}")
+
+    # Install runtime dependencies before writing client configuration. A failed
+    # dependency install must not leave broken MCP entries behind.
+    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+        if not _install_npm_dependencies(package_dir, cap_name):
+            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
+            return False
+
+    attempted_frameworks: set[str] = set()
+    successful_frameworks: List[str] = []
+    for fw in resolved_frameworks:
+        if fw in attempted_frameworks:
+            continue
+        attempted_frameworks.add(fw)
+        try:
+            from ..adapters import get_adapter
+            adapter = get_adapter(fw)
+        except ValueError:
+            print(f"Warning: Unknown framework adapter '{fw}'. Skipping.")
+            continue
+        success = adapter.install_capability(
+            cap_name,
+            version,
+            package_dir,
+            owner=owner,
+            kind=manifest.kind or "skill",
+        )
+        if success:
+            successful_frameworks.append(fw)
+        else:
+            print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
+
+    if not successful_frameworks:
+        print(f"Error: Could not install {cap_id}@{version} for any selected framework.")
+        return False
+    resolved_frameworks = successful_frameworks
 
     _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
     if manifest.kind == "bundle":
@@ -277,12 +304,6 @@ def install_capability(
     else:
         print(f"  Computing fingerprint for {cap_name}...")
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
-
-    # BUG-003: Install npm dependencies for Node-based MCP server packages
-    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
-        if not _install_npm_dependencies(package_dir, cap_name):
-            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
-            return False
 
     if force:
         _remove_superseded_versions(registry, cap_name, owner, version)
@@ -404,7 +425,10 @@ def _install_single_sub_cap(
     shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
-    sub_frameworks = resolve_frameworks(sub_manifest.frameworks, kind=sub_manifest.kind or "skill")
+    sub_frameworks = resolve_frameworks(
+        sub_manifest.get_target_frameworks(),
+        kind=sub_manifest.kind or "skill",
+    )
     for fw in sub_frameworks:
         try:
             from ..adapters import get_adapter
@@ -438,6 +462,7 @@ def _install_single_sub_cap(
         installed_at=datetime.now(),
         dependencies=[],
         framework=first_fw,
+        frameworks=list(sub_frameworks),
         source_url=source_url,
     )
 
@@ -446,7 +471,7 @@ def _install_single_sub_cap(
 
     if not registry.add_capability(capacity):
         registry.update_capability(capacity)
-    StorageManager.write_meta(capacity)
+    StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
 
 def _remove_superseded_versions(
@@ -1007,7 +1032,7 @@ def _resolve_install_frameworks(
     except Exception:
         pass
     return resolve_frameworks(
-        manifest.frameworks,
+        manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
@@ -1263,12 +1288,18 @@ def _install_from_tarball(
 
 def _has_package_json(package_dir: Path) -> bool:
     """Check if a package.json exists in the package directory."""
-    return (package_dir / "package.json").exists()
+    from ..adapters.mcp_config_patcher import McpConfigPatcher
+
+    runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
+    return (runtime_dir / "package.json").exists()
 
 
 def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
     """Run npm install/ci in the package directory. Returns True on success."""
     import shutil as sht
+    from ..adapters.mcp_config_patcher import McpConfigPatcher
+
+    runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
 
     npm_path = sht.which("npm")
     if npm_path is None:
@@ -1277,18 +1308,18 @@ def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
         print("  Install Node.js and npm: https://nodejs.org/")
         return False
 
-    has_lock = (package_dir / "package-lock.json").exists()
+    has_lock = (runtime_dir / "package-lock.json").exists()
     if has_lock:
         cmd = ["npm", "ci", "--production"]
-        print(f"  Running npm ci in {package_dir}...")
+        print(f"  Running npm ci in {runtime_dir}...")
     else:
         cmd = ["npm", "install", "--production"]
-        print(f"  Running npm install in {package_dir}...")
+        print(f"  Running npm install in {runtime_dir}...")
 
     try:
         result = subprocess.run(
             cmd,
-            cwd=str(package_dir),
+            cwd=str(runtime_dir),
             capture_output=True,
             text=True,
             timeout=120,

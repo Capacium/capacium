@@ -76,12 +76,25 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
 
         mcp_servers = config.setdefault("mcpServers", {})
 
-        # Idempotent: only add if not already present
-        if server_key not in mcp_servers:
-            mcp_servers[server_key] = {
+        environment_cap = Path(sys.executable).with_name("cap")
+        cap_executable = (
+            str(environment_cap)
+            if environment_cap.is_file()
+            else shutil.which("cap")
+        )
+        if cap_executable:
+            desired_entry = {
+                "command": cap_executable,
+                "args": ["skills-mcp", "start", "--cap-home", str(cap_home)],
+            }
+        else:
+            desired_entry = {
                 "command": sys.executable,
                 "args": ["-m", "capacium.skills_mcp_wrapper", "--cap-home", str(cap_home)],
             }
+
+        if mcp_servers.get(server_key) != desired_entry:
+            mcp_servers[server_key] = desired_entry
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             self.config_path.write_text(json.dumps(config, indent=2))
 

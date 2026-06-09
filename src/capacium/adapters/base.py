@@ -3,12 +3,12 @@ from pathlib import Path
 
 
 def _cap_id(cap_name: str, owner: str = "global") -> str:
-    """Return the canonical capability identifier.
+    """Return the client-facing filesystem name for a capability.
 
-    ``owner/cap_name`` when owner is not ``"global"``, else bare ``cap_name``.
+    Skill clients discover direct children of their skills directory, so owner
+    namespaces cannot be represented as nested directories here. Cross-owner
+    conflicts are handled before adapter installation.
     """
-    if owner and owner != "global":
-        return f"{owner}/{cap_name}"
     return cap_name
 
 

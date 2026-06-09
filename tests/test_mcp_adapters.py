@@ -95,6 +95,43 @@ class TestBuildMcpEntry:
         entry = McpConfigPatcher.build_mcp_entry("my-server", tmp_path, {})
         assert entry["command"] == "python"
 
+    def test_uvx_from_uses_local_source_with_extras(self, tmp_path):
+        entry = McpConfigPatcher.build_mcp_entry(
+            "perplexity-ai",
+            tmp_path,
+            {
+                "command": "uvx",
+                "args": [
+                    "--from",
+                    "perplexity-api[mcp] @ git+https://example.com/perplexity.git",
+                    "perplexity-mcp",
+                ],
+            },
+        )
+
+        assert entry["args"] == [
+            "--from",
+            f"{tmp_path}[mcp]",
+            "perplexity-mcp",
+        ]
+
+    def test_entrypoint_directory_is_used_for_auto_detection(self, tmp_path):
+        runtime_dir = tmp_path / "mcp-server"
+        runtime_dir.mkdir()
+        (runtime_dir / "package.json").write_text('{"name": "entrypoint-mcp"}')
+        (tmp_path / "capability.yaml").write_text(
+            "kind: mcp-server\n"
+            "name: entrypoint-mcp\n"
+            "version: 1.0.0\n"
+            "entrypoint: mcp-server\n"
+            "mcp:\n"
+            "  transport: stdio\n"
+        )
+
+        entry = McpConfigPatcher.build_mcp_entry("entrypoint-mcp", tmp_path, {})
+
+        assert entry == {"command": "npx", "args": ["-y", str(runtime_dir)]}
+
 
 class TestInjectAndRemoveMcpServer:
     def test_inject_into_empty_config(self, tmp_path):
@@ -146,6 +183,27 @@ class TestInjectAndRemoveMcpServer:
 
         backups = list(tmp_path.glob("config.*.bak"))
         assert len(backups) == 1
+
+    def test_inject_replaces_legacy_server_keys(self, tmp_path):
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({
+            "mcpServers": {
+                "perplexity-ai": {"command": "old"},
+                "helallao/perplexity-ai": {"command": "older"},
+            }
+        }))
+
+        McpConfigPatcher.inject_json_mcp_server(
+            config,
+            "helallao-perplexity-ai",
+            "mcpServers",
+            "perplexity-ai",
+            tmp_path,
+            {"command": "new"},
+        )
+
+        servers = json.loads(config.read_text())["mcpServers"]
+        assert servers == {"helallao-perplexity-ai": {"command": "new"}}
 
     def test_remove_mcp_server(self, tmp_path):
         config = tmp_path / "config.json"
@@ -269,6 +327,30 @@ class TestClaudeDesktopAdapter:
         assert result is True
         data = json.loads(adapter.config_path.read_text())
         assert "test-server" not in data.get("mcpServers", {})
+
+    def test_skills_wrapper_replaces_stale_python_path(self, tmp_path):
+        from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
+
+        adapter = ClaudeDesktopAdapter()
+        adapter.config_path = tmp_path / "claude_desktop_config.json"
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "capacium-skills": {
+                    "command": "/old/cellar/capacium/python",
+                    "args": ["-m", "capacium.skills_mcp_wrapper"],
+                }
+            }
+        }))
+
+        with patch(
+            "capacium.adapters.claude_desktop.shutil.which",
+            return_value="/opt/homebrew/bin/cap",
+        ):
+            adapter._ensure_skills_mcp_registered()
+
+        entry = json.loads(adapter.config_path.read_text())["mcpServers"]["capacium-skills"]
+        assert entry["command"].endswith("/cap")
+        assert entry["args"][:2] == ["skills-mcp", "start"]
 
 
 class TestZedAdapter:

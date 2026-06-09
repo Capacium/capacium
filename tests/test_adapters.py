@@ -6,6 +6,7 @@ from capacium.adapters.openclaw import OpenClawAdapter
 from capacium.adapters.hermes import HermesAdapter
 from capacium.adapters.copilot import CopilotAdapter
 from capacium.adapters.cursor import CursorAdapter
+from capacium.adapters.antigravity import AntigravityAdapter
 from capacium.adapters import get_adapter, get_adapter_for_manifest, register_adapter
 from capacium.adapters.base import FrameworkAdapter
 from capacium.manifest import Manifest
@@ -350,6 +351,16 @@ class TestAdapterAutoSelection:
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, ClaudeCodeAdapter)
 
+    def test_mcp_supported_clients_extend_frameworks(self):
+        manifest = Manifest(
+            kind="mcp-server",
+            name="test",
+            frameworks=["claude-code"],
+            mcp={"supported_clients": ["claude-desktop", "claude-code"]},
+        )
+
+        assert manifest.get_target_frameworks() == ["claude-code", "claude-desktop"]
+
     def test_fallback_to_opencode_for_unknown_framework(self):
         manifest = Manifest(name="test", frameworks=["unknown-framework"])
         adapter = get_adapter_for_manifest(manifest)
@@ -376,3 +387,27 @@ class TestAdapterAutoSelection:
         import pytest
         with pytest.raises(ValueError, match="Unknown framework adapter: nonexistent"):
             get_adapter("nonexistent")
+
+
+class TestAntigravityAdapter:
+
+    def test_uses_active_antigravity_config_paths(self, tmp_home, sample_capability_dir):
+        adapter = AntigravityAdapter()
+
+        adapter.install_skill("test-cap", "1.0.0", sample_capability_dir)
+
+        link = tmp_home / ".gemini" / "config" / "skills" / "test-cap"
+        assert link.is_symlink()
+        assert adapter.config_path == tmp_home / ".gemini" / "config" / "mcp_config.json"
+
+    def test_owner_does_not_create_nested_skill_directory(
+        self, tmp_home, sample_capability_dir,
+    ):
+        adapter = AntigravityAdapter()
+
+        adapter.install_skill(
+            "test-cap", "1.0.0", sample_capability_dir, owner="LangeVC",
+        )
+
+        assert (tmp_home / ".gemini" / "config" / "skills" / "test-cap").is_symlink()
+        assert not (tmp_home / ".gemini" / "config" / "skills" / "LangeVC").exists()
