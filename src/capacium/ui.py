@@ -14,6 +14,11 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from capacium_models.labels import (
+    get_kind_label,
+    get_trust_badge,
+)
+
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
@@ -96,7 +101,8 @@ class TrustBadge:
         t = (trust or "discovered").lower()
         symbol = cls._symbols.get(t, "○")
         color = cls._colors.get(t, _DIM)
-        return f"{color}{symbol} {t.title()}{_RESET}"
+        label = get_trust_badge(t)
+        return f"{color}{symbol} {label}{_RESET}"
 
 
 class KindPill:
@@ -108,6 +114,13 @@ class KindPill:
         color = cls._colors.get(k, _DIM)
         pad = " " if len(k) <= 8 else ""
         return f"{color} {k}{pad}{_RESET}"
+
+    @classmethod
+    def label(cls, kind: str) -> str:
+        k = (kind or "skill").lower()
+        color = cls._colors.get(k, _DIM)
+        label = get_kind_label(k)
+        return f"{color}{label}{_RESET}"
 
     @classmethod
     def short(cls, kind: str) -> str:
