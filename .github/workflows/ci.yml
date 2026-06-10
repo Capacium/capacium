@@ -24,6 +24,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml cryptography pytest pytest-cov ruff
+          pip install git+https://github.com/Capacium/capacium-models.git
           pip install -e .
       - name: Lint with ruff
         run: python -m ruff check .
