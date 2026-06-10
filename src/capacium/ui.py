@@ -14,10 +14,14 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from capacium_models.labels import (
-    get_kind_label,
-    get_trust_badge,
-)
+try:
+    from capacium_models.labels import (
+        get_kind_label,
+        get_trust_badge,
+    )
+except ImportError:
+    get_kind_label = None  # type: ignore
+    get_trust_badge = None  # type: ignore
 
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
@@ -101,7 +105,7 @@ class TrustBadge:
         t = (trust or "discovered").lower()
         symbol = cls._symbols.get(t, "○")
         color = cls._colors.get(t, _DIM)
-        label = get_trust_badge(t)
+        label = get_trust_badge(t) if get_trust_badge else t
         return f"{color}{symbol} {label}{_RESET}"
 
 
@@ -119,7 +123,7 @@ class KindPill:
     def label(cls, kind: str) -> str:
         k = (kind or "skill").lower()
         color = cls._colors.get(k, _DIM)
-        label = get_kind_label(k)
+        label = get_kind_label(k) if get_kind_label else k
         return f"{color}{label}{_RESET}"
 
     @classmethod
