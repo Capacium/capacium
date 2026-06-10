@@ -51,6 +51,10 @@ class Manifest:
 
     def validate(self) -> List[str]:
         errors = []
+        from .models import Kind
+        _ALLOWED_KINDS = {k.value for k in Kind}
+        if self.kind not in _ALLOWED_KINDS:
+            errors.append(f"Unsupported kind '{self.kind}'. Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
         if self.kind == "bundle":
             if not self.capabilities:
                 errors.append("Bundle manifest must define at least one capability in the 'capabilities' section")

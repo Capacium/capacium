@@ -248,6 +248,12 @@ def install_capability(
         print(f"  Error: '{source_manifest.kind or 'skill'}' kind is not supported by the selected framework(s).")
         return False
 
+    _ALLOWED_KINDS = {k.value for k in Kind}
+    if source_manifest.kind not in _ALLOWED_KINDS:
+        print(f"Error: unsupported kind '{source_manifest.kind}'.")
+        print(f"  Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
+        return False
+
     from ..adapters.base import ensure_package_dir
 
     package_dir = ensure_package_dir(

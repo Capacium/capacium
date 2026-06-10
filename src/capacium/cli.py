@@ -231,6 +231,10 @@ def main():
         nargs="?",
         help="Optional capability spec (owner/name) to check; defaults to all",
     )
+    doctor_parser.add_argument(
+        "--deep", action="store_true",
+        help="Run deep checks: symlinks, config integrity, MCP handshakes, drift detection",
+    )
 
     repair_parser = subparsers.add_parser(
         "repair",
@@ -654,7 +658,7 @@ def main():
 
         elif args.command == "doctor":
             from .commands.doctor import doctor
-            success = doctor(args.capability)
+            success = doctor(args.capability, deep=args.deep)
             sys.exit(0 if success else 1)
 
         elif args.command == "repair":
