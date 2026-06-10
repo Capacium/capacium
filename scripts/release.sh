@@ -51,6 +51,7 @@ echo -e "${YELLOW}[2/8] Bumping version to ${VERSION}...${NC}"
 
 # pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+sed -i '' "s/\"capacium-models>=[^\"]*\"/\"capacium-models>=0.4.0\"/" pyproject.toml
 
 # README.md
 sed -i '' -E "s/@v[0-9]+\.[0-9]+\.[0-9]+/@v${VERSION}/g" README.md
