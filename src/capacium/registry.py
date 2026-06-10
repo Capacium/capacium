@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
-from .models import Capability, Kind
+from .models import Capability, Kind, AdapterStatus
 
 
 class Registry:
@@ -95,6 +95,13 @@ class Registry:
                 cursor.execute("ALTER TABLE capabilities ADD COLUMN frameworks TEXT DEFAULT '[]'")
                 self._backfill_frameworks()
 
+            if "adapter_statuses" not in col_names:
+                try:
+                    cursor.execute("ALTER TABLE capabilities ADD COLUMN adapter_statuses TEXT DEFAULT '{}'")
+                except sqlite3.OperationalError:
+                    pass
+                self._backfill_adapter_statuses()
+
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='skills'")
             old_table = cursor.fetchone()
             if old_table:
@@ -167,6 +174,112 @@ class Registry:
                     (frameworks_json, cap_id_val)
                 )
             conn.commit()
+
+    def _backfill_adapter_statuses(self):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, frameworks, adapter_statuses FROM capabilities"
+                " WHERE adapter_statuses IS NULL OR adapter_statuses = '' OR adapter_statuses = '{}'"
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                cap_id_val = row[0]
+                frameworks_json = row[1] or "[]"
+                try:
+                    frameworks = _json.loads(frameworks_json)
+                except _json.JSONDecodeError:
+                    frameworks = []
+                statuses = {}
+                for fw in frameworks:
+                    statuses[fw] = {
+                        "status": "installed",
+                        "last_error": None,
+                        "last_verified": None,
+                    }
+                cursor.execute(
+                    "UPDATE capabilities SET adapter_statuses = ? WHERE id = ?",
+                    (_json.dumps(statuses), cap_id_val)
+                )
+            conn.commit()
+
+    def get_adapter_statuses(self, cap_id: str, version: Optional[str] = None) -> Dict[str, AdapterStatus]:
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if version:
+                cursor.execute(
+                    "SELECT adapter_statuses FROM capabilities WHERE owner = ? AND name = ? AND version = ?",
+                    (owner, name, version)
+                )
+            else:
+                cursor.execute(
+                    "SELECT adapter_statuses FROM capabilities WHERE owner = ? AND name = ? ORDER BY installed_at DESC LIMIT 1",
+                    (owner, name)
+                )
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return {}
+            try:
+                raw = _json.loads(row[0])
+            except _json.JSONDecodeError:
+                return {}
+            result = {}
+            for fw, data in raw.items():
+                if isinstance(data, dict):
+                    result[fw] = AdapterStatus(
+                        framework=fw,
+                        status=data.get("status", "not-installed"),
+                        last_error=data.get("last_error"),
+                        last_verified=data.get("last_verified"),
+                    )
+                else:
+                    result[fw] = AdapterStatus(framework=fw, status=str(data))
+            return result
+
+    def set_adapter_status(self, cap_id: str, version_spec: str, framework: str, status: str, error: Optional[str] = None) -> bool:
+        from datetime import datetime as dt
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if version_spec:
+                cursor.execute(
+                    "SELECT adapter_statuses, version FROM capabilities WHERE owner = ? AND name = ? AND version = ?",
+                    (owner, name, version_spec)
+                )
+            else:
+                cursor.execute(
+                    "SELECT adapter_statuses, version FROM capabilities WHERE owner = ? AND name = ? ORDER BY installed_at DESC LIMIT 1",
+                    (owner, name)
+                )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            cap_version = row[1]
+            try:
+                raw = _json.loads(row[0]) if row[0] else {}
+            except _json.JSONDecodeError:
+                raw = {}
+            now_iso = dt.now().isoformat()
+            existing = raw.get(framework)
+            if isinstance(existing, dict):
+                raw[framework] = {
+                    "status": status,
+                    "last_error": error,
+                    "last_verified": now_iso if status == "verified" else existing.get("last_verified"),
+                }
+            else:
+                raw[framework] = {
+                    "status": status,
+                    "last_error": error,
+                    "last_verified": now_iso if status == "verified" else None,
+                }
+            cursor.execute(
+                "UPDATE capabilities SET adapter_statuses = ? WHERE owner = ? AND name = ? AND version = ?",
+                (_json.dumps(raw), owner, name, cap_version)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def _backfill_source_urls(self):
         """Attempt to backfill source_url from install_path/.git config for existing entries."""

@@ -114,6 +114,14 @@ class Capability:
 
 
 @dataclass
+class AdapterStatus:
+    framework: str
+    status: str = "not-installed"
+    last_error: Optional[str] = None
+    last_verified: Optional[str] = None
+
+
+@dataclass
 class LockEntry:
     name: str
     version: str

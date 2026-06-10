@@ -90,6 +90,7 @@ def main():
     list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
     list_parser.add_argument("--framework", help="Filter by framework (opencode, claude-code, cursor, etc.)")
     list_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    list_parser.add_argument("--details", action="store_true", help="Show per-adapter installation status")
 
     search_parser = subparsers.add_parser("search", help="Search for capabilities")
     search_parser.add_argument("query", nargs="?", default="", help="Search query (omit to browse all)")
@@ -518,7 +519,7 @@ def main():
 
         elif args.command == "list":
             from .commands.list_capabilities import list_capabilities
-            list_capabilities(kind=args.kind, framework=args.framework, json_output=args.json)
+            list_capabilities(kind=args.kind, framework=args.framework, json_output=args.json, details=args.details)
             sys.exit(0)
 
         elif args.command == "search":

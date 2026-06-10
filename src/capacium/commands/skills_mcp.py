@@ -104,12 +104,17 @@ def skills_mcp_start(cap_home: Optional[Path] = None) -> None:
     try:
         import shutil
         _exe = shutil.which("capacium-skills-mcp")
+        if not _exe:
+            _exe = shutil.which("cap")
     except Exception:
         _exe = None
 
     cmd: list[str]
     if _exe:
-        cmd = [_exe, "--cap-home", str(cap_home_path)]
+        if _exe.endswith("capacium-skills-mcp") or "capacium-skills-mcp" in _exe:
+            cmd = [_exe, "--cap-home", str(cap_home_path)]
+        else:
+            cmd = [_exe, "skills-mcp", "start", "--cap-home", str(cap_home_path)]
     else:
         cmd = [sys.executable, "-m", "capacium.skills_mcp_wrapper",
                "--cap-home", str(cap_home_path)]

@@ -20,6 +20,23 @@ from .base import FrameworkAdapter, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
 
 
+def _path_in_sandbox_denied(path: Path) -> bool:
+    """Return True if the resolved path lives under a macOS sandbox-denied directory."""
+    denied_parents = [
+        Path.home() / "Documents",
+        Path.home() / "Desktop",
+        Path.home() / "Downloads",
+    ]
+    resolved = path.resolve()
+    for denied in denied_parents:
+        try:
+            resolved.relative_to(denied)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 class ClaudeDesktopAdapter(FrameworkAdapter):
 
     def __init__(self):
@@ -76,12 +93,13 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
 
         mcp_servers = config.setdefault("mcpServers", {})
 
-        environment_cap = Path(sys.executable).with_name("cap")
-        cap_executable = (
-            str(environment_cap)
-            if environment_cap.is_file()
-            else shutil.which("cap")
-        )
+        cap_executable = shutil.which("cap")
+        if not cap_executable:
+            environment_cap = Path(sys.executable).with_name("cap")
+            if environment_cap.is_file():
+                resolved = environment_cap.resolve()
+                if not _path_in_sandbox_denied(resolved):
+                    cap_executable = str(resolved)
         if cap_executable:
             desired_entry = {
                 "command": cap_executable,

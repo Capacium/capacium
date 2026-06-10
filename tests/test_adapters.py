@@ -1,5 +1,6 @@
 from pathlib import Path
 from capacium.adapters.claude_code import ClaudeCodeAdapter
+from capacium.adapters.claude_desktop import _path_in_sandbox_denied
 from capacium.adapters.gemini_cli import GeminiCLIAdapter
 from capacium.adapters.opencode import OpenCodeAdapter
 from capacium.adapters.openclaw import OpenClawAdapter
@@ -411,3 +412,29 @@ class TestAntigravityAdapter:
 
         assert (tmp_home / ".gemini" / "config" / "skills" / "test-cap").is_symlink()
         assert not (tmp_home / ".gemini" / "config" / "skills" / "LangeVC").exists()
+
+
+class TestClaudeDesktopAdapter:
+
+    def test_path_in_sandbox_denied_real_home_dirs(self):
+        real_docs = Path.home() / "Documents" / "any" / "thing"
+        assert _path_in_sandbox_denied(real_docs) is True
+
+        real_desktop = Path.home() / "Desktop" / "anything"
+        assert _path_in_sandbox_denied(real_desktop) is True
+
+        real_downloads = Path.home() / "Downloads" / "some" / "file"
+        assert _path_in_sandbox_denied(real_downloads) is True
+
+    def test_path_not_denied_when_outside_guarded_dirs(self):
+        opt_path = Path("/opt/homebrew/bin/cap")
+        assert _path_in_sandbox_denied(opt_path) is False
+
+        usr_local = Path("/usr/local/bin/cap")
+        assert _path_in_sandbox_denied(usr_local) is False
+
+    def test_skills_mcp_uses_path_cap_over_venv(self, monkeypatch, tmp_path):
+        docs_path = tmp_path / "Documents" / "repo" / ".venv" / "bin" / "cap"
+        docs_path.parent.mkdir(parents=True)
+        docs_path.write_text("")
+        assert _path_in_sandbox_denied(docs_path) is False
