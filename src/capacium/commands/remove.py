@@ -108,6 +108,10 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
             command_link.unlink(missing_ok=True)
 
         # Owner-Prefix symlinks: skills/<owner>/<cap_name>
+        # Missing client dirs are normal (V14, 2026-06-11): not every machine
+        # has every framework — never crash on absent paths.
+        if not parent_dir.is_dir():
+            continue
         for item in list(parent_dir.iterdir()):
             if not item.is_dir():
                 continue
