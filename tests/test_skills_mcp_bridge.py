@@ -412,3 +412,42 @@ class TestToolName:
     def test_skill_with_special_chars(self):
         result = _tool_name({"name": "skill@weird#name"})
         assert result == "skill_skill_weird_name"
+
+
+class TestSkillsMcpStartNoExecLoop:
+    """V1 regression (2026-06-11): `cap skills-mcp start` must never re-exec.
+
+    The previous implementation resolved `shutil.which("cap")` and exec'd
+    `cap skills-mcp start` again, restarting itself forever on installations
+    without a `capacium-skills-mcp` binary. The server must run in-process.
+    """
+
+    def test_start_runs_wrapper_in_process(self, tmp_path, monkeypatch):
+        import os
+        import sys
+        from capacium.commands import skills_mcp
+
+        calls = []
+        monkeypatch.setattr(
+            "capacium.skills_mcp_wrapper.main", lambda: calls.append(sys.argv[:])
+        )
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError("process re-exec/spawn is the V1 loop regression")
+
+        monkeypatch.setattr(os, "execv", _forbidden)
+        monkeypatch.setattr("subprocess.Popen", _forbidden)
+
+        skills_mcp.skills_mcp_start(cap_home=tmp_path)
+
+        assert len(calls) == 1
+        assert calls[0][1:] == ["--cap-home", str(tmp_path)]
+
+    def test_start_prints_banner_exactly_once(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("capacium.skills_mcp_wrapper.main", lambda: None)
+        from capacium.commands import skills_mcp
+
+        skills_mcp.skills_mcp_start(cap_home=tmp_path)
+
+        err = capsys.readouterr().err
+        assert err.count("Starting") == 1

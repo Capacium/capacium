@@ -54,9 +54,9 @@ def mock_dummy_caps(monkeypatch):
 
 class TestDoctorDeep:
 
-    def test_deep_checks_returns_six_results(self, mock_dummy_caps):
+    def test_deep_checks_returns_seven_results(self, mock_dummy_caps):
         results = _deep_checks()
-        assert len(results) == 6
+        assert len(results) == 7  # incl. MCP stdout purity (VER-001)
         for name, passed, detail in results:
             assert isinstance(name, str)
             assert isinstance(passed, bool)
@@ -207,8 +207,11 @@ mcp:
             "capacium.commands.doctor.Registry.list_capabilities",
             MagicMock(return_value=caps),
         )
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="sleep", timeout=10)
+        from capacium.utils.mcp_probe import McpProbeResult
+        with patch(
+            "capacium.commands.doctor.probe_mcp",
+            return_value=McpProbeResult(responded=False, error="timed out"),
+        ):
             name, passed, detail = _check_mcp_handshake()
             assert passed is False
             assert "timed out" in detail

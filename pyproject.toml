@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capacium"
-version = "0.14.2"
+version = "0.14.3"
 description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
 readme = "README.md"
 authors = [
@@ -54,6 +54,7 @@ Issues = "https://github.com/Capacium/capacium/issues"
 
 [project.scripts]
 cap = "capacium.cli:main"
+capacium-skills-mcp = "capacium.skills_mcp_wrapper:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

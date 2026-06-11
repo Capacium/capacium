@@ -93,31 +93,15 @@ def _discover_skills(cap_home: Path):
 # ---------------------------------------------------------------------------
 
 def skills_mcp_start(cap_home: Optional[Path] = None) -> None:
-    """Replace the current process with the MCP stdio server.
+    """Run the MCP stdio server in-process.
 
-    Uses os.execv so the wrapper inherits stdin/stdout cleanly.
-    Falls back to subprocess if os.execv is unavailable (Windows).
+    The wrapper module is imported and invoked directly so stdin/stdout are
+    inherited without any re-exec. Resolving an external executable here is
+    forbidden: a ``shutil.which("cap")`` fallback used to re-exec
+    ``cap skills-mcp start`` itself, spawning an infinite restart loop on any
+    installation that ships no ``capacium-skills-mcp`` binary (V1, 2026-06-11).
     """
     cap_home_path = cap_home or _default_cap_home()
-
-    # Prefer the installed entry point; fall back to python -m invocation
-    try:
-        import shutil
-        _exe = shutil.which("capacium-skills-mcp")
-        if not _exe:
-            _exe = shutil.which("cap")
-    except Exception:
-        _exe = None
-
-    cmd: list[str]
-    if _exe:
-        if _exe.endswith("capacium-skills-mcp") or "capacium-skills-mcp" in _exe:
-            cmd = [_exe, "--cap-home", str(cap_home_path)]
-        else:
-            cmd = [_exe, "skills-mcp", "start", "--cap-home", str(cap_home_path)]
-    else:
-        cmd = [sys.executable, "-m", "capacium.skills_mcp_wrapper",
-               "--cap-home", str(cap_home_path)]
 
     print(
         f"{_dim('Starting')} {_cyan('capacium-skills')} MCP server "
@@ -127,13 +111,10 @@ def skills_mcp_start(cap_home: Optional[Path] = None) -> None:
         flush=True,
     )
 
-    try:
-        os.execv(cmd[0], cmd)
-    except (OSError, NotImplementedError):
-        # os.execv not available (Windows) — fall back to subprocess
-        import subprocess
-        proc = subprocess.run(cmd)
-        sys.exit(proc.returncode)
+    from capacium import skills_mcp_wrapper
+
+    sys.argv = ["capacium-skills-mcp", "--cap-home", str(cap_home_path)]
+    skills_mcp_wrapper.main()
 
 
 # ---------------------------------------------------------------------------

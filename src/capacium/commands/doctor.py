@@ -12,13 +12,12 @@ all green → True (exit 0), anything missing → False (exit 1).
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from ..framework_detector import FRAMEWORK_SKILLS_DIRS
 from ..manifest import Manifest
+from ..utils.mcp_probe import probe_mcp
 from ..models import Capability
 from ..registry import Registry
 from ..runtimes import (
@@ -208,7 +207,19 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
     return ("Dependency materialization", True, "MCP server dependencies look ok")
 
 
+_last_probe_results: dict = {}
+
+
 def _check_mcp_handshake() -> Tuple[str, bool, str]:
+    """Real MCP initialize handshake per installed mcp-server.
+
+    The previous implementation only ran ``command --help`` and checked the
+    exit code — exactly the diagnostic gap from the 2026-06-09 audit: a
+    server can "run" without being able to speak MCP. Probes execute with
+    ``cwd`` set to the installed package (FIX-002 semantics). Results are
+    cached for the purity check to avoid double-spawning servers.
+    """
+    _last_probe_results.clear()
     registry = Registry()
     capabilities = [c for c in registry.list_capabilities()
                     if c.kind and c.kind.value == "mcp-server"]
@@ -223,20 +234,16 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
         command = manifest.mcp.get("command", "")
         if not command:
             continue
-        try:
-            result = subprocess.run(
-                [command, "--help"],
-                capture_output=True, text=True, timeout=10,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
-            if result.returncode != 0 and result.returncode != 2:
-                failures.append(f"{cap.name}: exit code {result.returncode}")
-        except FileNotFoundError:
-            failures.append(f"{cap.name}: command '{command}' not found")
-        except subprocess.TimeoutExpired:
-            failures.append(f"{cap.name}: timed out")
-        except Exception as exc:
-            failures.append(f"{cap.name}: {exc}")
+        args = manifest.mcp.get("args") or []
+        env = manifest.mcp.get("env") if isinstance(manifest.mcp.get("env"), dict) else None
+        cwd = str(cap.install_path) if getattr(cap, "install_path", None) else None
+        result = probe_mcp(command, args, env=env, cwd=cwd, timeout=10)
+        _last_probe_results[cap.name] = result
+        if not result.responded:
+            err = result.error or "no initialize response"
+            if "No such file" in err or "not found" in err.lower():
+                err = f"command '{command}' not found"
+            failures.append(f"{cap.name}: {err}")
 
     if failures:
         return (
@@ -245,6 +252,29 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
             f"{len(failures)} probe(s) failed: {'; '.join(failures[:3])}",
         )
     return ("MCP handshake", True, "all MCP servers respond to probe")
+
+
+def _check_mcp_stdout_purity() -> Tuple[str, bool, str]:
+    """Every stdout line of a responding server must be valid JSON-RPC.
+
+    Claude Desktop's strict parser breaks on a single log line (Perplexity,
+    V8) while tolerant probes stay green — purity is its own issue class.
+    Reuses the handshake probe results when available.
+    """
+    if not _last_probe_results:
+        _check_mcp_handshake()
+    impure = [
+        f"{name}: {res.impure_lines[0]!r}"
+        for name, res in _last_probe_results.items()
+        if res.responded and not res.stdout_pure
+    ]
+    if impure:
+        return (
+            "MCP stdout purity",
+            False,
+            f"{len(impure)} server(s) write non-JSON to stdout: {'; '.join(impure[:3])}",
+        )
+    return ("MCP stdout purity", True, "all responding servers keep stdout pure")
 
 
 def _check_stale_duplicate_keys() -> Tuple[str, bool, str]:
@@ -348,6 +378,7 @@ def _deep_checks() -> List[Tuple[str, bool, str]]:
     results.append(_check_config_file_paths())
     results.append(_check_dependency_materialization())
     results.append(_check_mcp_handshake())
+    results.append(_check_mcp_stdout_purity())
     results.append(_check_stale_duplicate_keys())
     results.append(_check_registry_drift())
     return results
