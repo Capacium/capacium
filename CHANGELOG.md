@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.14.3 — Hotfix: bridge loop, repair safety, sandbox guard (2026-06-11)
+
+Emergency hotfix for the P0 defects found in the 2026-06-11 multi-client
+walkthrough (V1–V14 defect backlog).
+
+### Fixed
+- **V1:** `cap skills-mcp start` re-exec'd itself forever via the
+  `shutil.which("cap")` fallback on installs without a `capacium-skills-mcp`
+  binary. The wrapper now runs in-process; a `capacium-skills-mcp` entry
+  point ships with the package.
+- **V4:** `cap repair` deleted working entries. Orphan candidates are now
+  probed with a real MCP initialize handshake (responding servers are never
+  suggested for removal), Capacium's own bridge/wrapper entries are
+  whitelisted, codex `config.toml` is scanned (it was skipped entirely),
+  the gemini-cli config path was corrected to `~/.gemini/settings.json`,
+  and `--yes` only removes missing-command-file issues.
+- **V14 (partial):** `cap remove` no longer crashes on machines without
+  `~/.opencode/mcp`; full transactional remove follows in v0.15.
+- doctor `--deep`'s "MCP handshake" only ran `command --help`; it now
+  performs a real initialize handshake (shared `utils/mcp_probe`) and
+  reports **stdout purity** as its own issue class — non-JSON stdout lines
+  break Claude Desktop's strict parser even when probes look green.
+
+### Added
+- **V3:** `CAPACIUM_SANDBOX` guard — `cap` refuses to run when the variable
+  is set but `$HOME` still points at the real account home. New
+  `cap config fingerprint` hashes all client capability surfaces (MCP
+  sections only, so preference churn from running clients cannot drift the
+  gate) for pre/post comparison around agent runs.
+- `framework_skills_dirs()` resolves skills directories at call time
+  (import-time resolution froze the real home and ignored sandbox HOME).
+
 ## Capacium v0.13.0 — Stream F + G CLI hardening (2026-06-03)
 
 Closes the Stream F (Adapters / Manifest) and Stream G (Manifest schema +
