@@ -54,6 +54,7 @@ Issues = "https://github.com/Capacium/capacium/issues"
 
 [project.scripts]
 cap = "capacium.cli:main"
+capacium-skills-mcp = "capacium.skills_mcp_wrapper:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
