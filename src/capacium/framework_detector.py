@@ -3,20 +3,30 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 
-FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = {
-    "claude-code": Path.home() / ".claude" / "skills",
-    "cursor": Path.cwd() / ".cursor" / "skills",
-    "gemini-cli": Path.home() / ".gemini" / "skills",
-    "opencode": Path.cwd() / ".opencode" / "skills",
-    "openclaw": Path.home() / ".openclaw" / "skills",
-    "continue-dev": Path.home() / ".continue" / "skills",
-    "antigravity": Path.home() / ".gemini" / "config" / "skills",
-    "codex": Path.home() / ".codex" / "skills",
-    "junie": Path.home() / ".junie" / "skills",
-    "hermes": Path.home() / ".hermes" / "skills",
-    "copilot": Path.home() / ".config" / "github-copilot" / "skills",
-    "qwen": Path.home() / ".qwen" / "skills",
-}
+def framework_skills_dirs() -> Dict[str, Path]:
+    """Skills directories per framework, resolved against the *current* HOME.
+
+    Must stay a function: import-time resolution freezes the real home and
+    silently ignores sandbox HOME overrides (V3, 2026-06-11).
+    """
+    return {
+        "claude-code": Path.home() / ".claude" / "skills",
+        "cursor": Path.cwd() / ".cursor" / "skills",
+        "gemini-cli": Path.home() / ".gemini" / "skills",
+        "opencode": Path.cwd() / ".opencode" / "skills",
+        "openclaw": Path.home() / ".openclaw" / "skills",
+        "continue-dev": Path.home() / ".continue" / "skills",
+        "antigravity": Path.home() / ".gemini" / "config" / "skills",
+        "codex": Path.home() / ".codex" / "skills",
+        "junie": Path.home() / ".junie" / "skills",
+        "hermes": Path.home() / ".hermes" / "skills",
+        "copilot": Path.home() / ".config" / "github-copilot" / "skills",
+        "qwen": Path.home() / ".qwen" / "skills",
+    }
+
+
+# Backward-compatible snapshot (import-time HOME). Prefer the function above.
+FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = framework_skills_dirs()
 
 FRAMEWORK_KINDS: Dict[str, Set[str]] = {
     "claude-desktop": {"mcp-server", "skill"},

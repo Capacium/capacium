@@ -280,6 +280,11 @@ def main():
     config_set_parser.add_argument("value", help="Configuration value (valid JSON)")
     config_get_parser = config_sub.add_parser("get", help="Get a configuration value")
     config_get_parser.add_argument("key", help="Configuration key")
+    config_fp_parser = config_sub.add_parser(
+        "fingerprint",
+        help="Hash all client configs + skills dirs (pre/post gate for agent runs)",
+    )
+    config_fp_parser.add_argument("--json", action="store_true", help="Per-surface hashes as JSON")
 
     submit_parser = subparsers.add_parser("submit", help="Submit a GitHub repository for indexing on the Exchange")
     submit_parser.add_argument("github_url", help="GitHub repository URL (https://github.com/owner/repo)")
@@ -464,6 +469,10 @@ def main():
         sys.exit(0)
 
     args = parser.parse_args()
+
+    # V3 guard: sandboxed runs must not see the real account home.
+    from .commands.sandbox import sandbox_guard
+    sandbox_guard()
 
     try:
         if args.command == "install":
@@ -683,7 +692,11 @@ def main():
             from .utils.config import ConfigManager
             import json as _json
             sub = getattr(args, "config_command", None) or "list"
-            if sub == "list":
+            if sub == "fingerprint":
+                from .commands.sandbox import config_fingerprint
+                config_fingerprint(json_output=getattr(args, "json", False))
+                sys.exit(0)
+            elif sub == "list":
                 for key, value in ConfigManager.list_all().items():
                     print(f"  {key}: {_json.dumps(value)}")
                 sys.exit(0)
