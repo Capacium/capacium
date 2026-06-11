@@ -281,9 +281,9 @@ class TestV4Regressions:
     must scan TOML configs (codex), and --yes must not remove orphans."""
 
     def _write_cd_config(self, tmp_home, servers):
-        cd = tmp_home / "Library" / "Application Support" / "Claude"
-        cd.mkdir(parents=True)
-        path = cd / "claude_desktop_config.json"
+        from capacium.commands.repair import _claude_desktop_path
+        path = _claude_desktop_path()  # platform-aware (Linux CI != macOS)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"mcpServers": servers}))
         return path
 
@@ -363,7 +363,7 @@ class TestV4Regressions:
             pytest.skip("entry not classified managed in this fixture")
         fixed = _repair_entries(stale, dry_run=False, auto_yes=True)
         assert fixed == 1
-        import tomllib
+        from capacium.utils.toml_compat import tomllib
         after = tomllib.loads(path.read_text())
         assert "neg-no-executable" not in after.get("mcp_servers", {})
         assert "keepme" in after.get("mcp_servers", {})

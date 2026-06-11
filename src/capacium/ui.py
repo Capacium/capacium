@@ -21,7 +21,11 @@ try:
     )
 except ImportError:
     get_kind_label = None  # type: ignore
-    get_trust_badge = None  # type: ignore
+
+    def get_trust_badge(trust: str) -> str:  # type: ignore
+        """Fallback when capacium-models ships no labels module yet —
+        output must not depend on which dependency version is installed."""
+        return trust.replace("_", " ").title()
 
 _RESET = "\033[0m"
 _BOLD = "\033[1m"

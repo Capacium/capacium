@@ -91,7 +91,7 @@ def _hash_surface(path: Path, sections) -> str:
         if sections:
             try:
                 if path.suffix == ".toml":
-                    import tomllib
+                    from ..utils.toml_compat import tomllib
 
                     config = tomllib.loads(path.read_text())
                 else:

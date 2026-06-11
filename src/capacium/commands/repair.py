@@ -263,7 +263,7 @@ def _find_stale_entries(cap_spec: Optional[str] = None) -> List[StaleEntry]:
                 continue
             _scan_servers(fw_id, config_path, section_key, servers)
 
-    import tomllib
+    from ..utils.toml_compat import tomllib
 
     for fw_id, path_builder, section_key in FRAMEWORK_MCP_CONFIGS_TOML:
         try:

@@ -55,9 +55,9 @@ class TestConfigFingerprint:
     def test_changes_on_config_write(self, monkeypatch, tmp_path):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         before = config_fingerprint()
-        cd = tmp_path / "Library" / "Application Support" / "Claude"
-        cd.mkdir(parents=True)
-        (cd / "claude_desktop_config.json").write_text(
+        cursor = tmp_path / ".cursor"
+        cursor.mkdir(parents=True)
+        (cursor / "mcp.json").write_text(
             json.dumps({"mcpServers": {"x": {"command": "/bin/true"}}})
         )
         after = config_fingerprint()
@@ -99,9 +99,9 @@ class TestConfigFingerprint:
         are rewritten by their clients constantly; only the capability
         sections may influence the fingerprint."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cd = tmp_path / "Library" / "Application Support" / "Claude"
-        cd.mkdir(parents=True)
-        cfg = cd / "claude_desktop_config.json"
+        cursor = tmp_path / ".cursor"
+        cursor.mkdir(parents=True)
+        cfg = cursor / "mcp.json"
         cfg.write_text(json.dumps(
             {"mcpServers": {"x": {"command": "/bin/true"}}, "preferences": {"a": 1}}
         ))

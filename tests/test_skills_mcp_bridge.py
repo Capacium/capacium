@@ -118,7 +118,8 @@ class TestSkillsMcpWrapper:
         )
         skills = _discover_skills(cap_home)
         assert len(skills) == 1
-        assert skills[0]["version"] == "1.10.0-alpha"
+        # SemVer: the 1.10.0 release outranks its alpha prerelease
+        assert skills[0]["version"] == "1.10.0"
 
     def test_refresh_on_install(self, tmp_path, monkeypatch):
         """Bridge refreshes skill list after install."""

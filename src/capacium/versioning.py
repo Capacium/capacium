@@ -56,7 +56,7 @@ class VersionManager:
         pyproject = directory / "pyproject.toml"
         if pyproject.exists():
             try:
-                import tomllib
+                from .utils.toml_compat import tomllib
                 with open(pyproject, "rb") as f:
                     data = tomllib.load(f)
                 version = data.get("project", {}).get("version")

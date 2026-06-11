@@ -49,7 +49,7 @@ class McpConfigPatcher:
         if not config_path.exists():
             return {}
         try:
-            import tomllib
+            from ..utils.toml_compat import tomllib
             with open(config_path, "rb") as f:
                 return tomllib.load(f)
         except (ImportError, Exception):

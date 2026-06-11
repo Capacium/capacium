@@ -80,13 +80,21 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
 
 
 def _version_dir_key(path: Path) -> tuple:
-    """Sort semantic version directories without external dependencies."""
+    """Sort semantic version directories without external dependencies.
+
+    Releases rank above prereleases of the same version (SemVer §11):
+    1.10.0 > 1.10.0-alpha. Dropping the prerelease made equal keys and a
+    filesystem-order-dependent max() (Linux CI picked differently than macOS).
+    """
+    name = path.name.removeprefix("v")
+    core, sep, prerelease = name.partition("-")
     parts = []
-    for part in path.name.removeprefix("v").split("-")[0].split("."):
+    for part in core.split("."):
         try:
             parts.append((1, int(part)))
         except ValueError:
             parts.append((0, part))
+    parts.append((1, "") if not sep else (0, prerelease))
     return tuple(parts)
 
 
