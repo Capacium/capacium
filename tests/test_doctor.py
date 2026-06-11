@@ -1,7 +1,6 @@
 """Tests for `cap doctor` command including deep checks."""
 
 import json
-import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
