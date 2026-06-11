@@ -11,7 +11,8 @@ WORKDIR /workspace
 # Install capacium with all extras
 COPY . /app
 WORKDIR /app
-RUN pip install --no-cache-dir .[signing,yaml]
+RUN pip install --no-cache-dir git+https://github.com/Capacium/capacium-models.git \
+ && pip install --no-cache-dir .[signing,yaml]
 
 # Default workspace directory for capability context
 WORKDIR /workspace

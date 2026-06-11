@@ -25,6 +25,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
+          pip install git+https://github.com/Capacium/capacium-models.git
           pip install .[signing,yaml]
 
       - name: Build with PyInstaller
