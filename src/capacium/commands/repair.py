@@ -126,8 +126,7 @@ def _probe_handshake(entry: Dict[str, Any], timeout: float = 5.0) -> bool:
     A server that answers the handshake is alive no matter what the registry
     says — it must never be suggested for removal.
     """
-    import os
-    import subprocess
+    from ..utils.mcp_probe import probe_mcp
 
     command = entry.get("command")
     if not isinstance(command, str) or not command:
@@ -135,46 +134,8 @@ def _probe_handshake(entry: Dict[str, Any], timeout: float = 5.0) -> bool:
     args = entry.get("args", [])
     if not isinstance(args, list):
         args = []
-    env = dict(os.environ)
-    extra_env = entry.get("env")
-    if isinstance(extra_env, dict):
-        env.update({k: str(v) for k, v in extra_env.items()})
-
-    init = _json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "cap-repair-probe", "version": "1.0"}},
-    }) + "\n"
-    try:
-        proc = subprocess.Popen(
-            [command] + [str(a) for a in args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, env=env,
-        )
-    except OSError:
-        return False
-    try:
-        out, _ = proc.communicate(init.encode(), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            out, _ = proc.communicate(timeout=2)
-        except Exception:
-            return False
-    except Exception:
-        proc.kill()
-        return False
-    for line in out.decode(errors="replace").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            msg = _json.loads(line)
-        except _json.JSONDecodeError:
-            continue
-        if msg.get("id") == 1 and "result" in msg:
-            return True
-    return False
+    env = entry.get("env") if isinstance(entry.get("env"), dict) else None
+    return probe_mcp(command, args, env=env, timeout=timeout).responded
 
 
 def _find_stale_entries(cap_spec: Optional[str] = None) -> List[StaleEntry]:
