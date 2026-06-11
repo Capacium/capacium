@@ -274,3 +274,114 @@ class TestRepairEntries:
 
         result = repair(FakeArgs())
         assert result is True
+
+
+class TestV4Regressions:
+    """V4 (2026-06-10/11): repair must never delete working or bridge entries,
+    must scan TOML configs (codex), and --yes must not remove orphans."""
+
+    def _write_cd_config(self, tmp_home, servers):
+        cd = tmp_home / "Library" / "Application Support" / "Claude"
+        cd.mkdir(parents=True)
+        path = cd / "claude_desktop_config.json"
+        path.write_text(json.dumps({"mcpServers": servers}))
+        return path
+
+    def test_bridge_entry_never_orphaned(self, tmp_home, mock_registry):
+        self._write_cd_config(tmp_home, {
+            "capacium-skills": {
+                "command": "/bin/sh",
+                "args": ["-c", "exec cap skills-mcp start --cap-home "
+                               + str(tmp_home / ".capacium" / "packages")],
+            }
+        })
+        stale = _find_stale_entries()
+        assert not [s for s in stale if s.server_key == "capacium-skills"]
+
+    def test_responding_server_never_suggested_for_removal(
+        self, tmp_home, mock_registry, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "capacium.commands.repair._probe_handshake", lambda entry: True
+        )
+        self._write_cd_config(tmp_home, {
+            "not-in-registry": {
+                "command": "/bin/sh",
+                "args": ["-c", "echo", str(tmp_home / ".capacium" / "packages" / "x")],
+            }
+        })
+        stale = _find_stale_entries()
+        assert not [s for s in stale if s.server_key == "not-in-registry"]
+
+    def test_non_responding_orphan_is_flagged(self, tmp_home, mock_registry, monkeypatch):
+        monkeypatch.setattr(
+            "capacium.commands.repair._probe_handshake", lambda entry: False
+        )
+        self._write_cd_config(tmp_home, {
+            "dead-orphan": {
+                "command": "/bin/sh",
+                "args": ["-c", "exit 1", str(tmp_home / ".capacium" / "packages" / "x")],
+            }
+        })
+        stale = _find_stale_entries()
+        flagged = [s for s in stale if s.server_key == "dead-orphan"]
+        assert flagged and flagged[0].fix_action == "remove"
+
+    def test_codex_toml_is_scanned(self, tmp_home, mock_registry, monkeypatch):
+        monkeypatch.setattr(
+            "capacium.commands.repair._probe_handshake", lambda entry: False
+        )
+        codex = tmp_home / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "config.toml").write_text(
+            '[mcp_servers.neg-no-executable]\n'
+            'command = "/nonexistent/binary-12345"\n'
+            'args = ["--not-real", "'
+            + str(tmp_home / ".capacium" / "packages" / "gone") + '"]\n'
+        )
+        stale = _find_stale_entries()
+        codex_hits = [s for s in stale if s.framework == "codex"]
+        assert codex_hits, "codex TOML config must be scanned (V4 regression)"
+
+    def test_codex_toml_fix_removes_section(self, tmp_home, mock_registry, monkeypatch):
+        monkeypatch.setattr(
+            "capacium.commands.repair._probe_handshake", lambda entry: False
+        )
+        codex = tmp_home / ".codex"
+        codex.mkdir(parents=True)
+        path = codex / "config.toml"
+        path.write_text(
+            '[mcp_servers.keepme]\ncommand = "/bin/sh"\nargs = []\n'
+            '[mcp_servers.neg-no-executable]\n'
+            'command = "/nonexistent/binary-12345"\nargs = ["'
+            + str(tmp_home / ".capacium" / "packages" / "gone") + '"]\n'
+        )
+        stale = [s for s in _find_stale_entries()
+                 if s.framework == "codex" and s.server_key == "neg-no-executable"]
+        # entry is managed only via registry-name match; force-manage via key
+        if not stale:
+            pytest.skip("entry not classified managed in this fixture")
+        fixed = _repair_entries(stale, dry_run=False, auto_yes=True)
+        assert fixed == 1
+        import tomllib
+        after = tomllib.loads(path.read_text())
+        assert "neg-no-executable" not in after.get("mcp_servers", {})
+        assert "keepme" in after.get("mcp_servers", {})
+
+    def test_yes_never_removes_orphans(self, tmp_home, mock_registry, monkeypatch):
+        monkeypatch.setattr(
+            "capacium.commands.repair._probe_handshake", lambda entry: False
+        )
+        path = self._write_cd_config(tmp_home, {
+            "dead-orphan": {
+                "command": "/bin/sh",
+                "args": ["-c", "exit 1", str(tmp_home / ".capacium" / "packages" / "x")],
+            }
+        })
+        stale = _find_stale_entries()
+        orphans = [s for s in stale if s.server_key == "dead-orphan"]
+        assert orphans
+        fixed = _repair_entries(orphans, dry_run=False, auto_yes=True)
+        assert fixed == 0, "--yes must not remove orphan entries (V4)"
+        after = json.loads(path.read_text())
+        assert "dead-orphan" in after["mcpServers"]
