@@ -244,12 +244,80 @@ class Manifest:
 
         from .versioning import VersionManager
         version = VersionManager.detect_version(directory)
+
+        # V13/STAB-001: multi-skill repositories (skills/*/SKILL.md, plugin
+        # layouts) are bundles with member skills — modeling them as a single
+        # root skill produced undiscoverable SKILL.md-less root links.
+        members = infer_multi_skill_members(directory)
+        if members:
+            return cls(
+                kind="bundle",
+                owner="unknown",
+                name=directory.name,
+                version=version,
+                description=f"Multi-skill bundle {directory.name}",
+                capabilities=members,
+            )
+
         return cls(
             owner="unknown",
             name=directory.name,
             version=version,
             description=f"Capability {directory.name}"
         )
+
+
+_MEMBER_IGNORE_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", "tests", "test", "docs",
+}
+
+
+def infer_multi_skill_members(directory: Path) -> List[Dict[str, str]]:
+    """Detect multi-skill repository structures (V13/STAB-001).
+
+    Recognized layouts (member = directory containing a SKILL.md):
+
+      1. ``skills/<name>/SKILL.md`` at the repository root
+      2. ``<subdir>/skills/<name>/SKILL.md`` one level deep
+         (plugin layout, e.g. ``repo-plugin/skills/...``)
+      3. two or more sibling ``<name>/SKILL.md`` directories at the root
+
+    Returns ``[{"name": <dir-name>, "source": <relative-path>}, ...]`` sorted
+    by name, or an empty list when the directory is not multi-skill shaped.
+    A root-level SKILL.md means the repo IS a single skill — no inference.
+    """
+    directory = Path(directory)
+    if not directory.is_dir() or (directory / "SKILL.md").exists():
+        return []
+
+    def _collect(pattern: str) -> List[Path]:
+        hits = []
+        for skill_md in sorted(directory.glob(pattern)):
+            member_dir = skill_md.parent
+            if any(part in _MEMBER_IGNORE_DIRS or part.startswith(".")
+                   for part in member_dir.relative_to(directory).parts):
+                continue
+            hits.append(member_dir)
+        return hits
+
+    members = _collect("skills/*/SKILL.md") + _collect("*/skills/*/SKILL.md")
+    if not members:
+        siblings = _collect("*/SKILL.md")
+        if len(siblings) >= 2:
+            members = siblings
+
+    seen = set()
+    result: List[Dict[str, str]] = []
+    for member_dir in members:
+        if member_dir.name in seen:
+            continue
+        seen.add(member_dir.name)
+        result.append({
+            "name": member_dir.name,
+            "source": "./" + member_dir.relative_to(directory).as_posix(),
+        })
+    return sorted(result, key=lambda m: m["name"])
 
 
 def parse_cap_id(cap_id: str) -> tuple[str, str]:
