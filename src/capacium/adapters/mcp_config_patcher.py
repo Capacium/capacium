@@ -29,6 +29,15 @@ class RuntimeUnavailableError(RuntimeError):
 # would re-spawn version subprocesses.
 _RUNTIME_STATUS_CACHE: Dict[Tuple[str, str], Any] = {}
 
+# V11/STAB-007: env keys that look like credentials must never be written as
+# literal values into client configs — only as ${VAR} indirections resolvable
+# from launchd/envctl at server start.
+_SECRET_KEY_RE = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|COOKIE|CREDENTIAL|API_?KEY|PRIVATE_?KEY|AUTH)",
+    re.IGNORECASE,
+)
+_ENV_REF_RE = re.compile(r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$")
+
 
 class McpConfigPatcher:
     """Safely patches MCP server entries into client configuration files."""
@@ -259,7 +268,7 @@ class McpConfigPatcher:
         # stdio transport (default)
         command = meta.get("command", "")
         args = list(meta.get("args", [])) if meta.get("args") else []
-        env = meta.get("env", {})
+        env = McpConfigPatcher.sanitize_env_block(meta.get("env", {}), cap_name)
 
         # V10/STAB-004: prefer the binary built from the local package over
         # any 'go run' form — especially 'go run ...@latest' network fetches.
@@ -316,6 +325,33 @@ class McpConfigPatcher:
             entry["cwd"] = cwd_root
         McpConfigPatcher.validate_entry_runtimes(entry, package_root, resolver=resolver)
         return entry
+
+    @staticmethod
+    def sanitize_env_block(env: Dict[str, Any], cap_name: str = "") -> Dict[str, str]:
+        """Normalize a manifest mcp.env block for client configs (V11).
+
+        - empty/None values become ``${KEY}`` indirections
+        - secret-looking keys with literal values are REDACTED to ``${KEY}``
+          (static guard: no plaintext secret ever lands in a client config)
+        - explicit ``${VAR}`` references and harmless literals pass through
+        """
+        sanitized: Dict[str, str] = {}
+        for key, value in (env or {}).items():
+            value = "" if value is None else str(value)
+            if not value:
+                sanitized[key] = "${" + key + "}"
+                continue
+            if _ENV_REF_RE.match(value.strip()):
+                sanitized[key] = value
+                continue
+            if _SECRET_KEY_RE.search(key):
+                label = f" for {cap_name}" if cap_name else ""
+                print(f"  Warning: env '{key}'{label} carried a literal secret — "
+                      f"redacted to ${{{key}}} (set the value via launchd/envctl).")
+                sanitized[key] = "${" + key + "}"
+                continue
+            sanitized[key] = value
+        return sanitized
 
     @staticmethod
     def _find_go_binary(source_dir: Path, package_root: Path, cap_name: str) -> Optional[Path]:
