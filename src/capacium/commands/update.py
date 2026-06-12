@@ -17,6 +17,7 @@ from ..commands.install import (
     _preflight_runtimes,
     install_capability,
 )
+from .hold import get_hold
 from ._resolve import resolve_cap_id
 
 
@@ -129,13 +130,22 @@ def update_capability(
     if not skip_runtime_check and not _preflight_runtimes(manifest):
         return False
 
+    cap_label = f"{cap.owner}/{cap.name}@{cap.version}"
+
+    # V8/UP-001: held packages (locally patched) are never updated.
+    hold = get_hold(f"{cap.owner}/{cap.name}")
+    if hold is not None and not force:
+        print(f"{cap_label} is held: {hold.get('reason') or 'locally patched'}")
+        print("  Skipping update. Release with 'cap unhold' or use --force.")
+        return True
+
     current_fingerprint = compute_fingerprint(
         cap.install_path,
         exclude_patterns=FINGERPRINT_EXCLUDES,
     )
-    cap_label = f"{cap.owner}/{cap.name}@{cap.version}"
+    fingerprint_drift = current_fingerprint != cap.fingerprint
 
-    if current_fingerprint == cap.fingerprint and not force:
+    if not fingerprint_drift and not force:
         print(f"{cap_label} content is already up to date; reconciling adapters...")
     else:
         print(f"Updating {cap_label} from {cap.install_path}...")
@@ -156,7 +166,13 @@ def update_capability(
     print(f"Updated {cap_label}")
 
     if version_spec in ("latest", "stable"):
-        _check_for_newer_version(cap_id, cap.version, cap.source_url)
+        if fingerprint_drift and not force:
+            # V8: local modifications would be wiped by a force-reinstall.
+            print("  Local modifications detected (fingerprint drift).")
+            print("  Skipping newer-version fetch — keep the patch with 'cap hold'")
+            print("  or overwrite explicitly with 'cap update --force'.")
+        else:
+            _check_for_newer_version(cap_id, cap.version, cap.source_url)
 
     return True
 

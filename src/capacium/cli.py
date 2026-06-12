@@ -290,6 +290,14 @@ def main():
     submit_parser.add_argument("github_url", help="GitHub repository URL (https://github.com/owner/repo)")
     submit_parser.add_argument("--registry", help="Target registry URL (defaults to configured Exchange)")
 
+    hold_parser = subparsers.add_parser("hold", help="Protect a locally patched capability from update overwrites")
+    hold_parser.add_argument("capability", nargs="?", help="Capability (owner/name); omit with --list")
+    hold_parser.add_argument("--reason", help="Why the package is held (e.g. pending upstream PR)")
+    hold_parser.add_argument("--list", action="store_true", help="List all holds")
+
+    unhold_parser = subparsers.add_parser("unhold", help="Release a hold set with 'cap hold'")
+    unhold_parser.add_argument("capability", help="Capability (owner/name)")
+
     submit_tarball_parser = subparsers.add_parser("submit-tarball", help="Upload a capability tarball to the Exchange")
     submit_tarball_parser.add_argument("tarball_path", help="Path to .tar.gz file")
 
@@ -719,6 +727,17 @@ def main():
             else:
                 config_parser.print_help()
                 sys.exit(1)
+
+        elif args.command == "hold":
+            from .commands.hold import hold_capability, list_holds
+            if getattr(args, "list", False) or not args.capability:
+                sys.exit(0 if list_holds() else 1)
+            ok = hold_capability(args.capability, reason=getattr(args, "reason", None))
+            sys.exit(0 if ok else 1)
+
+        elif args.command == "unhold":
+            from .commands.hold import unhold_capability
+            sys.exit(0 if unhold_capability(args.capability) else 1)
 
         elif args.command == "submit":
             from .registry_client import RegistryClientError
