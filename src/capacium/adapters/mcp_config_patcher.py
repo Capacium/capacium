@@ -9,11 +9,99 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+
+class RuntimeUnavailableError(RuntimeError):
+    """A required host runtime is missing — no client config may be written.
+
+    Carries the human-readable failure report (including platform install
+    hints) so callers can surface it without re-resolving.
+    """
+
+    def __init__(self, report: str, statuses=None):
+        super().__init__(report)
+        self.statuses = statuses or []
+
+
+# Cache for default-resolver probes: (runtime, requirement) -> RuntimeStatus.
+# Installs touch up to ~22 client configs; without this every config write
+# would re-spawn version subprocesses.
+_RUNTIME_STATUS_CACHE: Dict[Tuple[str, str], Any] = {}
 
 
 class McpConfigPatcher:
     """Safely patches MCP server entries into client configuration files."""
+
+    @staticmethod
+    def clear_runtime_status_cache() -> None:
+        _RUNTIME_STATUS_CACHE.clear()
+
+    @classmethod
+    def validate_entry_runtimes(
+        cls,
+        entry: Dict[str, Any],
+        package_root: Path,
+        resolver=None,
+    ) -> None:
+        """Validate runtimes for a built MCP entry BEFORE any config write.
+
+        Merges declared ``manifest.runtimes`` (plus mcp.command inference)
+        with the runtime implied by the final entry command. Raises
+        :class:`RuntimeUnavailableError` when any requirement is unmet, so
+        that no client config entry is ever written for a server that cannot
+        start on this host (V5 regression class: Go server configured as npx).
+        """
+        if os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1":
+            return
+        if "command" not in entry:
+            return  # url/sse transports need no local runtime
+
+        from ..runtimes import (
+            RuntimeResolver,
+            format_failure_report,
+            infer_required_runtimes,
+            runtime_for_command,
+        )
+
+        requirements: Dict[str, str] = {}
+        try:
+            from ..manifest import Manifest
+
+            manifest = Manifest.detect_from_directory(package_root)
+            requirements.update(infer_required_runtimes(manifest))
+        except Exception:
+            pass
+        command_runtime = runtime_for_command(entry.get("command", ""))
+        if command_runtime and command_runtime not in requirements:
+            requirements[command_runtime] = "*"
+        if not requirements:
+            return
+
+        use_cache = resolver is None
+        if resolver is None:
+            resolver = RuntimeResolver()
+
+        statuses = []
+        to_resolve: Dict[str, str] = {}
+        for name, req in requirements.items():
+            cached = _RUNTIME_STATUS_CACHE.get((name, req)) if use_cache else None
+            if cached is not None:
+                statuses.append(cached)
+            else:
+                to_resolve[name] = req
+        if to_resolve:
+            fresh = resolver.resolve(to_resolve)
+            statuses.extend(fresh)
+            if use_cache:
+                for s in fresh:
+                    _RUNTIME_STATUS_CACHE[(s.name, s.requirement)] = s
+
+        failures = [s for s in statuses if not s.ok]
+        if failures:
+            raise RuntimeUnavailableError(
+                format_failure_report(statuses), statuses=statuses
+            )
 
     @staticmethod
     def backup(config_path: Path) -> Optional[Path]:
@@ -139,6 +227,7 @@ class McpConfigPatcher:
         cap_name: str,
         source_dir: Path,
         mcp_meta: Optional[Dict[str, Any]] = None,
+        resolver=None,
     ) -> Dict[str, Any]:
         """Build a standard MCP server entry from a capability's manifest metadata.
 
@@ -151,7 +240,12 @@ class McpConfigPatcher:
 
         Relative args paths are materialized to absolute paths pointing into
         the installed package directory (source_dir).
+
+        Raises :class:`RuntimeUnavailableError` when the host lacks a runtime
+        required by the manifest or the resulting command (set
+        ``CAPACIUM_SKIP_RUNTIME_CHECK=1`` to bypass).
         """
+        package_root = source_dir
         source_dir = McpConfigPatcher.resolve_entrypoint_dir(source_dir)
         meta = mcp_meta or {}
         transport = meta.get("transport", "stdio")
@@ -168,8 +262,13 @@ class McpConfigPatcher:
         env = meta.get("env", {})
 
         if not command:
-            # Auto-detect: look for common entry points
-            if (source_dir / "package.json").exists():
+            # Auto-detect: look for common entry points. go.mod wins over
+            # package.json — Go repos often ship docs tooling manifests, and a
+            # Go server configured as npx can never start (V5 regression).
+            if (source_dir / "go.mod").exists() or (package_root / "go.mod").exists():
+                command = "go"
+                args = ["run", "."]
+            elif (source_dir / "package.json").exists():
                 command = "npx"
                 args = ["-y", str(source_dir)]
             elif (source_dir / "pyproject.toml").exists():
@@ -202,6 +301,7 @@ class McpConfigPatcher:
         cwd_root = McpConfigPatcher._resolve_cwd(source_dir)
         if cwd_root is not None:
             entry["cwd"] = cwd_root
+        McpConfigPatcher.validate_entry_runtimes(entry, package_root, resolver=resolver)
         return entry
 
     @staticmethod
@@ -270,6 +370,7 @@ class McpConfigPatcher:
         cap_name: str,
         source_dir: Path,
         mcp_meta: Optional[Dict[str, Any]] = None,
+        resolver=None,
     ) -> Dict[str, Any]:
         """Build an OpenCode-native MCP server entry.
 
@@ -287,7 +388,7 @@ class McpConfigPatcher:
                 "enabled": True,
             }
 
-        stdio = McpConfigPatcher.build_mcp_entry(cap_name, source_dir, meta)
+        stdio = McpConfigPatcher.build_mcp_entry(cap_name, source_dir, meta, resolver=resolver)
         command = stdio.get("command", "")
         args = stdio.get("args", [])
         entry: Dict[str, Any] = {
@@ -320,8 +421,14 @@ class McpConfigPatcher:
         cap_name: str,
         source_dir: Path,
         mcp_meta: Optional[Dict[str, Any]] = None,
+        resolver=None,
     ) -> bool:
-        """Full pipeline: backup → read → inject → write for a JSON config."""
+        """Full pipeline: build (runtime-gated) → backup → read → inject → write.
+
+        The entry is built first so a RuntimeUnavailableError aborts before
+        any filesystem mutation — no backup file, no config write.
+        """
+        entry = cls.build_mcp_entry(cap_name, source_dir, mcp_meta, resolver=resolver)
         cls.backup(config_path)
         config = cls.read_json(config_path)
         servers = config.setdefault(mcp_section_key, {})
@@ -332,7 +439,7 @@ class McpConfigPatcher:
                 or key.endswith("-" + cap_name)
             ):
                 del servers[key]
-        servers[server_key] = cls.build_mcp_entry(cap_name, source_dir, mcp_meta)
+        servers[server_key] = entry
         cls.write_json(config_path, config)
         return True
 

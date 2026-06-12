@@ -192,7 +192,7 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
         requirements = Path(install_path) / "requirements.txt"
         pyproject = Path(install_path) / "pyproject.toml"
         has_python_dep = uv_lock.exists() or requirements.exists() or pyproject.exists()
-        if has_python_dep:
+        if has_python_dep and not _uses_ephemeral_python_env(cap, pyproject):
             venv = Path(install_path) / ".venv"
             if not venv.exists():
                 issues.append(f"{cap.name}: python deps declared but .venv missing")
@@ -205,6 +205,23 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
     if not capabilities:
         return ("Dependency materialization", True, "no MCP servers to check")
     return ("Dependency materialization", True, "MCP server dependencies look ok")
+
+
+def _uses_ephemeral_python_env(cap: Capability, pyproject: Path) -> bool:
+    """True when the server runs via uvx/pipx — those create their own
+    isolated environments per invocation, so a missing ``.venv`` in the
+    package directory is expected, not an issue (V5 false-positive class).
+    """
+    manifest = _load_manifest(cap)
+    command = ""
+    if manifest is not None and isinstance(getattr(manifest, "mcp", None), dict):
+        command = (manifest.mcp.get("command") or "").strip()
+    base = command.split("/")[-1].split()[0] if command else ""
+    if base in ("uvx", "pipx", "uv"):
+        return True
+    # No explicit command + pyproject present → entry auto-detection picks
+    # uvx, which is equally venv-less.
+    return not command and pyproject.exists()
 
 
 _last_probe_results: dict = {}
