@@ -307,6 +307,12 @@ def install_capability(
         for e in errors:
             print(f"Warning: {e}")
 
+    # V11/STAB-007: warn when declared env vars never appear in the server
+    # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
+    # SLACK_MCP_XOXP_TOKEN) yields silently non-functional servers.
+    if manifest.kind == "mcp-server":
+        _warn_unknown_env_vars(package_dir, manifest)
+
     # V13a/STAB-001 static guard: a kind=skill package without a root
     # SKILL.md is undiscoverable in skill clients. If it actually contains
     # nested member skills it is a mis-modeled multi-skill repo — refuse
@@ -1443,6 +1449,47 @@ def _is_go_project(package_dir: Path, manifest: Manifest) -> bool:
     if "go" in runtimes:
         return True
     return (package_dir / "go.mod").exists()
+
+
+_ENV_SCAN_SUFFIXES = {".go", ".py", ".js", ".ts", ".mjs", ".cjs", ".rs", ".sh",
+                      ".md", ".json", ".yaml", ".yml", ".toml", ".env.example"}
+
+
+def _warn_unknown_env_vars(package_dir: Path, manifest: Manifest) -> None:
+    """Warn for manifest mcp.env vars that never occur in the package source.
+
+    Heuristic guard for the korotovsky class: a declared env var the server
+    does not read means the credential mapping is wrong and the server will
+    start unauthenticated or not at all.
+    """
+    mcp = getattr(manifest, "mcp", None) or {}
+    declared = list((mcp.get("env") or {}).keys())
+    if not declared:
+        return
+
+    unknown = set(declared)
+    scanned = 0
+    for path in package_dir.rglob("*"):
+        if not unknown or scanned > 2000:
+            break
+        if not path.is_file() or path.suffix not in _ENV_SCAN_SUFFIXES:
+            continue
+        if any(part in ("node_modules", ".git", "vendor", "dist")
+               for part in path.parts):
+            continue
+        if path.name == "capability.yaml":
+            continue
+        scanned += 1
+        try:
+            content = path.read_text(errors="replace")
+        except OSError:
+            continue
+        unknown = {var for var in unknown if var not in content}
+
+    for var in sorted(unknown):
+        print(f"  Warning: declared env var '{var}' does not appear anywhere "
+              f"in the package source — the server may not know it. "
+              f"Check the upstream docs for the correct variable name.")
 
 
 def _go_build_target(package_dir: Path, cap_name: str) -> Optional[str]:
