@@ -1,6 +1,7 @@
 """Tests for `cap doctor` command including deep checks."""
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -99,6 +100,8 @@ class TestDoctorDeep:
         assert name == "Config file paths"
         assert passed is True
 
+    @pytest.mark.skipif(sys.platform == "win32",
+                        reason="chmod-based unreadability has no Windows equivalent")
     def test_config_file_paths_unreadable(self, tmp_home, monkeypatch):
         cf = tmp_home / ".claude.json"
         cf.write_text("{}")

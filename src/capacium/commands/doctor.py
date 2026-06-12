@@ -241,7 +241,8 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
         _last_probe_results[cap.name] = result
         if not result.responded:
             err = result.error or "no initialize response"
-            if "No such file" in err or "not found" in err.lower():
+            if ("No such file" in err or "not found" in err.lower()
+                    or "cannot find the file" in err):  # [WinError 2]
                 err = f"command '{command}' not found"
             failures.append(f"{cap.name}: {err}")
 

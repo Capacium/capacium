@@ -1,6 +1,7 @@
 """Tests for `cap repair` command."""
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -290,7 +291,7 @@ class TestV4Regressions:
     def test_bridge_entry_never_orphaned(self, tmp_home, mock_registry):
         self._write_cd_config(tmp_home, {
             "capacium-skills": {
-                "command": "/bin/sh",
+                "command": sys.executable,
                 "args": ["-c", "exec cap skills-mcp start --cap-home "
                                + str(tmp_home / ".capacium" / "packages")],
             }
@@ -306,7 +307,7 @@ class TestV4Regressions:
         )
         self._write_cd_config(tmp_home, {
             "not-in-registry": {
-                "command": "/bin/sh",
+                "command": sys.executable,
                 "args": ["-c", "echo", str(tmp_home / ".capacium" / "packages" / "x")],
             }
         })
@@ -319,7 +320,7 @@ class TestV4Regressions:
         )
         self._write_cd_config(tmp_home, {
             "dead-orphan": {
-                "command": "/bin/sh",
+                "command": sys.executable,
                 "args": ["-c", "exit 1", str(tmp_home / ".capacium" / "packages" / "x")],
             }
         })
@@ -337,7 +338,7 @@ class TestV4Regressions:
             '[mcp_servers.neg-no-executable]\n'
             'command = "/nonexistent/binary-12345"\n'
             'args = ["--not-real", "'
-            + str(tmp_home / ".capacium" / "packages" / "gone") + '"]\n'
+            + (tmp_home / ".capacium" / "packages" / "gone").as_posix() + '"]\n'
         )
         stale = _find_stale_entries()
         codex_hits = [s for s in stale if s.framework == "codex"]
@@ -354,7 +355,7 @@ class TestV4Regressions:
             '[mcp_servers.keepme]\ncommand = "/bin/sh"\nargs = []\n'
             '[mcp_servers.neg-no-executable]\n'
             'command = "/nonexistent/binary-12345"\nargs = ["'
-            + str(tmp_home / ".capacium" / "packages" / "gone") + '"]\n'
+            + (tmp_home / ".capacium" / "packages" / "gone").as_posix() + '"]\n'
         )
         stale = [s for s in _find_stale_entries()
                  if s.framework == "codex" and s.server_key == "neg-no-executable"]
@@ -374,7 +375,7 @@ class TestV4Regressions:
         )
         path = self._write_cd_config(tmp_home, {
             "dead-orphan": {
-                "command": "/bin/sh",
+                "command": sys.executable,
                 "args": ["-c", "exit 1", str(tmp_home / ".capacium" / "packages" / "x")],
             }
         })

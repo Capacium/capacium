@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"  # Windows console defaults to cp1252 (charmap crashes on unicode output)
+
 jobs:
   # ═══════════════════════════════════════════
   # Stage 1: Build & Test

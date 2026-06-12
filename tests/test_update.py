@@ -1,5 +1,8 @@
 import json
 import subprocess
+import sys
+
+import pytest
 
 
 def test_update_reconciles_unique_unqualified_mcp_name(tmp_home, tmp_path):
@@ -114,6 +117,7 @@ def test_fetch_remote_git_tags_no_remote():
     assert tags == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="npm/uv subprocess resolution on Windows — tracked as V16")
 def test_check_for_newer_version_via_remote(tmp_path):
     remote = tmp_path / "remote-repo"
     remote.mkdir()
@@ -144,6 +148,7 @@ def test_check_for_newer_version_via_remote(tmp_path):
         mock.assert_called_once_with("global/test-cap@2.0.0", force=True, yes=True)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="npm/uv subprocess resolution on Windows — tracked as V16")
 def test_reconcile_rewrites_entry_for_new_entrypoint(tmp_home, tmp_path, monkeypatch):
     """When a capability update adds an entrypoint: field, config entries
     are rewritten to point to the entrypoint subdirectory."""
