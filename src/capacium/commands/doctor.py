@@ -244,7 +244,16 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
         return ("MCP handshake", True, "no MCP servers to probe")
 
     failures = []
+    blocked_caps = []
     for cap in capabilities:
+        # UP-002: blocked (upstream-broken) capabilities are expected not to
+        # respond — reporting them as probe failures blames the wrong party.
+        from .block_status import get_blocked_frameworks
+        blocked = get_blocked_frameworks(registry, cap)
+        if blocked:
+            reason = next(iter(blocked.values()))
+            blocked_caps.append(f"{cap.name}: blocked upstream — {reason}")
+            continue
         manifest = _load_manifest(cap)
         if manifest is None or not manifest.mcp:
             continue
@@ -263,13 +272,16 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
                 err = f"command '{command}' not found"
             failures.append(f"{cap.name}: {err}")
 
+    blocked_note = ""
+    if blocked_caps:
+        blocked_note = f"; {len(blocked_caps)} blocked (upstream): {'; '.join(blocked_caps[:2])}"
     if failures:
         return (
             "MCP handshake",
             False,
-            f"{len(failures)} probe(s) failed: {'; '.join(failures[:3])}",
+            f"{len(failures)} probe(s) failed: {'; '.join(failures[:3])}" + blocked_note,
         )
-    return ("MCP handshake", True, "all MCP servers respond to probe")
+    return ("MCP handshake", True, "all MCP servers respond to probe" + blocked_note)
 
 
 def _check_mcp_stdout_purity() -> Tuple[str, bool, str]:
