@@ -69,6 +69,17 @@ def install_capability(
     cap_name = spec["skill"]
     version_spec = spec["version"]
 
+    # V13b/STAB-001: 3-part IDs (owner/repo/skill or owner/repo::skill)
+    # install only the sub-skill subtree of a multi-skill repository — never
+    # the full repo copy that broke the owner/name/version layout.
+    sub_skill_repo = None
+    if "::" in cap_name:
+        sub_skill_repo, sub_name = cap_name.split("::", 1)
+        cap_name = sub_name.strip()
+    elif "/" in cap_name:
+        sub_skill_repo, sub_name = cap_name.split("/", 1)
+        cap_name = sub_name.strip().strip("/").split("/")[-1]
+
     # Resolve bare name (no owner prefix) via Exchange search
     # Skip when source/tarball/offline is provided — user brings their own
     if owner in ("", "global", "unknown", "any") and source_dir is None and from_tarball is None and not offline:
@@ -183,20 +194,31 @@ def install_capability(
                 return False
             source_dir, source_url = resolved
     else:
-        # No --source flag: try registry fetch
+        # No --source flag: try registry fetch. For sub-skill installs the
+        # fetchable unit is the repository, not the member skill.
         if offline:
             print("  Offline mode: registry fetch skipped.")
             print("  Use --source to install from a local path.")
             return False
+        fetch_id = f"{owner}/{sub_skill_repo}" if sub_skill_repo else cap_id
+        fetch_name = sub_skill_repo if sub_skill_repo else cap_name
         source_dir, source_url = _fetch_from_registry(
-            cap_id=cap_id,
-            cap_name=cap_name,
+            cap_id=fetch_id,
+            cap_name=fetch_name,
             owner=owner,
             version_spec=version_spec,
             storage=storage,
             github_token=github_token,
             registry_url=registry_url,
         )
+        if source_dir is None and sub_skill_repo:
+            resolved = _resolve_source(
+                f"{owner}/{sub_skill_repo}",
+                version_spec=version_spec,
+                github_token=github_token,
+            )
+            if resolved is not None:
+                source_dir, source_url = resolved
         if source_dir is None:
             # Fallback to current directory
             cwd = Path.cwd()
@@ -207,6 +229,12 @@ def install_capability(
                 print(f"  Capability '{cap_id}' not found.")
                 print("  Use --source to install from a local path.")
                 return False
+
+    if sub_skill_repo:
+        member_dir = _resolve_sub_skill_dir(source_dir, cap_name)
+        if member_dir is None:
+            return False
+        source_dir = member_dir
 
     if version_spec in ["latest", "stable"]:
         version = VersionManager.detect_version(source_dir)
@@ -271,6 +299,23 @@ def install_capability(
     if errors:
         for e in errors:
             print(f"Warning: {e}")
+
+    # V13a/STAB-001 static guard: a kind=skill package without a root
+    # SKILL.md is undiscoverable in skill clients. If it actually contains
+    # nested member skills it is a mis-modeled multi-skill repo — refuse
+    # instead of creating a dead root link.
+    if (manifest.kind or "skill") == "skill" and not (package_dir / "SKILL.md").exists():
+        from ..manifest import infer_multi_skill_members
+        nested = infer_multi_skill_members(package_dir)
+        if nested:
+            print(f"Error: {cap_id} is a multi-skill repository "
+                  f"({len(nested)} member skills) declared as kind=skill.")
+            print("  A root link would be invisible to skill clients.")
+            print("  Model it as kind=bundle, or install a member directly:")
+            for m in nested[:8]:
+                print(f"    cap install {cap_id}/{m['name']}")
+            return False
+        print(f"Warning: {cap_id} has no SKILL.md — skill clients may not discover it.")
 
     # Install runtime dependencies before writing client configuration. A failed
     # dependency install must not leave broken MCP entries behind. Go projects
@@ -534,6 +579,34 @@ def _resolve_source_path(source_raw: str, bundle_dir: Path) -> Path:
     return (bundle_dir / p).resolve()
 
 
+def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
+    """Locate a member skill directory inside a multi-skill repository.
+
+    Used for 3-part IDs (V13b): only the member subtree gets installed.
+    """
+    from ..manifest import infer_multi_skill_members
+
+    members = infer_multi_skill_members(repo_dir)
+    if not members:
+        manifest = Manifest.detect_from_directory(repo_dir)
+        if manifest.kind == "bundle":
+            members = [
+                m for m in manifest.capabilities
+                if isinstance(m, dict) and "name" in m and "source" in m
+            ]
+    for member in members:
+        if member["name"] == sub_skill:
+            member_dir = _resolve_source_path(member["source"], repo_dir)
+            if member_dir.is_dir():
+                return member_dir
+    print(f"  Sub-skill '{sub_skill}' not found in repository.")
+    if members:
+        print(f"  Available skills: {', '.join(m['name'] for m in members)}")
+    else:
+        print("  The repository does not look like a multi-skill repo.")
+    return None
+
+
 def _is_git_remote_url(value: str) -> bool:
     return value.startswith("https://") or value.startswith("git@") or value.startswith("http://")
 
@@ -683,6 +756,16 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
     if not version or version in ("", "latest", "stable"):
         version = "1.0.0"
 
+    # V13/STAB-001: multi-skill repositories become bundles with member
+    # skills instead of a single undiscoverable root skill.
+    members = []
+    if kind in ("skill", "bundle"):
+        from ..manifest import infer_multi_skill_members
+        members = infer_multi_skill_members(repo_dir)
+        if members:
+            kind = "bundle"
+            description = f"Multi-skill bundle {name} ({len(members)} skills)"
+
     yaml_data = {
         "kind": kind,
         "name": name,
@@ -691,6 +774,8 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
         "owner": owner,
         "repository": repo_url,
     }
+    if members:
+        yaml_data["capabilities"] = members
     if tags_list:
         yaml_data["tags"] = tags_list
 
