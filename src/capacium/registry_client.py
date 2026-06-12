@@ -374,6 +374,17 @@ class RegistryClient:
         data = json.dumps(payload).encode("utf-8")
         return self._request(url, method="POST", data=data)
 
+    def submit_status(
+        self,
+        job_id: str,
+        registry_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Poll a queued submission (/v2/submit returns 202 + job_id)."""
+        url = self._build_registry_url(
+            f"/v2/submit/{urllib.parse.quote(job_id, safe='')}", registry_url
+        )
+        return self._request(url)
+
     def publisher_sign(
         self,
         owner: str,
