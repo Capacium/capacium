@@ -261,11 +261,24 @@ class McpConfigPatcher:
         args = list(meta.get("args", [])) if meta.get("args") else []
         env = meta.get("env", {})
 
+        # V10/STAB-004: prefer the binary built from the local package over
+        # any 'go run' form — especially 'go run ...@latest' network fetches.
+        is_go_project = (source_dir / "go.mod").exists() or (package_root / "go.mod").exists()
+        if command == "go" or (not command and is_go_project):
+            binary = McpConfigPatcher._find_go_binary(source_dir, package_root, cap_name)
+            if binary is not None:
+                command = str(binary)
+                args = []
+            elif command == "go" and any("@latest" in str(a) for a in args):
+                # No binary yet (e.g. pre-build path): run the LOCAL package,
+                # never the @latest remote module.
+                args = ["run", "."]
+
         if not command:
             # Auto-detect: look for common entry points. go.mod wins over
             # package.json — Go repos often ship docs tooling manifests, and a
             # Go server configured as npx can never start (V5 regression).
-            if (source_dir / "go.mod").exists() or (package_root / "go.mod").exists():
+            if is_go_project:
                 command = "go"
                 args = ["run", "."]
             elif (source_dir / "package.json").exists():
@@ -303,6 +316,21 @@ class McpConfigPatcher:
             entry["cwd"] = cwd_root
         McpConfigPatcher.validate_entry_runtimes(entry, package_root, resolver=resolver)
         return entry
+
+    @staticmethod
+    def _find_go_binary(source_dir: Path, package_root: Path, cap_name: str) -> Optional[Path]:
+        """Locate the install-time built Go binary (bin/<cap_name>)."""
+        for root in (source_dir, package_root):
+            bin_dir = root / "bin"
+            for candidate in (bin_dir / cap_name, bin_dir / f"{cap_name}.exe"):
+                if candidate.is_file():
+                    return candidate.resolve()
+            if bin_dir.is_dir():
+                executables = [p for p in sorted(bin_dir.iterdir())
+                               if p.is_file() and os.access(p, os.X_OK)]
+                if len(executables) == 1:
+                    return executables[0].resolve()
+        return None
 
     @staticmethod
     def resolve_entrypoint_dir(source_dir: Path) -> Path:
