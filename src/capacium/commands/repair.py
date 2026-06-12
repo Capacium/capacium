@@ -75,14 +75,21 @@ def _entry_is_capacium_managed(
     cap_home: Path,
     all_caps_by_name: set,
 ) -> bool:
+    # Windows configs frequently store forward-slash paths — compare
+    # separator-normalized (cap_home renders with backslashes there).
+    cap_home_s = cap_home.as_posix()
+
+    def _norm(s: str) -> str:
+        return s.replace("\\", "/")
+
     command = entry.get("command", "")
-    if isinstance(command, str) and command.startswith(str(cap_home)):
+    if isinstance(command, str) and _norm(command).startswith(cap_home_s):
         return True
 
     args = entry.get("args", [])
     if isinstance(args, list):
         for arg in args:
-            if isinstance(arg, str) and arg.startswith(str(cap_home)):
+            if isinstance(arg, str) and _norm(arg).startswith(cap_home_s):
                 return True
 
     if server_key in all_caps_by_name:
