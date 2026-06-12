@@ -303,6 +303,14 @@ def main():
     unhold_parser = subparsers.add_parser("unhold", help="Release a hold set with 'cap hold'")
     unhold_parser.add_argument("capability", help="Capability (owner/name)")
 
+    block_parser = subparsers.add_parser("block", help="Mark a capability as blocked by an upstream defect (honest status)")
+    block_parser.add_argument("capability", help="Capability (owner/name)")
+    block_parser.add_argument("--reason", required=True, help="Why the capability cannot work (upstream defect)")
+    block_parser.add_argument("--issue", help="Tracking link (upstream issue/republish)")
+
+    unblock_parser = subparsers.add_parser("unblock", help="Clear a blocked status set with 'cap block'")
+    unblock_parser.add_argument("capability", help="Capability (owner/name)")
+
     submit_tarball_parser = subparsers.add_parser("submit-tarball", help="Upload a capability tarball to the Exchange")
     submit_tarball_parser.add_argument("tarball_path", help="Path to .tar.gz file")
 
@@ -744,6 +752,16 @@ def main():
         elif args.command == "unhold":
             from .commands.hold import unhold_capability
             sys.exit(0 if unhold_capability(args.capability) else 1)
+
+        elif args.command == "block":
+            from .commands.block_status import block_capability
+            ok = block_capability(args.capability, reason=args.reason,
+                                  issue=getattr(args, "issue", None))
+            sys.exit(0 if ok else 1)
+
+        elif args.command == "unblock":
+            from .commands.block_status import unblock_capability
+            sys.exit(0 if unblock_capability(args.capability) else 1)
 
         elif args.command == "submit":
             from .registry_client import RegistryClientError
