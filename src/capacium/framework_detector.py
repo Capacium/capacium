@@ -219,6 +219,12 @@ def create_framework_symlinks(
     trust_state: str = "untrusted",
 ) -> List[str]:
     created: List[str] = []
+    from .models import SKILL_LAYER_KIND_VALUES
+    if kind not in SKILL_LAYER_KIND_VALUES:
+        # Kind-placement contract (V6): mcp-server/bundle/connector-pack never
+        # appear in skills directories (Antigravity regression: MCP servers
+        # were fanned out as skills via --all-frameworks).
+        return created
     from .symlink_manager import SymlinkManager
     sm = SymlinkManager()
     for fw in frameworks:

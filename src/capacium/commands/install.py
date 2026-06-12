@@ -324,7 +324,8 @@ def install_capability(
     _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
-            manifest, owner, package_dir, registry, storage, no_lock, force=force
+            manifest, owner, package_dir, registry, storage, no_lock, force=force,
+            all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
@@ -387,6 +388,7 @@ def _install_bundle_members(
     storage: StorageManager,
     no_lock: bool,
     force: bool = False,
+    all_frameworks: bool = False,
 ) -> List[str]:
     sub_fingerprints = []
     bundle_id = f"{owner}/{manifest.name}@{manifest.version}"
@@ -423,7 +425,7 @@ def _install_bundle_members(
 
         _install_single_sub_cap(
             sub_name, sub_version, source_path, owner, registry, storage, no_lock,
-            force=force,
+            force=force, all_frameworks=all_frameworks,
         )
 
         sub_cap = registry.get_capability(sub_cap_id, sub_version)
@@ -444,6 +446,7 @@ def _install_single_sub_cap(
     storage: StorageManager,
     no_lock: bool,
     force: bool = False,
+    all_frameworks: bool = False,
 ) -> None:
     package_dir = storage.get_package_dir(sub_name, version, owner=owner)
     if package_dir.exists():
@@ -453,6 +456,7 @@ def _install_single_sub_cap(
     sub_manifest = Manifest.detect_from_directory(package_dir)
     sub_frameworks = resolve_frameworks(
         sub_manifest.get_target_frameworks(),
+        all_frameworks=all_frameworks,
         kind=sub_manifest.kind or "skill",
     )
     for fw in sub_frameworks:
@@ -470,7 +474,8 @@ def _install_single_sub_cap(
 
     if sub_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, source_path, registry, storage, no_lock
+            sub_manifest, owner, source_path, registry, storage, no_lock,
+            all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
