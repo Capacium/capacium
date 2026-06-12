@@ -464,12 +464,12 @@ class TestCursorAdapterMcp:
     `mcpServers` JSON map.
     """
 
-    def test_install_writes_global_mcp_when_no_project_dir(self, tmp_path):
+    def test_install_writes_global_mcp_when_no_project_dir(self, tmp_path, monkeypatch):
         from capacium.adapters.cursor import CursorAdapter
 
+        # V7: without an explicit project root the global config is used.
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
         adapter = CursorAdapter()
-        # Force a clean state — neither project nor global cursor dirs exist yet.
-        adapter.project_mcp_path = tmp_path / "no-cwd-project" / ".cursor" / "mcp.json"
         adapter.global_mcp_path = tmp_path / "global" / ".cursor" / "mcp.json"
 
         source = tmp_path / "source"
@@ -488,11 +488,11 @@ class TestCursorAdapterMcp:
         assert "cursor-test" in data["mcpServers"]
         assert data["mcpServers"]["cursor-test"]["command"] == "uvx"
 
-    def test_remove_clears_global_mcp(self, tmp_path):
+    def test_remove_clears_global_mcp(self, tmp_path, monkeypatch):
         from capacium.adapters.cursor import CursorAdapter
 
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
         adapter = CursorAdapter()
-        adapter.project_mcp_path = tmp_path / "ne" / ".cursor" / "mcp.json"
         adapter.global_mcp_path = tmp_path / "global" / ".cursor" / "mcp.json"
         adapter.global_mcp_path.parent.mkdir(parents=True, exist_ok=True)
         adapter.global_mcp_path.write_text(
@@ -503,13 +503,11 @@ class TestCursorAdapterMcp:
         data = json.loads(adapter.global_mcp_path.read_text())
         assert "x" not in data.get("mcpServers", {})
 
-    def test_capability_exists_checks_both_rules_and_mcp(self, tmp_path):
+    def test_capability_exists_checks_both_rules_and_mcp(self, tmp_path, monkeypatch):
         from capacium.adapters.cursor import CursorAdapter
 
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
         adapter = CursorAdapter()
-        adapter.project_rules_dir = tmp_path / "no-rules"
-        adapter.global_rules_dir = tmp_path / "global-rules"
-        adapter.project_mcp_path = tmp_path / "ne" / ".cursor" / "mcp.json"
         adapter.global_mcp_path = tmp_path / "global" / ".cursor" / "mcp.json"
 
         # Neither registered yet

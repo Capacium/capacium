@@ -25,6 +25,11 @@ def main():
     install_parser.add_argument("capability", nargs="?", help="Capability specification (owner/name[@version] or name[@version]). Optional when --from-tarball is used.")
     install_parser.add_argument("--version", help="Specific version to install")
     install_parser.add_argument("--source", help="Source directory (defaults to current directory)")
+    install_parser.add_argument(
+        "--project",
+        help="Project root for project-scoped clients (cursor): writes go to "
+             "<project>/.cursor/ instead of being skipped. Never implicit cwd.",
+    )
     install_parser.add_argument("--no-lock", action="store_true", help="Bypass lock file enforcement")
     install_parser.add_argument(
         "--skip-runtime-check",
@@ -521,6 +526,7 @@ def main():
                 yes=getattr(args, "yes", False),
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
                 registry_url=getattr(args, "registry", None),
+                project=getattr(args, "project", None),
             )
             sys.exit(0 if success else 1)
 
