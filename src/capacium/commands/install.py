@@ -37,7 +37,14 @@ def install_capability(
     yes: bool = False,
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> bool:
+    if project:
+        # V7/STAB-006: explicit project root for project-scoped clients
+        # (cursor). Without it, those adapters never write into cwd.
+        from ..utils.project_scope import set_project_root
+        set_project_root(project)
+
     if skip_runtime_check:
         # Propagate the explicit bypass to the adapter-level runtime gate
         # (McpConfigPatcher.validate_entry_runtimes) and any child processes.

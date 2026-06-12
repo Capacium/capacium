@@ -289,7 +289,7 @@ class TestP0005McpExchangeEndpoints:
             from capacium_mcp.server import ExchangeClient
         except ImportError:
             pytest.skip("capacium_mcp not installed")
-        return ExchangeClient(base_url="https://api.capacium.xyz")
+        return ExchangeClient(exchange_url="https://api.capacium.xyz")
 
     def test_search_uses_v2_search(self, exchange_client):
         _captured = {}
