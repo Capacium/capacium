@@ -27,6 +27,12 @@ class FrameworkAdapter(ABC):
     def install_capability(self, cap_name: str, version: str, source_dir: Path, owner: str = "global", kind: str = "skill") -> bool:
         if kind == "mcp-server":
             return self.install_mcp_server(cap_name, version, source_dir, owner)
+        from ..models import SKILL_LAYER_KIND_VALUES
+        if kind not in SKILL_LAYER_KIND_VALUES:
+            # Kind-placement contract (V6): bundle/connector-pack roots are
+            # containers — their members get placed individually; the root
+            # itself produces no client artifacts.
+            return True
         return self.install_skill(cap_name, version, source_dir, owner)
 
     def remove_capability(self, cap_name: str, owner: str = "global", kind: str = "skill") -> bool:
