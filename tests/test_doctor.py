@@ -132,6 +132,53 @@ class TestDoctorDeep:
         assert passed is False
         assert "node_modules missing" in detail
 
+    def test_dependency_materialization_uvx_needs_no_venv(self, tmp_home, monkeypatch):
+        """V5 regression: uvx-based packages create ephemeral envs — a missing
+        .venv must not be reported as an issue (false positive class)."""
+        caps = [
+            Capability(
+                owner="acme", name="uvx-mcp", version="1.0.0",
+                kind=Kind.MCP_SERVER, install_path=tmp_home / "uvx-mcp",
+            ),
+        ]
+        install = caps[0].install_path
+        install.mkdir(parents=True)
+        (install / "pyproject.toml").write_text("[project]\nname = 'uvx-mcp'\n")
+        (install / "capability.yaml").write_text(
+            "kind: mcp-server\nname: uvx-mcp\nversion: 1.0.0\n"
+            "description: uvx fixture\n"
+            "mcp:\n  command: uvx\n  args: ['uvx-mcp']\n"
+        )
+        monkeypatch.setattr(
+            "capacium.commands.doctor.Registry.list_capabilities",
+            MagicMock(return_value=caps),
+        )
+        name, passed, detail = _check_dependency_materialization()
+        assert passed is True, detail
+
+    def test_dependency_materialization_python_cmd_still_needs_venv(self, tmp_home, monkeypatch):
+        caps = [
+            Capability(
+                owner="acme", name="py-mcp", version="1.0.0",
+                kind=Kind.MCP_SERVER, install_path=tmp_home / "py-mcp",
+            ),
+        ]
+        install = caps[0].install_path
+        install.mkdir(parents=True)
+        (install / "requirements.txt").write_text("requests\n")
+        (install / "capability.yaml").write_text(
+            "kind: mcp-server\nname: py-mcp\nversion: 1.0.0\n"
+            "description: python fixture\n"
+            "mcp:\n  command: python\n  args: ['server.py']\n"
+        )
+        monkeypatch.setattr(
+            "capacium.commands.doctor.Registry.list_capabilities",
+            MagicMock(return_value=caps),
+        )
+        name, passed, detail = _check_dependency_materialization()
+        assert passed is False
+        assert ".venv missing" in detail
+
     def test_dependency_materialization_ok(self, tmp_home, monkeypatch):
         caps = [
             Capability(

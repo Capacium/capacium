@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from ..runtimes import (
     prompt_and_resolve_runtimes,
 )
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
+from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 
@@ -36,6 +38,11 @@ def install_capability(
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
 ) -> bool:
+    if skip_runtime_check:
+        # Propagate the explicit bypass to the adapter-level runtime gate
+        # (McpConfigPatcher.validate_entry_runtimes) and any child processes.
+        os.environ["CAPACIUM_SKIP_RUNTIME_CHECK"] = "1"
+
     # BUG-009: Auto-detect capability name from tarball manifest
     autodetected_name = None
     if from_tarball is not None and (not cap_spec or cap_spec.strip() == ""):
@@ -266,8 +273,14 @@ def install_capability(
             print(f"Warning: {e}")
 
     # Install runtime dependencies before writing client configuration. A failed
-    # dependency install must not leave broken MCP entries behind.
-    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+    # dependency install must not leave broken MCP entries behind. Go projects
+    # are exempt even when a stray package.json (docs tooling) is present —
+    # treating them as node packages is the V5 misclassification.
+    if (
+        manifest.kind == "mcp-server"
+        and _has_package_json(package_dir)
+        and not _is_go_project(package_dir, manifest)
+    ):
         if not _install_npm_dependencies(package_dir, cap_name):
             print(f"Error: npm install failed for {cap_name}. Installation aborted.")
             return False
@@ -284,13 +297,20 @@ def install_capability(
         except ValueError:
             print(f"Warning: Unknown framework adapter '{fw}'. Skipping.")
             continue
-        success = adapter.install_capability(
-            cap_name,
-            version,
-            package_dir,
-            owner=owner,
-            kind=manifest.kind or "skill",
-        )
+        try:
+            success = adapter.install_capability(
+                cap_name,
+                version,
+                package_dir,
+                owner=owner,
+                kind=manifest.kind or "skill",
+            )
+        except RuntimeUnavailableError as exc:
+            # Host-global condition: no client config was written and no other
+            # framework can succeed either. Abort with the install hint.
+            print(f"Error: cannot install {cap_id}@{version} — required runtime unavailable.")
+            print(str(exc))
+            return False
         if success:
             successful_frameworks.append(fw)
         else:
@@ -1298,6 +1318,20 @@ def _has_package_json(package_dir: Path) -> bool:
 
     runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
     return (runtime_dir / "package.json").exists()
+
+
+def _is_go_project(package_dir: Path, manifest: Manifest) -> bool:
+    """True when the package is Go-based (go.mod or declared go runtime).
+
+    A declared node runtime overrides — mixed projects that genuinely ship a
+    node MCP server alongside Go sources still get their npm deps installed.
+    """
+    runtimes = getattr(manifest, "runtimes", None) or {}
+    if "node" in runtimes:
+        return False
+    if "go" in runtimes:
+        return True
+    return (package_dir / "go.mod").exists()
 
 
 def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
