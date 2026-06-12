@@ -330,6 +330,20 @@ def install_capability(
             print(f"Error: npm install failed for {cap_name}. Installation aborted.")
             return False
 
+    # V10/STAB-004: Go MCP servers get built from the local package so the
+    # client config references a binary, never a network-fetching 'go run'.
+    if manifest.kind == "mcp-server" and _is_go_project(package_dir, manifest):
+        build_result = _build_go_binary(package_dir, cap_name, yes=yes)
+        if build_result == "failed":
+            print(f"Error: could not build Go binary for {cap_name}. Installation aborted.")
+            return False
+        if build_result == "no-toolchain" and not (
+            skip_runtime_check
+            or os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1"
+        ):
+            print(f"Error: go toolchain required to build {cap_name}. Installation aborted.")
+            return False
+
     attempted_frameworks: set[str] = set()
     successful_frameworks: List[str] = []
     for fw in resolved_frameworks:
@@ -1422,6 +1436,62 @@ def _is_go_project(package_dir: Path, manifest: Manifest) -> bool:
     if "go" in runtimes:
         return True
     return (package_dir / "go.mod").exists()
+
+
+def _go_build_target(package_dir: Path, cap_name: str) -> Optional[str]:
+    """Resolve the go build target by convention: cmd/<name>, first cmd/*
+    with a main.go, or the package root when it holds a main.go."""
+    cmd_dir = package_dir / "cmd"
+    if (cmd_dir / cap_name / "main.go").exists():
+        return f"./cmd/{cap_name}"
+    if cmd_dir.is_dir():
+        for sub in sorted(cmd_dir.iterdir()):
+            if (sub / "main.go").exists():
+                return f"./cmd/{sub.name}"
+    if (package_dir / "main.go").exists():
+        return "."
+    return None
+
+
+def _build_go_binary(package_dir: Path, cap_name: str, yes: bool = False) -> str:
+    """V10/STAB-004: build the Go MCP server from the LOCAL package so client
+    configs reference a binary instead of 'go run ...@latest' network fetches.
+
+    Returns "built", "no-target", "no-toolchain" or "failed". Never invokes
+    brew under CAPACIUM_SANDBOX; runtime provisioning is the install
+    preflight's job — this step only builds.
+    """
+    target = _go_build_target(package_dir, cap_name)
+    if target is None:
+        print(f"  Warning: no go build target found for {cap_name} "
+              "(no main.go, no cmd/*/main.go) — skipping binary build.")
+        return "no-target"
+
+    if not shutil.which("go"):
+        # The runtime gate normally aborts earlier; defensive double-check.
+        print("  Warning: go toolchain not available — server binary not built.")
+        return "no-toolchain"
+
+    bin_dir = package_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    binary = bin_dir / cap_name
+    print(f"  Building Go binary from local package ({target})...")
+    try:
+        result = subprocess.run(
+            ["go", "build", "-o", str(binary), target],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"  go build failed: {exc}")
+        return "failed"
+    if result.returncode != 0:
+        print(f"  go build failed:\n{result.stderr.strip()[:800]}")
+        return "failed"
+    print(f"  Built {binary.relative_to(package_dir)}")
+    return "built" if binary.exists() else "failed"
 
 
 def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
