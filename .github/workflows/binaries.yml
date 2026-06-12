@@ -65,7 +65,10 @@ jobs:
 
       - name: Install nfpm
         run: |
-          curl -sSfL https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_linux_amd64.tar.gz | tar xz
+          # nfpm assets are versioned (nfpm_<ver>_Linux_x86_64.tar.gz) — resolve via API
+          NFPM_URL=$(curl -sSfL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
+            | jq -r '.assets[] | select(.name | test("Linux_x86_64.tar.gz$")) | .browser_download_url')
+          curl -sSfL "$NFPM_URL" | tar xz
           ./nfpm --version
 
       - name: Build .deb and .rpm
