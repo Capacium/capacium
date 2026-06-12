@@ -721,15 +721,14 @@ def main():
                 sys.exit(1)
 
         elif args.command == "submit":
-            from .registry_client import RegistryClient, RegistryClientError
-            client = RegistryClient()
+            from .registry_client import RegistryClientError
+            from .commands.submit import submit_repository
             try:
-                result = client.submit(args.github_url, registry_url=getattr(args, "registry", None))
-                print(f"Submitted: {result.get('canonical_name', 'unknown')}")
-                print(f"  Kind: {result.get('kind', 'unknown')}")
-                print(f"  Trust: {result.get('trust_state', 'unknown')}")
-                print(f"  URL: https://capacium.xyz/listings/{result.get('canonical_name', '')}")
-                sys.exit(0)
+                ok = submit_repository(
+                    args.github_url,
+                    registry_url=getattr(args, "registry", None),
+                )
+                sys.exit(0 if ok else 1)
             except RegistryClientError as e:
                 msg = str(e)
                 if "409" in msg:
