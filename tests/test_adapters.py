@@ -326,8 +326,10 @@ class TestCursorAdapterSkills:
         adapter = CursorAdapter()
         assert not adapter.capability_exists("nonexistent")
 
-    def test_skills_dir_created(self, tmp_home, sample_capability_dir):
-        skills_dir = Path.cwd() / ".cursor" / "skills"
+    def test_skills_dir_created(self, tmp_home, project_root, sample_capability_dir):
+        # V7/STAB-006: the skills dir lives under the explicit project root,
+        # never the implicit cwd.
+        skills_dir = project_root / ".cursor" / "skills"
         adapter = CursorAdapter()
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
         assert skills_dir.exists()
