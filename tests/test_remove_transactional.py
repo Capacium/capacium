@@ -57,9 +57,11 @@ def installed_mcp(tmp_home):
         "name: tx-mcp\nversion: 1.0.0\nkind: mcp-server\ndescription: t\n"
         "mcp:\n  command: python3\n  args: ['srv.py']\n"
     )
-    config_path = (tmp_home / "Library" / "Application Support" / "Claude"
-                   / "claude_desktop_config.json")
-    config_path.parent.mkdir(parents=True)
+    # Resolve the platform-correct config path the adapter actually uses
+    # (macOS: ~/Library/Application Support/Claude; Linux: ~/.config/Claude).
+    from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
+    config_path = ClaudeDesktopAdapter._resolve_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(
         {"mcpServers": {"tx-mcp": {"command": "python3", "args": ["srv.py"]},
                         "other-server": {"command": "x"}}}
