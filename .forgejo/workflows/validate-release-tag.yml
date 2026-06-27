@@ -5,12 +5,13 @@ on:
     tags:
       - "v*.*.*"
 
+# GITHUB_REF_NAME is set by Forgejo Actions (GitHub-Actions-compatible env).
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: https://github.com/actions/checkout@v4
+      - uses: https://github.com/actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Validate pyproject.toml version matches tag

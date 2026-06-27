@@ -1,11 +1,15 @@
 # Capacium
 
-[![CI](https://github.com/Capacium/capacium/actions/workflows/ci.yml/badge.svg)](https://github.com/Capacium/capacium/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/Capacium/capacium/actions/workflows/codeql.yml/badge.svg)](https://github.com/Capacium/capacium/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/Capacium/capacium?display_name=tag)](https://github.com/Capacium/capacium/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](./pyproject.toml)
 [![Tests](https://img.shields.io/badge/tests-320%20passing-green.svg)](./tests/)
+
+> [!NOTE]
+> **Public mirror.** The canonical repository is hosted on our self-hosted git.
+> This GitHub copy is a read-only mirror kept in sync for visibility and
+> installation. Bug reports are welcome via Issues; pull requests are applied
+> upstream and synced back here.
 
 Capability-native packaging for the AI agent era.
 

@@ -1,0 +1,16 @@
+name: Build Admin CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Linux-only on the self-hosted Forgejo runner. Cross-platform admin builds
+# (macOS/Windows) are produced by the release pipeline (binaries.yml).
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+      - name: Admin CLI build (placeholder)
+        run: echo "Admin CLI build"

@@ -9,6 +9,9 @@ on:
 env:
   PYTHONUTF8: "1"  # Windows console defaults to cp1252 (charmap crashes on unicode output)
 
+# Forgejo Actions: fully-qualified action URLs (instance DEFAULT_ACTIONS_URL
+# is code.forgejo.org); runs-on ubuntu-latest → catthehacker act image.
+# capacium-models is pulled from its public GitHub mirror (no auth needed).
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,9 +21,9 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: https://github.com/actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: https://github.com/actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies

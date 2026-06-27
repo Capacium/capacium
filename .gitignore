@@ -32,3 +32,6 @@ perplexity.log
 
 # AI codebase-analysis cache
 .understand-anything/
+
+# Agent session state (path-keyed, not for VCS)
+.opencode/

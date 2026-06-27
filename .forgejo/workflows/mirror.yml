@@ -1,0 +1,23 @@
+name: Mirror to GitHub
+
+# Forgejo is canonical; GitHub (Capacium/capacium) is the public read-only
+# mirror. Force-push all branches + tags so GitHub tracks Forgejo.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push to GitHub mirror
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          remote="https://x-access-token:${GH_MIRROR_TOKEN}@github.com/Capacium/capacium.git"
+          git push --force --prune "$remote" '+refs/heads/*:refs/heads/*'
+          git push --force "$remote" '+refs/tags/*:refs/tags/*'
