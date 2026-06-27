@@ -1,0 +1,92 @@
+name: Build Standalone Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    # Hybrid mirror: this GitHub-only release pipeline is skipped on the
+    # self-hosted Forgejo (no macOS/Windows runners). Runs on GitHub only.
+    if: ${{ github.server_url == 'https://github.com' }}
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install git+https://github.com/Capacium/capacium-models.git
+          pip install .[signing,yaml]
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --name cap --onefile src/capacium/cli.py
+
+      - name: Rename and prepare artifacts (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mv dist/cap dist/cap-${{ runner.os }}-${{ runner.arch }}
+          tar -czvf cap-${{ runner.os }}-${{ runner.arch }}.tar.gz -C dist cap-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Rename and prepare artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          Rename-Item -Path "dist\cap.exe" -NewName "cap-${{ runner.os }}-${{ runner.arch }}.exe"
+          Compress-Archive -Path "dist\cap-${{ runner.os }}-${{ runner.arch }}.exe" -DestinationPath "cap-${{ runner.os }}-${{ runner.arch }}.zip"
+
+      - name: Release Packages
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cap-*.tar.gz
+            cap-*.zip
+
+  nfpm:
+    name: Build .deb/.rpm packages (nfpm)
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download PyInstaller binary
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+
+      - name: Install nfpm
+        run: |
+          # nfpm assets are versioned (nfpm_<ver>_Linux_x86_64.tar.gz) — resolve via API
+          NFPM_URL=$(curl -sSfL https://api.github.com/repos/goreleaser/nfpm/releases/latest \
+            | jq -r '.assets[] | select(.name | test("Linux_x86_64.tar.gz$")) | .browser_download_url')
+          curl -sSfL "$NFPM_URL" | tar xz
+          ./nfpm --version
+
+      - name: Build .deb and .rpm
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          cp dist-cap-Linux-X64/cap dist/capacium 2>/dev/null || cp cap-Linux-X64/cap dist/capacium 2>/dev/null || true
+          chmod +x dist/capacium
+          ./nfpm package --target "release/${VERSION}" --packager deb
+          ./nfpm package --target "release/${VERSION}" --packager rpm
+
+      - name: Upload .deb and .rpm
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*/capacium_*.deb
+            release/*/capacium_*.rpm
