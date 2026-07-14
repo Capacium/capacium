@@ -130,6 +130,6 @@ def _print_adapter_statuses(cap, registry) -> None:
         else:
             symbol = STATUS_SYMBOLS.get(s.status, "?")
             detail = s.status
-            if s.last_error and s.status == "error":
+            if s.last_error and s.status in ("error", "blocked"):
                 detail += f": {s.last_error}"
         print(f"      {fw:<18} {symbol} {detail}")

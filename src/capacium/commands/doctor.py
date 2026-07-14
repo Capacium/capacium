@@ -12,6 +12,8 @@ all green → True (exit 0), anything missing → False (exit 1).
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -192,7 +194,7 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
         requirements = Path(install_path) / "requirements.txt"
         pyproject = Path(install_path) / "pyproject.toml"
         has_python_dep = uv_lock.exists() or requirements.exists() or pyproject.exists()
-        if has_python_dep:
+        if has_python_dep and not _uses_ephemeral_python_env(cap, pyproject):
             venv = Path(install_path) / ".venv"
             if not venv.exists():
                 issues.append(f"{cap.name}: python deps declared but .venv missing")
@@ -207,17 +209,80 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
     return ("Dependency materialization", True, "MCP server dependencies look ok")
 
 
+def _uses_ephemeral_python_env(cap: Capability, pyproject: Path) -> bool:
+    """True when the server runs via uvx/pipx — those create their own
+    isolated environments per invocation, so a missing ``.venv`` in the
+    package directory is expected, not an issue (V5 false-positive class).
+    """
+    manifest = _load_manifest(cap)
+    command = ""
+    if manifest is not None and isinstance(getattr(manifest, "mcp", None), dict):
+        command = (manifest.mcp.get("command") or "").strip()
+    base = command.split("/")[-1].split()[0] if command else ""
+    if base in ("uvx", "pipx", "uv"):
+        return True
+    # No explicit command + pyproject present → entry auto-detection picks
+    # uvx, which is equally venv-less.
+    return not command and pyproject.exists()
+
+
 _last_probe_results: dict = {}
+
+
+_CREDENTIAL_KEY_RE = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|COOKIE|CREDENTIAL|API_?KEY|PRIVATE_?KEY|AUTH)",
+    re.IGNORECASE,
+)
+
+
+def _missing_credentials(manifest) -> List[str]:
+    """Return declared secret env vars that are not resolvable in the current
+    environment. A server that needs a token to even start (e.g. korotovsky
+    Slack) cannot answer the handshake without it — that is "needs
+    credentials", not "broken" (extends UP-002 honesty to auth)."""
+    mcp = getattr(manifest, "mcp", None) or {}
+    env = mcp.get("env") if isinstance(mcp.get("env"), dict) else {}
+    missing: List[str] = []
+    for key, val in env.items():
+        if not _CREDENTIAL_KEY_RE.search(str(key)):
+            continue
+        if os.environ.get(str(key)):
+            continue  # resolvable from the environment
+        v = str(val or "")
+        if v and not v.startswith("$") and "${" not in v:
+            continue  # a literal value is present in the manifest
+        missing.append(str(key))
+    return missing
+
+
+def _probe_command_for(cap, manifest):
+    """Return the (command, args, env) the client actually runs — the built
+    binary / local package from the config builder, not the raw manifest
+    command (which would hit PyPI/@latest and time out). Falls back to the
+    raw manifest if the entry cannot be built."""
+    try:
+        from ..adapters.mcp_config_patcher import McpConfigPatcher
+        entry = McpConfigPatcher.build_mcp_entry(
+            cap.name, cap.install_path, manifest.get_mcp_metadata()
+        )
+        if entry and entry.get("command"):
+            env = entry.get("env") if isinstance(entry.get("env"), dict) else None
+            return entry["command"], list(entry.get("args") or []), env
+    except Exception:
+        pass
+    env = manifest.mcp.get("env") if isinstance(manifest.mcp.get("env"), dict) else None
+    return manifest.mcp.get("command", ""), list(manifest.mcp.get("args") or []), env
 
 
 def _check_mcp_handshake() -> Tuple[str, bool, str]:
     """Real MCP initialize handshake per installed mcp-server.
 
-    The previous implementation only ran ``command --help`` and checked the
-    exit code — exactly the diagnostic gap from the 2026-06-09 audit: a
-    server can "run" without being able to speak MCP. Probes execute with
-    ``cwd`` set to the installed package (FIX-002 semantics). Results are
-    cached for the purity check to avoid double-spawning servers.
+    Probes the **installed artifact** (built binary / local package via the
+    config builder), not the raw manifest command — otherwise a uvx/go server
+    is probed against PyPI/@latest and cold-starts past the timeout, showing a
+    false failure while the client runs fine. Blocked (upstream) and
+    credential-gated servers are classified separately, never as "failed".
+    Results are cached for the purity check to avoid double-spawning servers.
     """
     _last_probe_results.clear()
     registry = Registry()
@@ -227,32 +292,52 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
         return ("MCP handshake", True, "no MCP servers to probe")
 
     failures = []
+    blocked_caps = []
+    needs_creds = []
     for cap in capabilities:
+        # UP-002: blocked (upstream-broken) capabilities are expected not to
+        # respond — reporting them as probe failures blames the wrong party.
+        from .block_status import get_blocked_frameworks
+        blocked = get_blocked_frameworks(registry, cap)
+        if blocked:
+            reason = next(iter(blocked.values()))
+            blocked_caps.append(f"{cap.name}: blocked upstream — {reason}")
+            continue
         manifest = _load_manifest(cap)
         if manifest is None or not manifest.mcp:
             continue
-        command = manifest.mcp.get("command", "")
+        command, args, env = _probe_command_for(cap, manifest)
         if not command:
             continue
-        args = manifest.mcp.get("args") or []
-        env = manifest.mcp.get("env") if isinstance(manifest.mcp.get("env"), dict) else None
         cwd = str(cap.install_path) if getattr(cap, "install_path", None) else None
-        result = probe_mcp(command, args, env=env, cwd=cwd, timeout=10)
+        # 30s: uvx/go first-run can be slow; the previous 10s produced false
+        # failures for cold-starting servers that the real client runs fine.
+        result = probe_mcp(command, args, env=env, cwd=cwd, timeout=30)
         _last_probe_results[cap.name] = result
         if not result.responded:
+            # Credential-gated servers (need a token to start) are not broken.
+            missing = _missing_credentials(manifest)
+            if missing:
+                needs_creds.append(f"{cap.name}: needs credentials ({', '.join(missing)})")
+                continue
             err = result.error or "no initialize response"
             if ("No such file" in err or "not found" in err.lower()
                     or "cannot find the file" in err):  # [WinError 2]
                 err = f"command '{command}' not found"
             failures.append(f"{cap.name}: {err}")
 
+    notes = ""
+    if blocked_caps:
+        notes += f"; {len(blocked_caps)} blocked (upstream): {'; '.join(blocked_caps[:2])}"
+    if needs_creds:
+        notes += f"; {len(needs_creds)} need credentials: {'; '.join(needs_creds[:2])}"
     if failures:
         return (
             "MCP handshake",
             False,
-            f"{len(failures)} probe(s) failed: {'; '.join(failures[:3])}",
+            f"{len(failures)} probe(s) failed: {'; '.join(failures[:3])}" + notes,
         )
-    return ("MCP handshake", True, "all MCP servers respond to probe")
+    return ("MCP handshake", True, "all reachable MCP servers respond to probe" + notes)
 
 
 def _check_mcp_stdout_purity() -> Tuple[str, bool, str]:

@@ -25,6 +25,11 @@ def main():
     install_parser.add_argument("capability", nargs="?", help="Capability specification (owner/name[@version] or name[@version]). Optional when --from-tarball is used.")
     install_parser.add_argument("--version", help="Specific version to install")
     install_parser.add_argument("--source", help="Source directory (defaults to current directory)")
+    install_parser.add_argument(
+        "--project",
+        help="Project root for project-scoped clients (cursor): writes go to "
+             "<project>/.cursor/ instead of being skipped. Never implicit cwd.",
+    )
     install_parser.add_argument("--no-lock", action="store_true", help="Bypass lock file enforcement")
     install_parser.add_argument(
         "--skip-runtime-check",
@@ -290,6 +295,22 @@ def main():
     submit_parser.add_argument("github_url", help="GitHub repository URL (https://github.com/owner/repo)")
     submit_parser.add_argument("--registry", help="Target registry URL (defaults to configured Exchange)")
 
+    hold_parser = subparsers.add_parser("hold", help="Protect a locally patched capability from update overwrites")
+    hold_parser.add_argument("capability", nargs="?", help="Capability (owner/name); omit with --list")
+    hold_parser.add_argument("--reason", help="Why the package is held (e.g. pending upstream PR)")
+    hold_parser.add_argument("--list", action="store_true", help="List all holds")
+
+    unhold_parser = subparsers.add_parser("unhold", help="Release a hold set with 'cap hold'")
+    unhold_parser.add_argument("capability", help="Capability (owner/name)")
+
+    block_parser = subparsers.add_parser("block", help="Mark a capability as blocked by an upstream defect (honest status)")
+    block_parser.add_argument("capability", help="Capability (owner/name)")
+    block_parser.add_argument("--reason", required=True, help="Why the capability cannot work (upstream defect)")
+    block_parser.add_argument("--issue", help="Tracking link (upstream issue/republish)")
+
+    unblock_parser = subparsers.add_parser("unblock", help="Clear a blocked status set with 'cap block'")
+    unblock_parser.add_argument("capability", help="Capability (owner/name)")
+
     submit_tarball_parser = subparsers.add_parser("submit-tarball", help="Upload a capability tarball to the Exchange")
     submit_tarball_parser.add_argument("tarball_path", help="Path to .tar.gz file")
 
@@ -513,6 +534,7 @@ def main():
                 yes=getattr(args, "yes", False),
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
                 registry_url=getattr(args, "registry", None),
+                project=getattr(args, "project", None),
             )
             sys.exit(0 if success else 1)
 
@@ -720,16 +742,36 @@ def main():
                 config_parser.print_help()
                 sys.exit(1)
 
+        elif args.command == "hold":
+            from .commands.hold import hold_capability, list_holds
+            if getattr(args, "list", False) or not args.capability:
+                sys.exit(0 if list_holds() else 1)
+            ok = hold_capability(args.capability, reason=getattr(args, "reason", None))
+            sys.exit(0 if ok else 1)
+
+        elif args.command == "unhold":
+            from .commands.hold import unhold_capability
+            sys.exit(0 if unhold_capability(args.capability) else 1)
+
+        elif args.command == "block":
+            from .commands.block_status import block_capability
+            ok = block_capability(args.capability, reason=args.reason,
+                                  issue=getattr(args, "issue", None))
+            sys.exit(0 if ok else 1)
+
+        elif args.command == "unblock":
+            from .commands.block_status import unblock_capability
+            sys.exit(0 if unblock_capability(args.capability) else 1)
+
         elif args.command == "submit":
-            from .registry_client import RegistryClient, RegistryClientError
-            client = RegistryClient()
+            from .registry_client import RegistryClientError
+            from .commands.submit import submit_repository
             try:
-                result = client.submit(args.github_url, registry_url=getattr(args, "registry", None))
-                print(f"Submitted: {result.get('canonical_name', 'unknown')}")
-                print(f"  Kind: {result.get('kind', 'unknown')}")
-                print(f"  Trust: {result.get('trust_state', 'unknown')}")
-                print(f"  URL: https://capacium.xyz/listings/{result.get('canonical_name', '')}")
-                sys.exit(0)
+                ok = submit_repository(
+                    args.github_url,
+                    registry_url=getattr(args, "registry", None),
+                )
+                sys.exit(0 if ok else 1)
             except RegistryClientError as e:
                 msg = str(e)
                 if "409" in msg:

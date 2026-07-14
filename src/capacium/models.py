@@ -46,6 +46,22 @@ class Kind(Enum):
     RESOURCE = "resource"
 
 
+# Kind-placement contract (V6): only these kinds may materialize as links in
+# client skills directories. mcp-server lives in client MCP configs; bundle
+# and connector-pack roots are containers whose members are placed
+# individually.
+SKILL_LAYER_KINDS = frozenset({
+    Kind.SKILL,
+    Kind.PROMPT,
+    Kind.TEMPLATE,
+    Kind.WORKFLOW,
+    Kind.TOOL,
+    Kind.RESOURCE,
+})
+
+SKILL_LAYER_KIND_VALUES = frozenset(k.value for k in SKILL_LAYER_KINDS)
+
+
 
 @dataclass
 class Capability:

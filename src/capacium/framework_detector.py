@@ -9,11 +9,15 @@ def framework_skills_dirs() -> Dict[str, Path]:
     Must stay a function: import-time resolution freezes the real home and
     silently ignores sandbox HOME overrides (V3, 2026-06-11).
     """
-    return {
+    # V7/STAB-006: never resolve project-scope clients against Path.cwd() —
+    # cursor appears only with an explicit project root; opencode discovers
+    # globally under the user home.
+    from .utils.project_scope import get_project_root
+
+    dirs = {
         "claude-code": Path.home() / ".claude" / "skills",
-        "cursor": Path.cwd() / ".cursor" / "skills",
         "gemini-cli": Path.home() / ".gemini" / "skills",
-        "opencode": Path.cwd() / ".opencode" / "skills",
+        "opencode": Path.home() / ".opencode" / "skills",
         "openclaw": Path.home() / ".openclaw" / "skills",
         "continue-dev": Path.home() / ".continue" / "skills",
         "antigravity": Path.home() / ".gemini" / "config" / "skills",
@@ -23,6 +27,10 @@ def framework_skills_dirs() -> Dict[str, Path]:
         "copilot": Path.home() / ".config" / "github-copilot" / "skills",
         "qwen": Path.home() / ".qwen" / "skills",
     }
+    project_root = get_project_root()
+    if project_root is not None:
+        dirs["cursor"] = project_root / ".cursor" / "skills"
+    return dirs
 
 
 # Backward-compatible snapshot (import-time HOME). Prefer the function above.
@@ -219,10 +227,22 @@ def create_framework_symlinks(
     trust_state: str = "untrusted",
 ) -> List[str]:
     created: List[str] = []
+    from .models import SKILL_LAYER_KIND_VALUES
+    if kind not in SKILL_LAYER_KIND_VALUES:
+        # Kind-placement contract (V6): mcp-server/bundle/connector-pack never
+        # appear in skills directories (Antigravity regression: MCP servers
+        # were fanned out as skills via --all-frameworks).
+        return created
     from .symlink_manager import SymlinkManager
     sm = SymlinkManager()
     for fw in frameworks:
         skills_dir = FRAMEWORK_SKILLS_DIRS.get(fw)
+        if skills_dir is None and fw == "cursor":
+            # Project-scope client: links only with an explicit project root.
+            from .utils.project_scope import get_project_root
+            project_root = get_project_root()
+            if project_root is not None:
+                skills_dir = project_root / ".cursor" / "skills"
         if skills_dir is None:
             continue
         skills_dir.mkdir(parents=True, exist_ok=True)

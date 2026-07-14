@@ -3,6 +3,16 @@ import tempfile
 from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def _skip_runtime_gate(monkeypatch):
+    """Keep the suite host-independent: the adapter-level runtime gate
+    (STAB-003) would otherwise make fixture installs depend on which
+    runtimes the CI runner happens to ship. Gate-specific tests in
+    test_runtime_gate.py re-enable it explicitly.
+    """
+    monkeypatch.setenv("CAPACIUM_SKIP_RUNTIME_CHECK", "1")
+
+
 @pytest.fixture
 def tmp_home(monkeypatch):
     with tempfile.TemporaryDirectory() as td:

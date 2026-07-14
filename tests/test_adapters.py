@@ -1,4 +1,7 @@
 from pathlib import Path
+
+import pytest
+
 from capacium.adapters.claude_code import ClaudeCodeAdapter
 from capacium.adapters.claude_desktop import _path_in_sandbox_denied
 from capacium.adapters.gemini_cli import GeminiCLIAdapter
@@ -277,14 +280,35 @@ class TestCopilotAdapter:
 
 
 class TestCursorAdapterSkills:
+    """V7/STAB-006: cursor skills are project-scoped — links require an
+    explicit project root, never implicit Path.cwd()."""
 
-    def test_install_capability(self, tmp_home, sample_capability_dir):
+    @pytest.fixture
+    def project_root(self, tmp_path, monkeypatch):
+        project = tmp_path / "the-project"
+        project.mkdir()
+        monkeypatch.setenv("CAPACIUM_PROJECT_ROOT", str(project))
+        return project
+
+    def test_install_capability(self, tmp_home, project_root, sample_capability_dir):
         adapter = CursorAdapter()
         result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
         assert result is True
         assert adapter.capability_exists("test-cap")
+        assert (project_root / ".cursor" / "skills" / "test-cap").is_symlink()
 
-    def test_remove_capability(self, tmp_home, sample_capability_dir):
+    def test_install_without_project_creates_no_cwd_files(
+        self, tmp_home, sample_capability_dir, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+        workdir = tmp_path / "random-cwd"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        adapter = CursorAdapter()
+        assert adapter.install_capability("test-cap", "1.0.0", sample_capability_dir) is True
+        assert not (workdir / ".cursor").exists()
+
+    def test_remove_capability(self, tmp_home, project_root, sample_capability_dir):
         adapter = CursorAdapter()
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
         assert adapter.capability_exists("test-cap")
@@ -302,8 +326,10 @@ class TestCursorAdapterSkills:
         adapter = CursorAdapter()
         assert not adapter.capability_exists("nonexistent")
 
-    def test_skills_dir_created(self, tmp_home, sample_capability_dir):
-        skills_dir = Path.cwd() / ".cursor" / "skills"
+    def test_skills_dir_created(self, tmp_home, project_root, sample_capability_dir):
+        # V7/STAB-006: the skills dir lives under the explicit project root,
+        # never the implicit cwd.
+        skills_dir = project_root / ".cursor" / "skills"
         adapter = CursorAdapter()
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
         assert skills_dir.exists()

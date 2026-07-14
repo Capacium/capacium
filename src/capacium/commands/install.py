@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from ..runtimes import (
     prompt_and_resolve_runtimes,
 )
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
+from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 
@@ -35,7 +37,19 @@ def install_capability(
     yes: bool = False,
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> bool:
+    if project:
+        # V7/STAB-006: explicit project root for project-scoped clients
+        # (cursor). Without it, those adapters never write into cwd.
+        from ..utils.project_scope import set_project_root
+        set_project_root(project)
+
+    if skip_runtime_check:
+        # Propagate the explicit bypass to the adapter-level runtime gate
+        # (McpConfigPatcher.validate_entry_runtimes) and any child processes.
+        os.environ["CAPACIUM_SKIP_RUNTIME_CHECK"] = "1"
+
     # BUG-009: Auto-detect capability name from tarball manifest
     autodetected_name = None
     if from_tarball is not None and (not cap_spec or cap_spec.strip() == ""):
@@ -61,6 +75,17 @@ def install_capability(
     owner = spec["owner"]
     cap_name = spec["skill"]
     version_spec = spec["version"]
+
+    # V13b/STAB-001: 3-part IDs (owner/repo/skill or owner/repo::skill)
+    # install only the sub-skill subtree of a multi-skill repository — never
+    # the full repo copy that broke the owner/name/version layout.
+    sub_skill_repo = None
+    if "::" in cap_name:
+        sub_skill_repo, sub_name = cap_name.split("::", 1)
+        cap_name = sub_name.strip()
+    elif "/" in cap_name:
+        sub_skill_repo, sub_name = cap_name.split("/", 1)
+        cap_name = sub_name.strip().strip("/").split("/")[-1]
 
     # Resolve bare name (no owner prefix) via Exchange search
     # Skip when source/tarball/offline is provided — user brings their own
@@ -176,20 +201,31 @@ def install_capability(
                 return False
             source_dir, source_url = resolved
     else:
-        # No --source flag: try registry fetch
+        # No --source flag: try registry fetch. For sub-skill installs the
+        # fetchable unit is the repository, not the member skill.
         if offline:
             print("  Offline mode: registry fetch skipped.")
             print("  Use --source to install from a local path.")
             return False
+        fetch_id = f"{owner}/{sub_skill_repo}" if sub_skill_repo else cap_id
+        fetch_name = sub_skill_repo if sub_skill_repo else cap_name
         source_dir, source_url = _fetch_from_registry(
-            cap_id=cap_id,
-            cap_name=cap_name,
+            cap_id=fetch_id,
+            cap_name=fetch_name,
             owner=owner,
             version_spec=version_spec,
             storage=storage,
             github_token=github_token,
             registry_url=registry_url,
         )
+        if source_dir is None and sub_skill_repo:
+            resolved = _resolve_source(
+                f"{owner}/{sub_skill_repo}",
+                version_spec=version_spec,
+                github_token=github_token,
+            )
+            if resolved is not None:
+                source_dir, source_url = resolved
         if source_dir is None:
             # Fallback to current directory
             cwd = Path.cwd()
@@ -200,6 +236,12 @@ def install_capability(
                 print(f"  Capability '{cap_id}' not found.")
                 print("  Use --source to install from a local path.")
                 return False
+
+    if sub_skill_repo:
+        member_dir = _resolve_sub_skill_dir(source_dir, cap_name)
+        if member_dir is None:
+            return False
+        source_dir = member_dir
 
     if version_spec in ["latest", "stable"]:
         version = VersionManager.detect_version(source_dir)
@@ -265,11 +307,54 @@ def install_capability(
         for e in errors:
             print(f"Warning: {e}")
 
+    # V11/STAB-007: warn when declared env vars never appear in the server
+    # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
+    # SLACK_MCP_XOXP_TOKEN) yields silently non-functional servers.
+    if manifest.kind == "mcp-server":
+        _warn_unknown_env_vars(package_dir, manifest)
+
+    # V13a/STAB-001 static guard: a kind=skill package without a root
+    # SKILL.md is undiscoverable in skill clients. If it actually contains
+    # nested member skills it is a mis-modeled multi-skill repo — refuse
+    # instead of creating a dead root link.
+    if (manifest.kind or "skill") == "skill" and not (package_dir / "SKILL.md").exists():
+        from ..manifest import infer_multi_skill_members
+        nested = infer_multi_skill_members(package_dir)
+        if nested:
+            print(f"Error: {cap_id} is a multi-skill repository "
+                  f"({len(nested)} member skills) declared as kind=skill.")
+            print("  A root link would be invisible to skill clients.")
+            print("  Model it as kind=bundle, or install a member directly:")
+            for m in nested[:8]:
+                print(f"    cap install {cap_id}/{m['name']}")
+            return False
+        print(f"Warning: {cap_id} has no SKILL.md — skill clients may not discover it.")
+
     # Install runtime dependencies before writing client configuration. A failed
-    # dependency install must not leave broken MCP entries behind.
-    if manifest.kind == "mcp-server" and _has_package_json(package_dir):
+    # dependency install must not leave broken MCP entries behind. Go projects
+    # are exempt even when a stray package.json (docs tooling) is present —
+    # treating them as node packages is the V5 misclassification.
+    if (
+        manifest.kind == "mcp-server"
+        and _has_package_json(package_dir)
+        and not _is_go_project(package_dir, manifest)
+    ):
         if not _install_npm_dependencies(package_dir, cap_name):
             print(f"Error: npm install failed for {cap_name}. Installation aborted.")
+            return False
+
+    # V10/STAB-004: Go MCP servers get built from the local package so the
+    # client config references a binary, never a network-fetching 'go run'.
+    if manifest.kind == "mcp-server" and _is_go_project(package_dir, manifest):
+        build_result = _build_go_binary(package_dir, cap_name, yes=yes)
+        if build_result == "failed":
+            print(f"Error: could not build Go binary for {cap_name}. Installation aborted.")
+            return False
+        if build_result == "no-toolchain" and not (
+            skip_runtime_check
+            or os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1"
+        ):
+            print(f"Error: go toolchain required to build {cap_name}. Installation aborted.")
             return False
 
     attempted_frameworks: set[str] = set()
@@ -284,13 +369,20 @@ def install_capability(
         except ValueError:
             print(f"Warning: Unknown framework adapter '{fw}'. Skipping.")
             continue
-        success = adapter.install_capability(
-            cap_name,
-            version,
-            package_dir,
-            owner=owner,
-            kind=manifest.kind or "skill",
-        )
+        try:
+            success = adapter.install_capability(
+                cap_name,
+                version,
+                package_dir,
+                owner=owner,
+                kind=manifest.kind or "skill",
+            )
+        except RuntimeUnavailableError as exc:
+            # Host-global condition: no client config was written and no other
+            # framework can succeed either. Abort with the install hint.
+            print(f"Error: cannot install {cap_id}@{version} — required runtime unavailable.")
+            print(str(exc))
+            return False
         if success:
             successful_frameworks.append(fw)
         else:
@@ -304,7 +396,8 @@ def install_capability(
     _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
-            manifest, owner, package_dir, registry, storage, no_lock, force=force
+            manifest, owner, package_dir, registry, storage, no_lock, force=force,
+            all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_fingerprints)
     else:
@@ -333,6 +426,7 @@ def install_capability(
 
     if not registry.add_capability(cap):
         registry.update_capability(cap)
+    _record_install_status(registry, cap_id, version, resolved_frameworks)
 
     if all_frameworks:
         kind_str = cap.kind.value
@@ -367,6 +461,7 @@ def _install_bundle_members(
     storage: StorageManager,
     no_lock: bool,
     force: bool = False,
+    all_frameworks: bool = False,
 ) -> List[str]:
     sub_fingerprints = []
     bundle_id = f"{owner}/{manifest.name}@{manifest.version}"
@@ -403,7 +498,7 @@ def _install_bundle_members(
 
         _install_single_sub_cap(
             sub_name, sub_version, source_path, owner, registry, storage, no_lock,
-            force=force,
+            force=force, all_frameworks=all_frameworks,
         )
 
         sub_cap = registry.get_capability(sub_cap_id, sub_version)
@@ -424,6 +519,7 @@ def _install_single_sub_cap(
     storage: StorageManager,
     no_lock: bool,
     force: bool = False,
+    all_frameworks: bool = False,
 ) -> None:
     package_dir = storage.get_package_dir(sub_name, version, owner=owner)
     if package_dir.exists():
@@ -433,6 +529,7 @@ def _install_single_sub_cap(
     sub_manifest = Manifest.detect_from_directory(package_dir)
     sub_frameworks = resolve_frameworks(
         sub_manifest.get_target_frameworks(),
+        all_frameworks=all_frameworks,
         kind=sub_manifest.kind or "skill",
     )
     for fw in sub_frameworks:
@@ -450,7 +547,8 @@ def _install_single_sub_cap(
 
     if sub_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, source_path, registry, storage, no_lock
+            sub_manifest, owner, source_path, registry, storage, no_lock,
+            all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
@@ -477,6 +575,7 @@ def _install_single_sub_cap(
 
     if not registry.add_capability(capacity):
         registry.update_capability(capacity)
+    _record_install_status(registry, f"{owner}/{sub_name}", version, sub_frameworks)
     StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
 
@@ -502,11 +601,59 @@ def _remove_superseded_versions(
             shutil.rmtree(existing.install_path, ignore_errors=True)
 
 
+def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:
+    """Record adapter_status='installed' per framework at install time so
+    ``cap list --details`` reflects reality (previously only a one-time
+    migration backfill set it -> fresh installs showed '○ not installed'
+    although links existed). Never clobbers a 'blocked' status (UP-002): an
+    upstream-broken adapter stays blocked across reinstalls."""
+    try:
+        existing = registry.get_adapter_statuses(cap_id, version)
+    except Exception:
+        existing = {}
+    for fw in frameworks or []:
+        cur = existing.get(fw)
+        if cur is not None and cur.status == "blocked":
+            continue
+        try:
+            registry.set_adapter_status(cap_id, version, fw, "installed")
+        except Exception:
+            pass
+
+
 def _resolve_source_path(source_raw: str, bundle_dir: Path) -> Path:
     p = Path(source_raw)
     if p.is_absolute():
         return p
     return (bundle_dir / p).resolve()
+
+
+def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
+    """Locate a member skill directory inside a multi-skill repository.
+
+    Used for 3-part IDs (V13b): only the member subtree gets installed.
+    """
+    from ..manifest import infer_multi_skill_members
+
+    members = infer_multi_skill_members(repo_dir)
+    if not members:
+        manifest = Manifest.detect_from_directory(repo_dir)
+        if manifest.kind == "bundle":
+            members = [
+                m for m in manifest.capabilities
+                if isinstance(m, dict) and "name" in m and "source" in m
+            ]
+    for member in members:
+        if member["name"] == sub_skill:
+            member_dir = _resolve_source_path(member["source"], repo_dir)
+            if member_dir.is_dir():
+                return member_dir
+    print(f"  Sub-skill '{sub_skill}' not found in repository.")
+    if members:
+        print(f"  Available skills: {', '.join(m['name'] for m in members)}")
+    else:
+        print("  The repository does not look like a multi-skill repo.")
+    return None
 
 
 def _is_git_remote_url(value: str) -> bool:
@@ -658,6 +805,16 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
     if not version or version in ("", "latest", "stable"):
         version = "1.0.0"
 
+    # V13/STAB-001: multi-skill repositories become bundles with member
+    # skills instead of a single undiscoverable root skill.
+    members = []
+    if kind in ("skill", "bundle"):
+        from ..manifest import infer_multi_skill_members
+        members = infer_multi_skill_members(repo_dir)
+        if members:
+            kind = "bundle"
+            description = f"Multi-skill bundle {name} ({len(members)} skills)"
+
     yaml_data = {
         "kind": kind,
         "name": name,
@@ -666,6 +823,8 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
         "owner": owner,
         "repository": repo_url,
     }
+    if members:
+        yaml_data["capabilities"] = members
     if tags_list:
         yaml_data["tags"] = tags_list
 
@@ -1298,6 +1457,117 @@ def _has_package_json(package_dir: Path) -> bool:
 
     runtime_dir = McpConfigPatcher.resolve_entrypoint_dir(package_dir)
     return (runtime_dir / "package.json").exists()
+
+
+def _is_go_project(package_dir: Path, manifest: Manifest) -> bool:
+    """True when the package is Go-based (go.mod or declared go runtime).
+
+    A declared node runtime overrides — mixed projects that genuinely ship a
+    node MCP server alongside Go sources still get their npm deps installed.
+    """
+    runtimes = getattr(manifest, "runtimes", None) or {}
+    if "node" in runtimes:
+        return False
+    if "go" in runtimes:
+        return True
+    return (package_dir / "go.mod").exists()
+
+
+_ENV_SCAN_SUFFIXES = {".go", ".py", ".js", ".ts", ".mjs", ".cjs", ".rs", ".sh",
+                      ".md", ".json", ".yaml", ".yml", ".toml", ".env.example"}
+
+
+def _warn_unknown_env_vars(package_dir: Path, manifest: Manifest) -> None:
+    """Warn for manifest mcp.env vars that never occur in the package source.
+
+    Heuristic guard for the korotovsky class: a declared env var the server
+    does not read means the credential mapping is wrong and the server will
+    start unauthenticated or not at all.
+    """
+    mcp = getattr(manifest, "mcp", None) or {}
+    declared = list((mcp.get("env") or {}).keys())
+    if not declared:
+        return
+
+    unknown = set(declared)
+    scanned = 0
+    for path in package_dir.rglob("*"):
+        if not unknown or scanned > 2000:
+            break
+        if not path.is_file() or path.suffix not in _ENV_SCAN_SUFFIXES:
+            continue
+        if any(part in ("node_modules", ".git", "vendor", "dist")
+               for part in path.parts):
+            continue
+        if path.name == "capability.yaml":
+            continue
+        scanned += 1
+        try:
+            content = path.read_text(errors="replace")
+        except OSError:
+            continue
+        unknown = {var for var in unknown if var not in content}
+
+    for var in sorted(unknown):
+        print(f"  Warning: declared env var '{var}' does not appear anywhere "
+              f"in the package source — the server may not know it. "
+              f"Check the upstream docs for the correct variable name.")
+
+
+def _go_build_target(package_dir: Path, cap_name: str) -> Optional[str]:
+    """Resolve the go build target by convention: cmd/<name>, first cmd/*
+    with a main.go, or the package root when it holds a main.go."""
+    cmd_dir = package_dir / "cmd"
+    if (cmd_dir / cap_name / "main.go").exists():
+        return f"./cmd/{cap_name}"
+    if cmd_dir.is_dir():
+        for sub in sorted(cmd_dir.iterdir()):
+            if (sub / "main.go").exists():
+                return f"./cmd/{sub.name}"
+    if (package_dir / "main.go").exists():
+        return "."
+    return None
+
+
+def _build_go_binary(package_dir: Path, cap_name: str, yes: bool = False) -> str:
+    """V10/STAB-004: build the Go MCP server from the LOCAL package so client
+    configs reference a binary instead of 'go run ...@latest' network fetches.
+
+    Returns "built", "no-target", "no-toolchain" or "failed". Never invokes
+    brew under CAPACIUM_SANDBOX; runtime provisioning is the install
+    preflight's job — this step only builds.
+    """
+    target = _go_build_target(package_dir, cap_name)
+    if target is None:
+        print(f"  Warning: no go build target found for {cap_name} "
+              "(no main.go, no cmd/*/main.go) — skipping binary build.")
+        return "no-target"
+
+    if not shutil.which("go"):
+        # The runtime gate normally aborts earlier; defensive double-check.
+        print("  Warning: go toolchain not available — server binary not built.")
+        return "no-toolchain"
+
+    bin_dir = package_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    binary = bin_dir / cap_name
+    print(f"  Building Go binary from local package ({target})...")
+    try:
+        result = subprocess.run(
+            ["go", "build", "-o", str(binary), target],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"  go build failed: {exc}")
+        return "failed"
+    if result.returncode != 0:
+        print(f"  go build failed:\n{result.stderr.strip()[:800]}")
+        return "failed"
+    print(f"  Built {binary.relative_to(package_dir)}")
+    return "built" if binary.exists() else "failed"
 
 
 def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:

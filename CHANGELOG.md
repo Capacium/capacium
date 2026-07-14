@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.15.0 — Install semantics & honest status (2026-07-14)
+
+Second wave of the 2026-06-11 multi-client stabilization (V5–V14 + upstream
+backlog), hardened by an attended 8-client walkthrough (VER-002).
+
+### Added
+- **V13 (STAB-001):** multi-skill repositories (`skills/*/SKILL.md`, plugin
+  layouts, ≥2 sibling `SKILL.md` dirs) are modeled as bundles with member
+  skills; each member gets a direct discoverable link; 3-part IDs install
+  only the member subtree; a static guard refuses `kind: skill` roots without
+  a `SKILL.md` when nested members exist.
+- **V10 (STAB-004):** Go MCP servers are built from the local package at
+  install (`bin/<name>`, `cmd/` entrypoint); configs reference the binary and
+  `go run …@latest` is rewritten to the local build.
+- **V8 (UP-001):** `cap hold` / `cap unhold` protect locally patched packages
+  from update overwrites.
+- **UP-002:** `cap block` / `cap unblock` mark upstream-broken capabilities;
+  `cap list --details` and `cap doctor` distinguish *blocked (upstream)* from
+  *broken (capacium)*.
+- `cap install --project <path>` for explicit project-scoped client writes.
+- PyPI distribution (`pip install capacium`).
+
+### Fixed
+- **V5 (STAB-003):** adapters validate `manifest.runtimes` before any client
+  config write — an unmet runtime aborts with an install hint and writes
+  nothing; Go projects are never configured as `npx`/`node`; `doctor --deep`
+  no longer flags a missing `.venv` for uvx/pipx packages.
+- **V6 (STAB-005):** only skill-layer kinds create skills-dir links —
+  mcp-servers and bundle roots never do (Antigravity fan-out fix).
+- **V14 (STAB-002):** `cap remove` is transactional with a rollback journal;
+  the registry row is removed only after all adapter steps succeed; missing
+  client dirs are skipped, never a crash.
+- **V12 (STAB-008):** `cap submit` parses the queue-based Exchange response
+  (job polling); unknown schemas show the raw response with a warning.
+- **V7 (STAB-006):** cursor writes only with an explicit project root, never
+  the implicit cwd; opencode discovery is global.
+- **V11+ (STAB-007):** manifest `mcp.env` blocks are materialized into client
+  configs with `${VAR}` indirection; secret-looking literals are redacted.
+- **PyYAML** is now a core dependency — without it, `Manifest.load` degraded to
+  a naive parser that corrupted bundle capabilities, crashing bundle install
+  in clean environments.
+- `cap install` records `adapter_status` at install time, so `cap list
+  --details` no longer shows freshly installed capabilities as *not installed*.
+- `cap doctor --deep` probes the actual installed MCP artifact (built binary /
+  local package) instead of the raw manifest command, and classifies
+  servers that need a secret env var to start as *needs credentials* rather
+  than *failed*.
+
+### Notes
+- Upstream Perplexity logging fix tracked as an external PR (held locally via
+  `cap hold`). `karldane/slack-mcp` and `elementeer/elementeer-mcp` are blocked
+  upstream (unbuildable / unpublished dependencies).
+- Follow-up work captured in PRDs: version resolution & update semantics,
+  package-store dedup/GC, install hygiene (repair/doctor).
+
 ## Capacium v0.14.3 — Hotfix: bridge loop, repair safety, sandbox guard (2026-06-11)
 
 Emergency hotfix for the P0 defects found in the 2026-06-11 multi-client

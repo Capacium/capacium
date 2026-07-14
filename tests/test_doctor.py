@@ -133,6 +133,53 @@ class TestDoctorDeep:
         assert passed is False
         assert "node_modules missing" in detail
 
+    def test_dependency_materialization_uvx_needs_no_venv(self, tmp_home, monkeypatch):
+        """V5 regression: uvx-based packages create ephemeral envs — a missing
+        .venv must not be reported as an issue (false positive class)."""
+        caps = [
+            Capability(
+                owner="acme", name="uvx-mcp", version="1.0.0",
+                kind=Kind.MCP_SERVER, install_path=tmp_home / "uvx-mcp",
+            ),
+        ]
+        install = caps[0].install_path
+        install.mkdir(parents=True)
+        (install / "pyproject.toml").write_text("[project]\nname = 'uvx-mcp'\n")
+        (install / "capability.yaml").write_text(
+            "kind: mcp-server\nname: uvx-mcp\nversion: 1.0.0\n"
+            "description: uvx fixture\n"
+            "mcp:\n  command: uvx\n  args: ['uvx-mcp']\n"
+        )
+        monkeypatch.setattr(
+            "capacium.commands.doctor.Registry.list_capabilities",
+            MagicMock(return_value=caps),
+        )
+        name, passed, detail = _check_dependency_materialization()
+        assert passed is True, detail
+
+    def test_dependency_materialization_python_cmd_still_needs_venv(self, tmp_home, monkeypatch):
+        caps = [
+            Capability(
+                owner="acme", name="py-mcp", version="1.0.0",
+                kind=Kind.MCP_SERVER, install_path=tmp_home / "py-mcp",
+            ),
+        ]
+        install = caps[0].install_path
+        install.mkdir(parents=True)
+        (install / "requirements.txt").write_text("requests\n")
+        (install / "capability.yaml").write_text(
+            "kind: mcp-server\nname: py-mcp\nversion: 1.0.0\n"
+            "description: python fixture\n"
+            "mcp:\n  command: python\n  args: ['server.py']\n"
+        )
+        monkeypatch.setattr(
+            "capacium.commands.doctor.Registry.list_capabilities",
+            MagicMock(return_value=caps),
+        )
+        name, passed, detail = _check_dependency_materialization()
+        assert passed is False
+        assert ".venv missing" in detail
+
     def test_dependency_materialization_ok(self, tmp_home, monkeypatch):
         caps = [
             Capability(
@@ -218,6 +265,50 @@ mcp:
             name, passed, detail = _check_mcp_handshake()
             assert passed is False
             assert "timed out" in detail
+
+    def test_mcp_handshake_credential_gated_not_failure(self, tmp_home, monkeypatch):
+        """A server that needs a secret env var to start (korotovsky class) is
+        'needs credentials', not a probe failure."""
+        monkeypatch.delenv("SLACK_MCP_XOXP_TOKEN", raising=False)
+        caps = [
+            Capability(
+                owner="korotovsky", name="slack-mcp-server", version="1.2.3",
+                kind=Kind.MCP_SERVER, install_path=tmp_home / "slack-mcp-server",
+            ),
+        ]
+        inst = caps[0].install_path
+        inst.mkdir(parents=True)
+        (inst / "capability.yaml").write_text(
+            "kind: mcp-server\nname: slack-mcp-server\nversion: 1.2.3\n"
+            "mcp:\n  transport: stdio\n  command: /nonexistent/slack-mcp-server\n"
+            "  env:\n    SLACK_MCP_XOXP_TOKEN: '${SLACK_MCP_XOXP_TOKEN}'\n"
+        )
+        monkeypatch.setattr(
+            "capacium.commands.doctor.Registry.list_capabilities",
+            MagicMock(return_value=caps),
+        )
+        from capacium.utils.mcp_probe import McpProbeResult
+        with patch(
+            "capacium.commands.doctor.probe_mcp",
+            return_value=McpProbeResult(responded=False, error="no initialize response"),
+        ):
+            name, passed, detail = _check_mcp_handshake()
+        assert passed is True, detail
+        assert "needs credentials" in detail
+        assert "SLACK_MCP_XOXP_TOKEN" in detail
+
+    def test_missing_credentials_helper(self, monkeypatch):
+        from capacium.commands.doctor import _missing_credentials
+
+        class M:
+            mcp = {"env": {"SLACK_MCP_XOXP_TOKEN": "${SLACK_MCP_XOXP_TOKEN}",
+                           "LOG_LEVEL": "debug"}}
+        monkeypatch.delenv("SLACK_MCP_XOXP_TOKEN", raising=False)
+        missing = _missing_credentials(M())
+        assert missing == ["SLACK_MCP_XOXP_TOKEN"]  # secret + unset; LOG_LEVEL ignored
+
+        monkeypatch.setenv("SLACK_MCP_XOXP_TOKEN", "xoxp-123")
+        assert _missing_credentials(M()) == []  # now resolvable
 
     # ---- Stale/duplicate keys ----
 
