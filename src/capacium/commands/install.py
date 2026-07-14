@@ -426,6 +426,7 @@ def install_capability(
 
     if not registry.add_capability(cap):
         registry.update_capability(cap)
+    _record_install_status(registry, cap_id, version, resolved_frameworks)
 
     if all_frameworks:
         kind_str = cap.kind.value
@@ -574,6 +575,7 @@ def _install_single_sub_cap(
 
     if not registry.add_capability(capacity):
         registry.update_capability(capacity)
+    _record_install_status(registry, f"{owner}/{sub_name}", version, sub_frameworks)
     StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
 
@@ -597,6 +599,26 @@ def _remove_superseded_versions(
         registry.remove_capability(cap_id, existing.version)
         if existing.install_path and existing.install_path.exists():
             shutil.rmtree(existing.install_path, ignore_errors=True)
+
+
+def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:
+    """Record adapter_status='installed' per framework at install time so
+    ``cap list --details`` reflects reality (previously only a one-time
+    migration backfill set it -> fresh installs showed '○ not installed'
+    although links existed). Never clobbers a 'blocked' status (UP-002): an
+    upstream-broken adapter stays blocked across reinstalls."""
+    try:
+        existing = registry.get_adapter_statuses(cap_id, version)
+    except Exception:
+        existing = {}
+    for fw in frameworks or []:
+        cur = existing.get(fw)
+        if cur is not None and cur.status == "blocked":
+            continue
+        try:
+            registry.set_adapter_status(cap_id, version, fw, "installed")
+        except Exception:
+            pass
 
 
 def _resolve_source_path(source_raw: str, bundle_dir: Path) -> Path:
