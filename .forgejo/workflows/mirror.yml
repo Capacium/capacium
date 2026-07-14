@@ -1,7 +1,7 @@
 name: Mirror to GitHub
 
 # Forgejo is canonical; GitHub (Capacium/capacium) is the public read-only
-# mirror. Force-push all branches + tags so GitHub tracks Forgejo.
+# mirror. Force-push the ref that triggered each run so GitHub tracks Forgejo.
 on:
   push:
     branches: ["**"]
@@ -19,5 +19,10 @@ jobs:
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
         run: |
           remote="https://x-access-token:${GH_MIRROR_TOKEN}@github.com/Capacium/capacium.git"
-          git push --force --prune "$remote" '+refs/heads/*:refs/heads/*'
-          git push --force "$remote" '+refs/tags/*:refs/tags/*'
+          # Mirror exactly the ref that triggered this run (branch or tag). No --prune
+          # and no 'refs/heads/*' wildcard: the CI checkout only has this one ref
+          # locally, so a pruning wildcard push would try to delete every OTHER branch
+          # on the mirror — including GitHub's default 'main' (which GitHub refuses,
+          # failing the job) and any GitHub-managed branch such as gh-pages. Pushing
+          # only ${GITHUB_REF} keeps the mirror in sync and leaves those untouched.
+          git push --force "$remote" "+${GITHUB_REF}:${GITHUB_REF}"
