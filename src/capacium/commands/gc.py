@@ -168,19 +168,46 @@ def _plan_entries(
         if ref in caps_by_ref:
             protected[ref] = "explicit keep"
 
+    physical_owners = []
+    for owner_ref, owner_cap in caps_by_ref.items():
+        if not owner_cap.install_path:
+            continue
+        owner_path = Path(owner_cap.install_path)
+        if owner_path.is_symlink() or not owner_path.is_dir():
+            continue
+        try:
+            physical_owners.append((owner_ref, owner_path.resolve()))
+        except (OSError, RuntimeError):
+            continue
+
     queue = deque(protected)
     visited = set(protected)
     while queue:
         ref = queue.popleft()
         cap = caps_by_ref.get(ref)
-        if cap is None or cap.kind != Kind.BUNDLE:
+        if cap is None:
             continue
-        for member_ref in registry.get_bundle_members(ref):
-            if member_ref not in caps_by_ref or member_ref in visited:
-                continue
-            visited.add(member_ref)
-            protected[member_ref] = f"member of retained bundle {ref}"
-            queue.append(member_ref)
+        if cap.kind == Kind.BUNDLE:
+            for member_ref in registry.get_bundle_members(ref):
+                if member_ref not in caps_by_ref or member_ref in visited:
+                    continue
+                visited.add(member_ref)
+                protected[member_ref] = f"member of retained bundle {ref}"
+                queue.append(member_ref)
+
+        if cap.install_path:
+            try:
+                target = Path(cap.install_path).resolve()
+            except (OSError, RuntimeError):
+                target = None
+            if target is not None:
+                for owner_ref, owner_path in physical_owners:
+                    if owner_ref == ref or owner_ref in visited:
+                        continue
+                    if owner_path in target.parents:
+                        visited.add(owner_ref)
+                        protected[owner_ref] = f"physical owner of retained {ref}"
+                        queue.append(owner_ref)
 
     candidates = []
     for cap in capabilities:

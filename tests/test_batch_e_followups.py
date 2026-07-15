@@ -242,6 +242,20 @@ def test_repository_identity_detects_redirected_canonical_owner():
     )
 
 
+def test_manifest_relocation_rejects_unsafe_canonical_identity(capsys):
+    from capacium.commands.install import _canonical_identity
+    from capacium.manifest import Manifest
+
+    manifest = Manifest(
+        kind="skill",
+        name="widget",
+        moved_to="../../outside-store",
+    )
+
+    assert _canonical_identity(manifest, "oldco/widget", None) == "oldco/widget"
+    assert "unsafe canonical identity" in capsys.readouterr().out
+
+
 def test_bundle_install_warns_deterministically_on_duplicate_frontmatter_names(
     tmp_home, tmp_path, capsys
 ):

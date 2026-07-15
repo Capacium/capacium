@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -135,6 +136,36 @@ def test_gc_preserves_configured_pins_and_members_of_retained_bundles(tmp_home):
     assert report.protected["acme/pinned@1.0.0"] == "pinned"
     assert report.protected["acme/member@1.0.0"].startswith(
         "member of retained bundle"
+    )
+
+
+def test_gc_preserves_bundle_that_physically_owns_a_retained_member(tmp_home):
+    from capacium.commands.gc import garbage_collect
+
+    registry = Registry()
+    old_bundle = _add_capability(
+        tmp_home, registry, "1.0.0", name="bundle", kind=Kind.BUNDLE
+    )
+    new_bundle = _add_capability(
+        tmp_home, registry, "2.0.0", name="bundle", kind=Kind.BUNDLE
+    )
+    member = _add_capability(tmp_home, registry, "1.0.0", name="member")
+
+    member_payload = old_bundle.install_path / "skills" / "member"
+    member_payload.mkdir(parents=True)
+    (member_payload / "SKILL.md").write_text("# Member\n")
+    shutil.rmtree(member.install_path)
+    member.install_path.symlink_to(member_payload, target_is_directory=True)
+    registry.update_capability(member)
+    registry.add_bundle_member(
+        f"acme/bundle@{new_bundle.version}", f"acme/member@{member.version}"
+    )
+
+    report = garbage_collect(keep=1, dry_run=True)
+    refs = {entry.ref for entry in report.entries}
+    assert f"acme/bundle@{old_bundle.version}" not in refs
+    assert report.protected[f"acme/bundle@{old_bundle.version}"].startswith(
+        "physical owner of retained"
     )
 
 

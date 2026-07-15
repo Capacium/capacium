@@ -24,6 +24,7 @@ from ..framework_detector import resolve_frameworks, create_framework_symlinks, 
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
+_CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SOURCE_PROVENANCE_FILE = ".capacium-source.json"
 
 
@@ -751,7 +752,16 @@ def _repository_identity(repository: Optional[str]) -> Optional[str]:
     if len(parts) < 2:
         return None
     owner, name = parts[-2], parts[-1]
-    if not owner or not name:
+    return _safe_canonical_identity(f"{owner}/{name}")
+
+
+def _safe_canonical_identity(value: str) -> Optional[str]:
+    """Return a normalized owner/name that cannot escape package storage."""
+    parts = [part.strip() for part in value.split("/")]
+    if len(parts) != 2:
+        return None
+    owner, name = parts
+    if not all(_CANONICAL_ID_COMPONENT_RE.fullmatch(part) for part in (owner, name)):
         return None
     return f"{owner}/{name}"
 
@@ -762,12 +772,17 @@ def _canonical_identity(
     source_url: Optional[str],
 ) -> str:
     moved_to = (manifest.moved_to or "").strip()
-    if "/" in moved_to:
-        return moved_to
+    if moved_to:
+        canonical_moved_to = _safe_canonical_identity(moved_to)
+        if canonical_moved_to is not None:
+            return canonical_moved_to
+        print(f"Warning: ignoring unsafe canonical identity '{moved_to}'.")
 
     declared_id = None
     if manifest.owner and manifest.name:
-        declared_id = f"{manifest.owner}/{manifest.name}"
+        declared_id = _safe_canonical_identity(
+            f"{manifest.owner}/{manifest.name}"
+        )
     if declared_id and requested_id in (manifest.replaces or []):
         return declared_id
 
