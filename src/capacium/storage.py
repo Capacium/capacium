@@ -126,6 +126,9 @@ class StorageManager:
             "fingerprint": cap.fingerprint,
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else "",
             "frameworks": framework_list,
+            "source_url": cap.source_url or "",
+            "source_ref": cap.source_ref or "",
+            "source_commit": cap.source_commit or "",
         }
         meta_path.write_text(json.dumps(data, indent=2) + "\n")
 

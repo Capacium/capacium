@@ -76,6 +76,8 @@ class Capability:
     framework: Optional[str] = None
     frameworks: Optional[List[str]] = None
     source_url: Optional[str] = None
+    source_ref: Optional[str] = None
+    source_commit: Optional[str] = None
 
     @property
     def id(self) -> str:
@@ -91,6 +93,8 @@ class Capability:
         data["framework"] = self.framework or ""
         data["frameworks"] = _json.dumps(self.frameworks) if self.frameworks else "[]"
         data["source_url"] = self.source_url or ""
+        data["source_ref"] = self.source_ref or ""
+        data["source_commit"] = self.source_commit or ""
         return data
 
     @classmethod
@@ -126,6 +130,9 @@ class Capability:
                 filtered["frameworks"] = _json.loads(filtered["frameworks"])
             except (_json.JSONDecodeError, TypeError):
                 filtered["frameworks"] = None
+        for provenance_field in ("source_url", "source_ref", "source_commit"):
+            if provenance_field in filtered and not filtered[provenance_field]:
+                filtered[provenance_field] = None
         return cls(**filtered)
 
 

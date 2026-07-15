@@ -1,8 +1,10 @@
 import os
+import json as _json
 import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -22,6 +24,54 @@ from ..framework_detector import resolve_frameworks, create_framework_symlinks, 
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
+_SOURCE_PROVENANCE_FILE = ".capacium-source.json"
+
+
+@dataclass(frozen=True)
+class SourceProvenance:
+    source_url: str
+    source_ref: str
+    source_commit: str
+    version: str
+
+
+@dataclass(frozen=True)
+class RemoteTag:
+    tag: str
+    version: str
+    source_ref: str
+    source_commit: str
+
+
+def _write_source_provenance(repo_dir: Path, provenance: SourceProvenance) -> None:
+    (repo_dir / _SOURCE_PROVENANCE_FILE).write_text(
+        _json.dumps(
+            {
+                "source_url": provenance.source_url,
+                "source_ref": provenance.source_ref,
+                "source_commit": provenance.source_commit,
+                "version": provenance.version,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _read_source_provenance(repo_dir: Path) -> Optional[SourceProvenance]:
+    path = repo_dir / _SOURCE_PROVENANCE_FILE
+    if not path.exists():
+        return None
+    try:
+        data = _json.loads(path.read_text())
+        return SourceProvenance(
+            source_url=str(data["source_url"]),
+            source_ref=str(data["source_ref"]),
+            source_commit=str(data["source_commit"]),
+            version=str(data["version"]),
+        )
+    except (KeyError, TypeError, ValueError, _json.JSONDecodeError, OSError):
+        return None
 
 
 def install_capability(
@@ -111,7 +161,11 @@ def install_capability(
 
     # ── Conflict detection ─────────────────────────────────────────
     conflict = check_conflict(cap_name, owner, version_spec)
-    if conflict.state != ConflictState.NO_CONFLICT:
+    defer_latest_conflict = version_spec in ("latest", "stable") and conflict.state in (
+        ConflictState.ALREADY_INSTALLED,
+        ConflictState.VERSION_MISMATCH,
+    )
+    if conflict.state != ConflictState.NO_CONFLICT and not defer_latest_conflict:
         if conflict.state == ConflictState.ALREADY_INSTALLED:
             if framework and not _is_framework_already(cap_name, owner, version_spec, framework):
                 _append_framework(cap_name, owner, version_spec, framework)
@@ -188,6 +242,7 @@ def install_capability(
 
     # ── Resolve source ─────────────────────────────────────────────
     source_url = None
+    source_provenance = None
     if from_tarball is not None:
         resolved = _install_from_tarball(from_tarball, storage, cap_name, owner)
         if resolved is None:
@@ -237,6 +292,8 @@ def install_capability(
                 print("  Use --source to install from a local path.")
                 return False
 
+    source_provenance = _read_source_provenance(Path(source_dir))
+
     if sub_skill_repo:
         member_dir = _resolve_sub_skill_dir(source_dir, cap_name)
         if member_dir is None:
@@ -244,12 +301,51 @@ def install_capability(
         source_dir = member_dir
 
     if version_spec in ["latest", "stable"]:
-        version = VersionManager.detect_version(source_dir)
+        version = (
+            source_provenance.version
+            if source_provenance is not None
+            else VersionManager.detect_version(source_dir)
+        )
     else:
         version = version_spec
 
+    current = registry.get_capability(cap_id)
+    if (
+        version_spec in ("latest", "stable")
+        and current is not None
+        and current.version != version
+    ):
+        current_key = VersionManager.semver_key(current.version)
+        resolved_key = VersionManager.semver_key(version)
+        if current_key is not None and resolved_key is not None and resolved_key <= current_key:
+            print(
+                f"No newer version found for {cap_id}: "
+                f"installed {current.version}, resolved {version}."
+            )
+            return True
+
+        print(f"Update available: {cap_id} {current.version} → {version}")
+        if force or yes:
+            print("  Replacing installed version (--yes/--force).")
+        elif not _is_interactive():
+            print(
+                "  Non-interactive session: replacement skipped. "
+                "Re-run with --yes or --force."
+            )
+            return True
+        elif not PromptHandler.ask(
+            f"Replace {cap_id} {current.version} → {version}?",
+            default=False,
+        ):
+            print("  Installation skipped.")
+            return True
+        force = True
+
     existing = registry.get_capability(cap_id, version)
     if existing and not (force or yes):
+        if framework and not _is_framework_already(cap_name, owner, version, framework):
+            _append_framework(cap_name, owner, version, framework)
+            return True
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
@@ -422,6 +518,8 @@ def install_capability(
         framework=first_fw,
         frameworks=list(resolved_frameworks),
         source_url=source_url,
+        source_ref=(source_provenance.source_ref if source_provenance else None),
+        source_commit=(source_provenance.source_commit if source_provenance else None),
     )
 
     if not registry.add_capability(cap):
@@ -657,7 +755,7 @@ def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
 
 
 def _is_git_remote_url(value: str) -> bool:
-    return value.startswith("https://") or value.startswith("git@") or value.startswith("http://")
+    return value.startswith(("https://", "http://", "git@", "file://"))
 
 
 def _resolve_source(
@@ -678,6 +776,85 @@ def _resolve_source(
     return None
 
 
+def _fetch_remote_tag_refs(repo_url: str) -> List[RemoteTag]:
+    """Resolve SemVer tag refs, preferring peeled annotated-tag commits."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", repo_url],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return []
+
+    refs: dict[str, dict[str, str]] = {}
+    for line in result.stdout.splitlines():
+        try:
+            commit, source_ref = line.split("\t", 1)
+        except ValueError:
+            continue
+        if not source_ref.startswith("refs/tags/"):
+            continue
+        peeled = source_ref.endswith("^{}")
+        base_ref = source_ref[:-3] if peeled else source_ref
+        record = refs.setdefault(base_ref, {})
+        record["peeled" if peeled else "object"] = commit
+
+    tags: List[RemoteTag] = []
+    for source_ref, commits in refs.items():
+        tag = source_ref.removeprefix("refs/tags/")
+        version = VersionManager.normalize_semver(tag)
+        if VersionManager.semver_key(version) is None:
+            continue
+        source_commit = commits.get("peeled") or commits.get("object")
+        if source_commit:
+            tags.append(
+                RemoteTag(
+                    tag=tag,
+                    version=version,
+                    source_ref=source_ref,
+                    source_commit=source_commit,
+                )
+            )
+    return tags
+
+
+def _select_remote_tag(
+    tags: List[RemoteTag],
+    version_filter: Optional[str],
+) -> Optional[RemoteTag]:
+    if version_filter:
+        requested = VersionManager.normalize_semver(version_filter)
+        return next((tag for tag in tags if tag.version == requested), None)
+
+    stable = [tag for tag in tags if VersionManager.is_stable_semver(tag.version)]
+    if not stable:
+        return None
+    return max(
+        stable,
+        key=lambda tag: (VersionManager.semver_key(tag.version), tag.tag),
+    )
+
+
+def _git_output(repo_dir: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return ""
+    return result.stdout.strip()
+
+
 def _clone_remote_source(
     source_str: str,
     version_filter: Optional[str] = None,
@@ -695,14 +872,19 @@ def _clone_remote_source(
     clone_url = url
     if github_token and "github.com" in url:
         clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
-    clone_args = ["git", "clone", "--depth=1"]
-    if version_filter:
-        tag = version_filter if version_filter.startswith("v") else f"v{version_filter}"
-        clone_args.extend(["--branch", tag])
-    clone_args.extend([clone_url, str(tmp_dir / "repo")])
+
+    tags = _fetch_remote_tag_refs(clone_url)
+    selected_tag = _select_remote_tag(tags, version_filter)
+
+    clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
 
     display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
-    print(f"  Cloning {display_url}" + (f" (tag: {version_filter})" if version_filter else "") + "...")
+    selected_label = selected_tag.tag if selected_tag else version_filter
+    print(
+        f"  Cloning {display_url}"
+        + (f" (tag: {selected_label})" if selected_label else "")
+        + "..."
+    )
     try:
         result = subprocess.run(
             clone_args,
@@ -718,9 +900,68 @@ def _clone_remote_source(
         return None
 
     repo_dir = tmp_dir / "repo"
-    manifest = Manifest.detect_from_directory(repo_dir)
-    if not manifest.name or manifest.name == repo_dir.name and manifest.version == "1.0.0":
-        _auto_generate_manifest(repo_dir, url)
+    if not tags:
+        # A transient ls-remote failure must not make us label default-branch
+        # bytes as tagless after a successful full clone.
+        tags = _fetch_remote_tag_refs(str(repo_dir))
+        selected_tag = _select_remote_tag(tags, version_filter)
+    if version_filter and selected_tag is None:
+        print(f"  Version {version_filter} not found in remote tags.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if selected_tag is not None:
+        checkout = subprocess.run(
+            ["git", "checkout", "--detach", selected_tag.source_commit],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if checkout.returncode != 0:
+            print(f"  Checkout failed: {checkout.stderr.strip()}")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+
+    head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
+    if not head_commit:
+        print("  Clone failed: unable to resolve the checked-out commit.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+    if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
+        print("  Checkout failed: resolved commit does not match selected tag.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    resolved_commit = head_commit
+    if selected_tag is not None:
+        source_ref = selected_tag.source_ref
+        version = selected_tag.version
+    else:
+        source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
+        version = VersionManager.detect_embedded_version(repo_dir)
+        if not version:
+            version = f"0.0.0+{resolved_commit[:12]}"
+
+    (repo_dir / ".capacium-version").write_text(f"{version}\n")
+    _write_source_provenance(
+        repo_dir,
+        SourceProvenance(
+            source_url=url,
+            source_ref=source_ref,
+            source_commit=resolved_commit,
+            version=version,
+        ),
+    )
+
+    manifest_paths = (
+        repo_dir / "capability.yaml",
+        repo_dir / "capability.yml",
+        repo_dir / "capability.json",
+    )
+    if not any(path.exists() for path in manifest_paths):
+        _auto_generate_manifest(repo_dir, url, resolved_version=version)
 
     return repo_dir, url
 
@@ -751,7 +992,12 @@ def _fetch_remote_tags(repo_url: str) -> List[str]:
         return []
 
 
-def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Optional[dict] = None) -> None:
+def _auto_generate_manifest(
+    repo_dir: Path,
+    repo_url: str,
+    registry_meta: Optional[dict] = None,
+    resolved_version: Optional[str] = None,
+) -> None:
     dest = repo_dir / "capability.yaml"
     if dest.exists():
         return
@@ -760,7 +1006,7 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
         name = registry_meta.get("name", repo_dir.name)
         owner = registry_meta.get("owner", "unknown")
         kind = registry_meta.get("kind", "skill")
-        version = registry_meta.get("version", "1.0.0")
+        version = resolved_version or registry_meta.get("version", "1.0.0")
         description = registry_meta.get("description", f"Auto-detected capability {name}")
         if version in ("", "latest", "stable"):
             version = "1.0.0"
@@ -774,9 +1020,9 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
             name = m.group(2)
         tags_list = []
 
-        tags = _fetch_remote_tags(repo_url)
-        version = "1.0.0"
-        if tags:
+        tags = _fetch_remote_tags(repo_url) if resolved_version is None else []
+        version = resolved_version or "1.0.0"
+        if tags and resolved_version is None:
             def _vk(v):
                 parts = []
                 for p in v.split("."):
@@ -932,33 +1178,36 @@ def _fetch_from_registry(
         print(f"  Capability '{cap_id}' not found in registry.")
         return None, None
 
-    best_version = remote.version
-    if version_spec not in ("latest", "stable", "") and version_spec != best_version:
-        if version_spec in (remote.versions or []):
-            best_version = version_spec
-        else:
-            print(f"  Version {version_spec} not found in registry for {cap_id}.")
-            if remote.versions:
-                print(f"  Available versions: {', '.join(sorted(remote.versions))}")
-            else:
-                print(f"  Latest: {best_version}")
-            return None, None
-
-    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
-    if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
-        print(f"  Using cached {cap_id}@{best_version}")
-        return cache_dir, remote.repository
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-
     repository = remote.repository
     if not repository:
-        print(f"  No source repository for {cap_id}@{best_version}")
+        print(f"  No source repository for {cap_id}@{remote.version}")
         return None, None
 
-    repo_dir = _clone_registry_repo(repository, best_version, github_token=github_token)
-    if repo_dir is None:
+    floating_version = version_spec in ("latest", "stable", "")
+    requested_version = None if floating_version else version_spec
+    best_version = remote.version if floating_version else version_spec
+
+    # Explicit versions may use the cache directly. Floating installs always
+    # resolve upstream first so a stale Exchange label cannot mask newer tags.
+    if not floating_version:
+        cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+        if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
+            print(f"  Using cached {cap_id}@{best_version}")
+            return cache_dir, repository
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+
+    resolved = _clone_remote_source(
+        repository,
+        version_filter=requested_version,
+        github_token=github_token,
+    )
+    if resolved is None:
         return None, None
+    repo_dir, resolved_url = resolved
+    provenance = _read_source_provenance(repo_dir)
+    if provenance is not None:
+        best_version = provenance.version
 
     manifest = Manifest.detect_from_directory(repo_dir)
     if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
@@ -981,55 +1230,18 @@ def _fetch_from_registry(
         shutil.rmtree(cache_dir)
     shutil.copytree(repo_dir, cache_dir)
     shutil.rmtree(repo_dir.parent, ignore_errors=True)
-    return cache_dir, repository
+    return cache_dir, resolved_url
 
 
 def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
-    """Clone a repository from URL into temp + return path.
-
-    Clones the specific tag (v{version}). If the tag doesn't exist,
-    git clone falls back to HEAD — we detect this and return None.
-    """
-    import tempfile
-
-    tag = "" if version in ("", "0.0.0", "latest", "stable") else (
-        version if version.startswith("v") else f"v{version}"
+    """Backward-compatible wrapper around exact source resolution."""
+    version_filter = None if version in ("", "0.0.0", "latest", "stable") else version
+    resolved = _clone_remote_source(
+        repo_url,
+        version_filter=version_filter,
+        github_token=github_token,
     )
-    tmp_dir = Path(tempfile.mkdtemp(prefix="cap-registry-"))
-    clone_url = repo_url
-    if github_token and "github.com" in repo_url:
-        clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
-    clone_args = ["git", "clone", "--depth=1"]
-    if tag:
-        clone_args.extend(["--branch", tag])
-    clone_args.extend([clone_url, str(tmp_dir / "repo")])
-
-    display_url = repo_url.replace("https://", "https://***@") if github_token and "github.com" in repo_url else repo_url
-    print(f"  Fetching {display_url}" + (f"@{version}" if tag else "@HEAD") + "...")
-    try:
-        result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            print(f"  Clone failed: {result.stderr.strip()}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None
-
-        repo_dir = tmp_dir / "repo"
-        tag_result = subprocess.run(
-            ["git", "tag", "--points-at", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-            cwd=str(repo_dir),
-        )
-        if tag and tag not in (tag_result.stdout or "").splitlines():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            print(f"  Tag {tag} not found in repository.")
-            print(f"  Available tags: {', '.join((tag_result.stdout or '').splitlines()[:5])}")
-            return None
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"  Clone failed: {e}")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
-
-    return repo_dir
+    return resolved[0] if resolved is not None else None
 
 
 def _is_framework_already(cap_name: str, owner: str, version_spec: str, framework: str) -> bool:
@@ -1118,6 +1330,8 @@ def _append_framework(
         framework=existing.framework,
         frameworks=all_frameworks,
         source_url=existing.source_url,
+        source_ref=existing.source_ref,
+        source_commit=existing.source_commit,
     )
     registry.update_capability(updated)
 

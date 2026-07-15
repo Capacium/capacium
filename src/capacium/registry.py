@@ -48,6 +48,9 @@ class Registry:
                     dependencies TEXT,
                     framework TEXT,
                     frameworks TEXT DEFAULT '[]',
+                    source_url TEXT,
+                    source_ref TEXT,
+                    source_commit TEXT,
                     UNIQUE(owner, name, version)
                 )
             """)
@@ -91,6 +94,10 @@ class Registry:
             if "source_url" not in col_names:
                 cursor.execute("ALTER TABLE capabilities ADD COLUMN source_url TEXT")
                 self._backfill_source_urls()
+            if "source_ref" not in col_names:
+                cursor.execute("ALTER TABLE capabilities ADD COLUMN source_ref TEXT")
+            if "source_commit" not in col_names:
+                cursor.execute("ALTER TABLE capabilities ADD COLUMN source_commit TEXT")
             if "frameworks" not in col_names:
                 cursor.execute("ALTER TABLE capabilities ADD COLUMN frameworks TEXT DEFAULT '[]'")
                 self._backfill_frameworks()
@@ -119,8 +126,8 @@ class Registry:
             cursor = conn.cursor()
             try:
                 cursor.execute("""
-                    INSERT INTO capabilities (owner, name, version, kind, fingerprint, install_path, installed_at, dependencies, framework, frameworks, source_url)
-                    VALUES (:owner, :name, :version, :kind, :fingerprint, :install_path, :installed_at, :dependencies, :framework, :frameworks, :source_url)
+                    INSERT INTO capabilities (owner, name, version, kind, fingerprint, install_path, installed_at, dependencies, framework, frameworks, source_url, source_ref, source_commit)
+                    VALUES (:owner, :name, :version, :kind, :fingerprint, :install_path, :installed_at, :dependencies, :framework, :frameworks, :source_url, :source_ref, :source_commit)
                 """, cap.to_dict())
                 conn.commit()
                 return True
@@ -425,7 +432,9 @@ class Registry:
                     kind = :kind,
                     framework = :framework,
                     frameworks = :frameworks,
-                    source_url = :source_url
+                    source_url = :source_url,
+                    source_ref = :source_ref,
+                    source_commit = :source_commit
                 WHERE owner = :owner AND name = :name AND version = :version
             """, cap.to_dict())
             conn.commit()

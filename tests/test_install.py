@@ -46,12 +46,14 @@ class TestResolveSource:
 
             with patch("capacium.commands.install.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = "c" * 40
+                mock_run.return_value.stderr = ""
                 result = _resolve_source("owner/repo")
                 assert result is not None
                 clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
                 assert "github.com/owner/repo.git" in str(clone_call)
 
-    def test_github_shortcut_with_version_spec(self, tmp_path):
+    def test_github_shortcut_with_version_spec_checks_out_exact_commit(self, tmp_path):
         from unittest.mock import patch
         from capacium.commands.install import _resolve_source
 
@@ -61,16 +63,32 @@ class TestResolveSource:
             repo_dir.mkdir(parents=True)
             (repo_dir / "readme.md").write_text("hello")
 
-            with patch("capacium.commands.install.subprocess.run") as mock_run:
-                mock_run.return_value.returncode = 0
+            commit = "a" * 40
+
+            def fake_run(args, **_kwargs):
+                stdout = ""
+                if "ls-remote" in args:
+                    stdout = f"{commit}\trefs/tags/v0.5.0\n"
+                elif "rev-parse" in args:
+                    stdout = commit
+                elif "symbolic-ref" in args:
+                    stdout = "main\n"
+                return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+            with patch(
+                "capacium.commands.install.subprocess.run", side_effect=fake_run
+            ) as mock_run:
                 result = _resolve_source("owner/repo", version_spec="0.5.0")
                 assert result is not None
                 clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
                 args = clone_call[0][0]
-                assert "--branch" in args
-                assert "v0.5.0" in args or "0.5.0" in args
+                assert "--depth=1" not in args
+                checkout_call = [
+                    call for call in mock_run.call_args_list if "checkout" in str(call)
+                ][0]
+                assert commit in checkout_call[0][0]
 
-    def test_github_url_with_version_spec_adds_branch_flag(self, tmp_path):
+    def test_github_url_with_version_spec_checks_out_exact_commit(self, tmp_path):
         from unittest.mock import patch
         from capacium.commands.install import _resolve_source
 
@@ -80,14 +98,27 @@ class TestResolveSource:
             repo_dir.mkdir(parents=True)
             (repo_dir / "readme.md").write_text("hello")
 
-            with patch("capacium.commands.install.subprocess.run") as mock_run:
-                mock_run.return_value.returncode = 0
+            commit = "b" * 40
+
+            def fake_run(args, **_kwargs):
+                stdout = ""
+                if "ls-remote" in args:
+                    stdout = f"{commit}\trefs/tags/v1.2.3\n"
+                elif "rev-parse" in args:
+                    stdout = commit
+                elif "symbolic-ref" in args:
+                    stdout = "main\n"
+                return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+            with patch(
+                "capacium.commands.install.subprocess.run", side_effect=fake_run
+            ) as mock_run:
                 result = _resolve_source("https://github.com/x/y.git", version_spec="1.2.3")
                 assert result is not None
-                clone_call = [c for c in mock_run.call_args_list if "clone" in str(c)][0]
-                args = clone_call[0][0]
-                assert "--branch" in args
-                assert "v1.2.3" in args
+                checkout_call = [
+                    call for call in mock_run.call_args_list if "checkout" in str(call)
+                ][0]
+                assert commit in checkout_call[0][0]
 
 
 class TestVersionFilterCliIntegration:

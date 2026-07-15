@@ -135,17 +135,27 @@ def test_check_for_newer_version_via_remote(tmp_path):
     subprocess.run(["git", "commit", "-m", "init"], cwd=clone, capture_output=True)
     subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=clone, capture_output=True)
     subprocess.run(["git", "push", "origin", "main"], cwd=clone, capture_output=True)
-    subprocess.run(["git", "tag", "v2.0.0"], cwd=clone, capture_output=True)
+    subprocess.run(
+        ["git", "tag", "-a", "v2.0.0", "-m", "annotated v2"],
+        cwd=clone,
+        capture_output=True,
+    )
+    subprocess.run(["git", "tag", "v3.0.0-rc.1"], cwd=clone, capture_output=True)
     subprocess.run(["git", "push", "origin", "--tags"], cwd=clone, capture_output=True)
 
     from capacium.commands.update import _check_for_newer_version
     from unittest.mock import patch
     with patch("capacium.commands.update.install_capability", return_value=True) as mock:
         result = _check_for_newer_version(
-            "global/test-cap", "1.0.0", str(remote)
+            "global/test-cap", "1.0.0", remote.as_uri()
         )
         assert result is True
-        mock.assert_called_once_with("global/test-cap@2.0.0", force=True, yes=True)
+        mock.assert_called_once_with(
+            "global/test-cap@2.0.0",
+            source_dir=remote.as_uri(),
+            force=True,
+            yes=True,
+        )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="npm/uv subprocess resolution on Windows — tracked as V16")

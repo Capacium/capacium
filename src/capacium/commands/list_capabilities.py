@@ -87,6 +87,8 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else None,
             "dependencies": list(cap.dependencies) if cap.dependencies else [],
             "source_url": cap.source_url or "",
+            "source_ref": cap.source_ref or "",
+            "source_commit": cap.source_commit or "",
         })
     print(json.dumps(result, indent=2, default=str))
 
