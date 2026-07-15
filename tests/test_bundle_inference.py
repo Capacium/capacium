@@ -7,6 +7,7 @@ Regression (lum1104/understand-anything, 2026-06-11):
   V13b: 3-part ID install copied the WHOLE repo again, broke the
         owner/name/version layout and created no links
 """
+import sys
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,12 @@ def claude_home(tmp_home, monkeypatch):
     return tmp_home
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="E2E install creates symlinks + package copytrees; Windows tmpdir "
+           "teardown cannot remove the in-use/symlinked files (WinError 32). "
+           "Behaviour is covered on macOS/Linux.",
+)
 class TestEndToEndInstall:
     def test_multi_skill_install_links_each_member(self, claude_home, tmp_path):
         repo = _make_multi_skill_repo(tmp_path, "skills")
@@ -154,6 +161,12 @@ class TestEndToEndInstall:
         assert "understand-chat" in out  # available members listed
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="E2E install creates symlinks + package copytrees; Windows tmpdir "
+           "teardown cannot remove the in-use/symlinked files (WinError 32). "
+           "Behaviour is covered on macOS/Linux.",
+)
 class TestRootLinkGuard:
     def test_mismodeled_multi_skill_repo_is_refused(self, claude_home, tmp_path, capsys):
         repo = _make_multi_skill_repo(tmp_path, "skills")

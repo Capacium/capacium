@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.15.1 — Release-pipeline fixes (2026-07-14)
+
+Patch for two CI issues found while shipping v0.15.0 (the v0.15.0 artifacts
+— binaries, Docker, Homebrew — were already published).
+
+### Fixed
+- **binaries:** the `.deb`/`.rpm` (nfpm) job could not find the Linux binary
+  (the build job never uploaded it as an artifact) — it is now bridged via
+  `upload-artifact`/`download-artifact`, so Linux packages build.
+- **CI:** the STAB-001 end-to-end install tests are skipped on Windows —
+  their symlink + package-copytree tmpdirs cannot be torn down there
+  (`WinError 32`); behaviour stays covered on macOS/Linux.
+
 ## Capacium v0.15.0 — Install semantics & honest status (2026-07-14)
 
 Second wave of the 2026-06-11 multi-client stabilization (V5–V14 + upstream
