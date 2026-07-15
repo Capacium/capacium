@@ -30,6 +30,17 @@ class TestMcpConfigPatcherBackup:
         config = tmp_path / "nonexistent.json"
         assert McpConfigPatcher.backup(config) is None
 
+    def test_backup_keeps_only_five_most_recent_copies_by_default(self, tmp_path):
+        config = tmp_path / "config.json"
+
+        for revision in range(7):
+            config.write_text(str(revision))
+            McpConfigPatcher.backup(config)
+
+        backups = list(tmp_path.glob("config.*.bak"))
+        assert len(backups) == 5
+        assert {path.read_text() for path in backups} == {"2", "3", "4", "5", "6"}
+
 
 class TestMcpConfigPatcherJson:
     def test_read_json_returns_empty_for_missing(self, tmp_path):

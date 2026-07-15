@@ -10,7 +10,9 @@ import pytest
 
 from capacium.commands.repair import (
     _entry_is_capacium_managed,
+    _find_excess_backups,
     _find_stale_entries,
+    _repair_backups,
     _repair_entries,
 )
 from capacium.models import Capability, Kind
@@ -264,7 +266,7 @@ class TestRepairEntries:
             assert "alice/test-mcp" not in after.get("mcp", {})
             assert "alice-test-mcp" in after.get("mcp", {})
 
-    def test_repair_returns_true(self, mock_registry):
+    def test_repair_returns_true(self, tmp_home, mock_registry):
         from capacium.commands.repair import repair
 
         class FakeArgs:
@@ -275,6 +277,59 @@ class TestRepairEntries:
 
         result = repair(FakeArgs())
         assert result is True
+
+
+class TestLegacyBackupRepair:
+    @staticmethod
+    def _create_backups(tmp_home, count=8):
+        config_path = tmp_home / ".config" / "opencode" / "opencode.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("{}")
+        backups = []
+        for index in range(count):
+            backup = config_path.with_suffix(
+                f".20260715_1200{index:02d}.bak"
+            )
+            backup.write_text(str(index))
+            backups.append(backup)
+        return config_path, backups
+
+    def test_find_excess_backups_keeps_five_most_recent(self, tmp_home):
+        _, backups = self._create_backups(tmp_home)
+
+        excess = _find_excess_backups()
+
+        assert excess == backups[:3]
+
+    def test_dry_run_lists_excess_backups_without_removing_them(
+        self, tmp_home, capsys
+    ):
+        _, backups = self._create_backups(tmp_home)
+        excess = _find_excess_backups()
+
+        removed = _repair_backups(excess, dry_run=True, auto_yes=True)
+
+        assert removed == 0
+        assert all(path.exists() for path in backups)
+        output = capsys.readouterr().out
+        assert "3 excess MCP config backup(s) detected" in output
+        assert all(str(path) in output for path in backups[:3])
+
+    def test_attended_confirmation_removes_only_excess_backups(
+        self, tmp_home, monkeypatch
+    ):
+        _, backups = self._create_backups(tmp_home)
+        unrelated = backups[0].parent / "unrelated.20260715.bak"
+        unrelated.write_text("keep")
+        excess = _find_excess_backups()
+        monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+        removed = _repair_backups(excess)
+
+        assert removed == 3
+        assert all(not path.exists() for path in backups[:3])
+        assert all(path.exists() for path in backups[3:])
+        assert unrelated.exists()
 
 
 class TestV4Regressions:

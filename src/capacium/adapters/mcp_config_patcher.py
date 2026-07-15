@@ -42,6 +42,8 @@ _ENV_REF_RE = re.compile(r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$")
 class McpConfigPatcher:
     """Safely patches MCP server entries into client configuration files."""
 
+    DEFAULT_BACKUP_RETENTION = 5
+
     @staticmethod
     def clear_runtime_status_cache() -> None:
         _RUNTIME_STATUS_CACHE.clear()
@@ -113,13 +115,58 @@ class McpConfigPatcher:
             )
 
     @staticmethod
-    def backup(config_path: Path) -> Optional[Path]:
-        """Create a timestamped backup of the config file before editing."""
+    def list_backups(config_path: Path) -> list[Path]:
+        """Return this config's backups from newest to oldest."""
+        if not config_path.parent.exists():
+            return []
+        prefix = f"{config_path.stem}."
+        backups = [
+            path
+            for path in config_path.parent.iterdir()
+            if path.is_file()
+            and path.name.startswith(prefix)
+            and path.name.endswith(".bak")
+        ]
+        return sorted(backups, key=lambda path: path.name, reverse=True)
+
+    @classmethod
+    def excess_backups(
+        cls,
+        config_path: Path,
+        keep_last: int = DEFAULT_BACKUP_RETENTION,
+    ) -> list[Path]:
+        """Return backups older than the configured retention window."""
+        if keep_last < 1:
+            raise ValueError("keep_last must be at least 1")
+        return cls.list_backups(config_path)[keep_last:]
+
+    @classmethod
+    def prune_backups(
+        cls,
+        config_path: Path,
+        keep_last: int = DEFAULT_BACKUP_RETENTION,
+    ) -> list[Path]:
+        """Remove and return backups outside the retention window."""
+        excess = cls.excess_backups(config_path, keep_last=keep_last)
+        for path in excess:
+            path.unlink()
+        return excess
+
+    @classmethod
+    def backup(
+        cls,
+        config_path: Path,
+        keep_last: int = DEFAULT_BACKUP_RETENTION,
+    ) -> Optional[Path]:
+        """Create a timestamped backup and enforce keep-last retention."""
+        if keep_last < 1:
+            raise ValueError("keep_last must be at least 1")
         if not config_path.exists():
             return None
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         backup_path = config_path.with_suffix(f".{ts}.bak")
         shutil.copy2(config_path, backup_path)
+        cls.prune_backups(config_path, keep_last=keep_last)
         return backup_path
 
     @staticmethod

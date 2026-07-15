@@ -69,6 +69,74 @@ class StaleEntry:
     suggested_key: Optional[str] = None
 
 
+def _known_mcp_config_paths() -> List[Path]:
+    """Resolve and de-duplicate every supported MCP config location."""
+    paths: Dict[str, Path] = {}
+    config_sets = (FRAMEWORK_MCP_CONFIGS, FRAMEWORK_MCP_CONFIGS_TOML)
+    for configs in config_sets:
+        for _framework, path_builder, _section_key in configs:
+            try:
+                path = path_builder()
+            except Exception:
+                continue
+            paths[str(path)] = path
+    return [paths[key] for key in sorted(paths)]
+
+
+def _find_excess_backups(
+    keep_last: int = McpConfigPatcher.DEFAULT_BACKUP_RETENTION,
+) -> List[Path]:
+    """Find legacy backups beyond keep-last retention for known configs."""
+    excess: List[Path] = []
+    for config_path in _known_mcp_config_paths():
+        excess.extend(
+            McpConfigPatcher.excess_backups(config_path, keep_last=keep_last)
+        )
+    return sorted(set(excess), key=str)
+
+
+def _repair_backups(
+    backups: List[Path],
+    dry_run: bool = False,
+    auto_yes: bool = False,
+) -> int:
+    """Offer removal of an explicit inventory of excess config backups."""
+    existing = [
+        path for path in backups if path.is_file() and path.name.endswith(".bak")
+    ]
+    if not existing:
+        return 0
+
+    for path in existing:
+        print(f"\n[legacy-backup] {path}")
+
+    if dry_run:
+        print(
+            f"\n{len(existing)} excess MCP config backup(s) detected. "
+            "Run without --dry-run to remove."
+        )
+        return 0
+
+    if not auto_yes:
+        try:
+            response = input(
+                f"\nRemove {len(existing)} excess MCP config backup(s)? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return 0
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    removed = 0
+    for path in existing:
+        path.unlink()
+        removed += 1
+    print(f"\nRemoved {removed}/{len(existing)} excess MCP config backup(s).")
+    return removed
+
+
 def _entry_is_capacium_managed(
     server_key: str,
     entry: Dict[str, Any],
@@ -473,4 +541,9 @@ def repair(args) -> bool:
 
     entries = _find_stale_entries(cap_spec)
     _repair_entries(entries, dry_run=dry_run, auto_yes=auto_yes, json_output=json_output)
+    # Preserve the established JSON array schema. Backup inventory/removal is
+    # available from the regular attended and --dry-run repair paths.
+    if cap_spec is None and not json_output:
+        backups = _find_excess_backups()
+        _repair_backups(backups, dry_run=dry_run, auto_yes=auto_yes)
     return True
