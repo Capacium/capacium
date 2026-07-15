@@ -23,9 +23,9 @@ from .mcp_config_patcher import McpConfigPatcher
 def _path_in_sandbox_denied(path: Path) -> bool:
     """Return True if the resolved path lives under a macOS sandbox-denied directory."""
     denied_parents = [
-        Path.home() / "Documents",
-        Path.home() / "Desktop",
-        Path.home() / "Downloads",
+        (Path.home() / "Documents").resolve(),
+        (Path.home() / "Desktop").resolve(),
+        (Path.home() / "Downloads").resolve(),
     ]
     resolved = path.resolve()
     for denied in denied_parents:
