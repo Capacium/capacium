@@ -12,16 +12,19 @@ all green → True (exit 0), anything missing → False (exit 1).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+from ..framework_detector import framework_skills_dirs
 from ..manifest import Manifest
 from ..utils.mcp_probe import probe_mcp
 from ..models import Capability
 from ..registry import Registry
+from ..storage import StorageManager
 from ..runtimes import (
     RuntimeResolver,
     RuntimeStatus,
@@ -458,6 +461,191 @@ def _check_registry_drift() -> Tuple[str, bool, str]:
     return ("Registry/config drift", True, "registry and config in sync")
 
 
+def _skill_frontmatter_name(skill_file: Path) -> str:
+    try:
+        content = skill_file.read_text(errors="replace")
+    except OSError:
+        return skill_file.parent.name
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end >= 0:
+            for line in content[3:end].splitlines():
+                match = re.match(r"^name:\s*(.+)$", line.strip())
+                if match:
+                    return match.group(1).strip().strip("'\"")
+    return skill_file.parent.name
+
+
+def _iter_skill_files() -> List[Path]:
+    home = Path.home()
+    roots = set(framework_skills_dirs().values())
+    roots.update(
+        {
+            home / ".understand-anything",
+            home / ".understand-anything-plugin",
+            home / ".opencode" / "understand-anything",
+        }
+    )
+    seen = set()
+    result = []
+    skip_dirs = {".git", "node_modules", ".venv", "__pycache__", "cache"}
+    for root in sorted(roots, key=str):
+        if not root.exists() or root.is_symlink():
+            continue
+        for current, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = [
+                name
+                for name in dirs
+                if name not in skip_dirs and not (Path(current) / name).is_symlink()
+            ]
+            if "SKILL.md" not in files:
+                continue
+            skill_file = Path(current) / "SKILL.md"
+            resolved = skill_file.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            result.append(skill_file)
+
+        for child in root.iterdir():
+            if not child.is_symlink():
+                continue
+            skill_file = child.resolve() / "SKILL.md"
+            if not skill_file.is_file() or skill_file.resolve() in seen:
+                continue
+            seen.add(skill_file.resolve())
+            result.append(skill_file)
+    return result
+
+
+_HOME_RUNTIME_PATH_RE = re.compile(r"(?:~|\$HOME)(/[A-Za-z0-9._/-]+)")
+
+
+def _check_content_drift() -> Tuple[str, bool, str]:
+    by_name = {}
+    for skill_file in _iter_skill_files():
+        try:
+            digest = hashlib.sha256(skill_file.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        name = _skill_frontmatter_name(skill_file)
+        by_name.setdefault(name, {}).setdefault(digest, []).append(skill_file.parent)
+
+    issues = []
+    for name, hashes in sorted(by_name.items()):
+        if len(hashes) < 2:
+            continue
+        variants = []
+        for digest, paths in sorted(hashes.items()):
+            variants.append(
+                f"{', '.join(str(path) for path in sorted(paths, key=str))} [{digest[:12]}]"
+            )
+        issues.append(f"{name}: " + " != ".join(variants))
+
+    packages_dir = (Path.home() / ".capacium" / "packages").resolve()
+    registry = Registry()
+    for cap in registry.list_capabilities():
+        if not cap.install_path or not Path(cap.install_path).exists():
+            continue
+        for skill_file in Path(cap.install_path).rglob("SKILL.md"):
+            try:
+                content = skill_file.read_text(errors="replace")
+            except OSError:
+                continue
+            for match in _HOME_RUNTIME_PATH_RE.finditer(content):
+                runtime_path = Path.home() / match.group(1).lstrip("/")
+                if not runtime_path.is_symlink():
+                    continue
+                target = runtime_path.resolve()
+                if target == packages_dir or packages_dir in target.parents:
+                    continue
+                issues.append(
+                    f"mixed runtime {cap.owner}/{cap.name}: "
+                    f"{runtime_path} → {target} (outside {packages_dir})"
+                )
+
+    if issues:
+        return (
+            "Duplicate content / runtime drift",
+            False,
+            f"{len(issues)} issue(s): {'; '.join(issues)}",
+        )
+    return (
+        "Duplicate content / runtime drift",
+        True,
+        "no divergent skill content or mixed runtime links detected",
+    )
+
+
+def _check_runtime_package_mismatch() -> Tuple[str, bool, str]:
+    registry = Registry()
+    versions_by_name = {}
+    for cap in registry.list_capabilities():
+        versions_by_name.setdefault(cap.name, set()).add(cap.version)
+
+    from .repair import _known_mcp_config_paths
+
+    config_text = []
+    for path in _known_mcp_config_paths():
+        if not path.is_file():
+            continue
+        try:
+            config_text.append(path.read_text(errors="replace"))
+        except OSError:
+            continue
+    blob = "\n".join(config_text)
+
+    issues = []
+    for name, available in sorted(versions_by_name.items()):
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(name)}[-_]v?(\d+\.\d+\.\d+)"
+        )
+        for referenced in sorted(set(pattern.findall(blob))):
+            if referenced not in available:
+                issues.append(
+                    f"{name} runtime {referenced}; packages: {', '.join(sorted(available))}"
+                )
+    if issues:
+        return (
+            "Runtime/package versions",
+            False,
+            f"{len(issues)} mismatch(es): {'; '.join(issues)}",
+        )
+    return (
+        "Runtime/package versions",
+        True,
+        "referenced runtime versions have matching packages",
+    )
+
+
+def _check_store_health(top_n: int = 5) -> Tuple[str, bool, str]:
+    from .gc import _path_size, _plan_entries
+    from ..utils.config import get_config
+
+    registry = Registry()
+    storage = StorageManager(migrate=False)
+    total_bytes, package_count = storage.get_storage_usage()
+    try:
+        keep = max(1, int(get_config("keep_versions", 1)))
+    except (TypeError, ValueError):
+        keep = 1
+    prunable, _protected = _plan_entries(registry, storage, keep=keep)
+    sizes = sorted(
+        (
+            (_path_size(Path(cap.install_path)), f"{cap.owner}/{cap.name}@{cap.version}")
+            for cap in registry.list_capabilities()
+            if cap.install_path
+        ),
+        reverse=True,
+    )
+    top = ", ".join(f"{ref}={size}B" for size, ref in sizes[:top_n]) or "none"
+    detail = (
+        f"total {total_bytes}B across {package_count} package(s); "
+        f"top: {top}; {len(prunable)} prunable version(s) — run `cap gc --dry-run`"
+    )
+    return ("Package store", True, detail)
+
+
 def _deep_checks() -> List[Tuple[str, bool, str]]:
     results = []
     results.append(_check_symlink_depth())
@@ -467,6 +655,9 @@ def _deep_checks() -> List[Tuple[str, bool, str]]:
     results.append(_check_mcp_stdout_purity())
     results.append(_check_stale_duplicate_keys())
     results.append(_check_registry_drift())
+    results.append(_check_content_drift())
+    results.append(_check_runtime_package_mismatch())
+    results.append(_check_store_health())
     return results
 
 

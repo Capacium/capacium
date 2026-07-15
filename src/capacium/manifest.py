@@ -29,6 +29,7 @@ class Manifest:
     dependencies: Dict[str, str] = field(default_factory=dict)
     runtimes: Dict[str, str] = field(default_factory=dict)
     replaces: List[str] = field(default_factory=list)
+    moved_to: str = ""
     previous_identities: List[Dict[str, str]] = field(default_factory=list)
     capabilities: List[Dict[str, str]] = field(default_factory=list)
     checksums: Dict[str, str] = field(default_factory=dict)

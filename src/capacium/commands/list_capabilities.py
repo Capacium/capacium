@@ -61,6 +61,12 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
 
 
 def _print_capabilities_json(capabilities, registry=None) -> None:
+    previous_by_new = {}
+    if registry:
+        for relocation in registry.list_relocations():
+            previous_by_new.setdefault(relocation["new_id"], []).append(
+                relocation["old_id"]
+            )
     result = []
     for cap in capabilities:
         all_frameworks = cap.frameworks if cap.frameworks else ([cap.framework] if cap.framework else [])
@@ -89,6 +95,9 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
             "source_url": cap.source_url or "",
             "source_ref": cap.source_ref or "",
             "source_commit": cap.source_commit or "",
+            "previous_identities": previous_by_new.get(
+                f"{cap.owner}/{cap.name}", []
+            ),
         })
     print(json.dumps(result, indent=2, default=str))
 
@@ -119,6 +128,13 @@ def _print_capabilities(capabilities, label: str, details: bool = False, registr
         if details and all_frameworks and registry:
             _print_adapter_statuses(cap, registry)
         print()
+    if registry:
+        relocations = registry.list_relocations()
+        if relocations:
+            print("Canonical relocations:")
+            for relocation in relocations:
+                print(f"  {relocation['old_id']} → {relocation['new_id']}")
+            print()
 
 
 def _print_adapter_statuses(cap, registry) -> None:

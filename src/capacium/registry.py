@@ -58,6 +58,14 @@ class Registry:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fingerprint ON capabilities (fingerprint)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_kind ON capabilities (kind)")
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS capability_aliases (
+                    old_id TEXT PRIMARY KEY,
+                    new_id TEXT NOT NULL,
+                    source_url TEXT,
+                    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bundle_members (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bundle_id TEXT NOT NULL,
@@ -490,6 +498,108 @@ class Registry:
                 (capability_ref, capability_ref),
             )
             conn.commit()
+
+    def relocate_capability(
+        self,
+        old_id: str,
+        new_id: str,
+        install_paths: Optional[Dict[str, Path]] = None,
+        source_url: Optional[str] = None,
+    ) -> int:
+        """Move registry identity in place and retain an auditable alias."""
+        old_owner, old_name = self.parse_cap_id(old_id)
+        new_owner, new_name = self.parse_cap_id(new_id)
+        moved = 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT version FROM capabilities WHERE owner = ? AND name = ?",
+                (old_owner, old_name),
+            )
+            versions = [row[0] for row in cursor.fetchall()]
+            for version in versions:
+                cursor.execute(
+                    "SELECT 1 FROM capabilities WHERE owner = ? AND name = ? AND version = ?",
+                    (new_owner, new_name, version),
+                )
+                if cursor.fetchone():
+                    cursor.execute(
+                        "DELETE FROM capabilities WHERE owner = ? AND name = ? AND version = ?",
+                        (old_owner, old_name, version),
+                    )
+                else:
+                    install_path = None
+                    if install_paths and version in install_paths:
+                        install_path = str(install_paths[version])
+                    if install_path is None:
+                        cursor.execute(
+                            "UPDATE capabilities SET owner = ?, name = ? "
+                            "WHERE owner = ? AND name = ? AND version = ?",
+                            (new_owner, new_name, old_owner, old_name, version),
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE capabilities SET owner = ?, name = ?, install_path = ? "
+                            "WHERE owner = ? AND name = ? AND version = ?",
+                            (
+                                new_owner,
+                                new_name,
+                                install_path,
+                                old_owner,
+                                old_name,
+                                version,
+                            ),
+                        )
+                moved += 1
+
+            prefix = old_id + "@"
+            cursor.execute(
+                "SELECT id, bundle_id, member_id FROM bundle_members "
+                "WHERE bundle_id LIKE ? OR member_id LIKE ?",
+                (prefix + "%", prefix + "%"),
+            )
+            references = cursor.fetchall()
+            for row in references:
+                bundle_id = row[1]
+                member_id = row[2]
+                cursor.execute("DELETE FROM bundle_members WHERE id = ?", (row[0],))
+                if bundle_id.startswith(prefix):
+                    bundle_id = new_id + bundle_id[len(old_id):]
+                if member_id.startswith(prefix):
+                    member_id = new_id + member_id[len(old_id):]
+                cursor.execute(
+                    "INSERT OR IGNORE INTO bundle_members (bundle_id, member_id) VALUES (?, ?)",
+                    (bundle_id, member_id),
+                )
+
+            cursor.execute(
+                "INSERT INTO capability_aliases (old_id, new_id, source_url) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(old_id) DO UPDATE SET "
+                "new_id = excluded.new_id, source_url = excluded.source_url, "
+                "recorded_at = datetime('now')",
+                (old_id, new_id, source_url),
+            )
+            conn.commit()
+        return moved
+
+    def get_relocation(self, old_id: str) -> Optional[str]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT new_id FROM capability_aliases WHERE old_id = ?", (old_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def list_relocations(self) -> List[Dict[str, str]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT old_id, new_id, source_url, recorded_at "
+                "FROM capability_aliases ORDER BY old_id"
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_reference_count(self, member_id: str) -> int:
         with self._get_connection() as conn:

@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, Optional, List
 from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
@@ -301,6 +301,23 @@ def install_capability(
             return False
         source_dir = member_dir
 
+    source_manifest = Manifest.detect_from_directory(source_dir)
+    requested_cap_id = cap_id
+    canonical_cap_id = _canonical_identity(
+        source_manifest, requested_cap_id, source_url
+    )
+    if canonical_cap_id != requested_cap_id:
+        _relocate_registry_identity(
+            registry,
+            storage,
+            requested_cap_id,
+            canonical_cap_id,
+            source_url=source_manifest.repository or source_url,
+        )
+        owner, cap_name = Registry.parse_cap_id(canonical_cap_id)
+        cap_id = canonical_cap_id
+        print(f"  Canonical relocation: {requested_cap_id} → {canonical_cap_id}")
+
     if version_spec in ["latest", "stable"]:
         version = (
             source_provenance.version
@@ -350,7 +367,6 @@ def install_capability(
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
-    source_manifest = Manifest.detect_from_directory(source_dir)
     if not cap_name and source_manifest.name:
         cap_name = source_manifest.name
         owner = source_manifest.owner or owner or "global"
@@ -403,6 +419,8 @@ def install_capability(
     if errors:
         for e in errors:
             print(f"Warning: {e}")
+    if manifest.kind == "bundle":
+        _warn_bundle_frontmatter_collisions(manifest, package_dir)
 
     # V11/STAB-007: warn when declared env vars never appear in the server
     # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
@@ -719,6 +737,144 @@ def _installed_bundle_member_refs(registry: Registry, bundle_id: str) -> List[st
             if member is not None and member.kind == Kind.BUNDLE:
                 queue.append(member_id)
     return list(reversed(ordered))
+
+
+def _repository_identity(repository: Optional[str]) -> Optional[str]:
+    if not repository:
+        return None
+    value = repository.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    if ":" in value and "/" not in value.split(":", 1)[0]:
+        value = value.split(":", 1)[1]
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, name = parts[-2], parts[-1]
+    if not owner or not name:
+        return None
+    return f"{owner}/{name}"
+
+
+def _canonical_identity(
+    manifest: Manifest,
+    requested_id: str,
+    source_url: Optional[str],
+) -> str:
+    moved_to = (manifest.moved_to or "").strip()
+    if "/" in moved_to:
+        return moved_to
+
+    declared_id = None
+    if manifest.owner and manifest.name:
+        declared_id = f"{manifest.owner}/{manifest.name}"
+    if declared_id and requested_id in (manifest.replaces or []):
+        return declared_id
+
+    repository_id = _repository_identity(manifest.repository or source_url)
+    if repository_id:
+        requested_owner, requested_name = Registry.parse_cap_id(requested_id)
+        repo_owner, repo_name = Registry.parse_cap_id(repository_id)
+        if (
+            repo_name.lower() == requested_name.lower()
+            and repo_owner.lower() != requested_owner.lower()
+        ):
+            return repository_id
+    return requested_id
+
+
+def _relocate_registry_identity(
+    registry: Registry,
+    storage: StorageManager,
+    old_id: str,
+    new_id: str,
+    source_url: Optional[str] = None,
+) -> None:
+    old_owner, old_name = Registry.parse_cap_id(old_id)
+    new_owner, new_name = Registry.parse_cap_id(new_id)
+    install_paths = {}
+    for cap in registry.list_capabilities():
+        if cap.owner != old_owner or cap.name != old_name:
+            continue
+        old_path = Path(cap.install_path) if cap.install_path else None
+        expected_old = storage.get_package_path(
+            old_name, cap.version, owner=old_owner
+        )
+        if old_path != expected_old:
+            continue
+        new_path = storage.get_package_path(
+            new_name, cap.version, owner=new_owner
+        )
+        old_present = old_path.exists() or old_path.is_symlink()
+        new_present = new_path.exists() or new_path.is_symlink()
+        if old_present and not new_present:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            old_path.rename(new_path)
+            install_paths[cap.version] = new_path
+        elif new_present:
+            install_paths[cap.version] = new_path
+
+    registry.relocate_capability(
+        old_id,
+        new_id,
+        install_paths=install_paths,
+        source_url=source_url,
+    )
+    old_name_dir = storage.base_dir / old_owner / old_name
+    old_owner_dir = storage.base_dir / old_owner
+    if old_name_dir.is_dir() and not any(old_name_dir.iterdir()):
+        old_name_dir.rmdir()
+    if old_owner_dir.is_dir() and not any(old_owner_dir.iterdir()):
+        old_owner_dir.rmdir()
+
+
+def _skill_frontmatter_name(skill_file: Path) -> Optional[str]:
+    try:
+        content = skill_file.read_text(errors="replace")
+    except OSError:
+        return None
+    if not content.startswith("---"):
+        return None
+    end = content.find("---", 3)
+    if end < 0:
+        return None
+    for line in content[3:end].splitlines():
+        match = re.match(r"^name:\s*(.+)$", line.strip())
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
+
+def _bundle_frontmatter_collisions(
+    manifest: Manifest, bundle_dir: Path
+) -> Dict[str, List[str]]:
+    members_by_name: Dict[str, List[str]] = {}
+    for entry in manifest.capabilities:
+        member_name = str(entry.get("name", "")).strip()
+        source = entry.get("source")
+        if not member_name or not source:
+            continue
+        member_dir = _resolve_source_path(str(source), bundle_dir)
+        frontmatter_name = _skill_frontmatter_name(member_dir / "SKILL.md")
+        if frontmatter_name:
+            members_by_name.setdefault(frontmatter_name, []).append(member_name)
+    return {
+        name: sorted(members)
+        for name, members in sorted(members_by_name.items())
+        if len(members) > 1
+    }
+
+
+def _warn_bundle_frontmatter_collisions(
+    manifest: Manifest, bundle_dir: Path
+) -> None:
+    for frontmatter_name, members in _bundle_frontmatter_collisions(
+        manifest, bundle_dir
+    ).items():
+        print(
+            f"Warning: bundle frontmatter name '{frontmatter_name}' "
+            f"is shared by: {', '.join(members)}"
+        )
 
 
 def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:

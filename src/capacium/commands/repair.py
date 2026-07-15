@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..adapters.mcp_config_patcher import McpConfigPatcher
+from ..framework_detector import framework_skills_dirs
+from ..manifest import Manifest
 from ..registry import Registry
 from ..storage import StorageManager
 
@@ -68,6 +70,13 @@ class StaleEntry:
     reason: str
     fix_action: str  # "remove" or "normalize"
     suggested_key: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StaleBundleRoot:
+    framework: str
+    link_path: Path
+    target_path: Path
 
 
 def _known_mcp_config_paths() -> List[Path]:
@@ -171,6 +180,71 @@ def _repair_empty_package_stubs(
     removed = StorageManager().prune_empty_package_stubs()
     print(f"\nRemoved {len(removed)}/{len(stubs)} empty package stub(s).")
     return len(removed)
+
+
+def _find_stale_bundle_roots() -> List[StaleBundleRoot]:
+    """Find pre-members-only client links to bundle container roots."""
+    stale = []
+    for framework, skills_dir in framework_skills_dirs().items():
+        if not skills_dir.is_dir():
+            continue
+        for link_path in skills_dir.iterdir():
+            if not link_path.is_symlink():
+                continue
+            target = link_path.resolve()
+            if not target.is_dir() or (target / "SKILL.md").exists():
+                continue
+            try:
+                manifest = Manifest.detect_from_directory(target)
+            except Exception:
+                continue
+            if manifest.kind == "bundle":
+                stale.append(
+                    StaleBundleRoot(
+                        framework=framework,
+                        link_path=link_path,
+                        target_path=target,
+                    )
+                )
+    return sorted(stale, key=lambda item: (item.framework, str(item.link_path)))
+
+
+def _repair_stale_bundle_roots(
+    roots: List[StaleBundleRoot],
+    dry_run: bool = False,
+    auto_yes: bool = False,
+) -> int:
+    if not roots:
+        return 0
+    for root in roots:
+        print(
+            f"\n[stale bundle root] {root.framework}: "
+            f"{root.link_path} → {root.target_path}"
+        )
+    if dry_run:
+        print(
+            f"\n{len(roots)} stale bundle root link(s) detected. "
+            "Run without --dry-run to remove."
+        )
+        return 0
+    if not auto_yes:
+        try:
+            response = input(
+                f"\nRemove {len(roots)} stale bundle root link(s)? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return 0
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+    removed = 0
+    for root in roots:
+        if root.link_path.is_symlink():
+            root.link_path.unlink()
+            removed += 1
+    print(f"\nRemoved {removed}/{len(roots)} stale bundle root link(s).")
+    return removed
 
 
 def _entry_is_capacium_managed(
@@ -580,6 +654,10 @@ def repair(args) -> bool:
     # Preserve the established JSON array schema. Backup inventory/removal is
     # available from the regular attended and --dry-run repair paths.
     if cap_spec is None and not json_output:
+        bundle_roots = _find_stale_bundle_roots()
+        _repair_stale_bundle_roots(
+            bundle_roots, dry_run=dry_run, auto_yes=auto_yes
+        )
         backups = _find_excess_backups()
         _repair_backups(backups, dry_run=dry_run, auto_yes=auto_yes)
         storage = StorageManager(migrate=not dry_run)
