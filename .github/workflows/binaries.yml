@@ -35,6 +35,16 @@ jobs:
         run: |
           pyinstaller --name cap --onefile src/capacium/cli.py
 
+      # Bridge the Linux binary to the nfpm job (deb/rpm packaging). The build
+      # job only uploads to the GH release; without this artifact the nfpm job
+      # cp'd from a non-existent path and failed.
+      - name: Upload Linux binary for nfpm
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-Linux-X64
+          path: dist/cap
+
       - name: Rename and prepare artifacts (Unix)
         if: matrix.os != 'windows-latest'
         run: |
@@ -64,7 +74,9 @@ jobs:
 
       - name: Download PyInstaller binary
         uses: actions/download-artifact@v4
-        continue-on-error: true
+        with:
+          name: cap-Linux-X64
+          path: cap-Linux-X64
 
       - name: Install nfpm
         run: |
@@ -79,7 +91,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          cp dist-cap-Linux-X64/cap dist/capacium 2>/dev/null || cp cap-Linux-X64/cap dist/capacium 2>/dev/null || true
+          cp cap-Linux-X64/cap dist/capacium
           chmod +x dist/capacium
           ./nfpm package --target "release/${VERSION}" --packager deb
           ./nfpm package --target "release/${VERSION}" --packager rpm
