@@ -584,19 +584,22 @@ def _install_bundle_members(
             if bundle_conflict:
                 if force:
                     print(f"    --force: reassigning {sub_cap_id} from '{bundle_conflict}' to '{bundle_id}'")
+                    registry.remove_bundle_references(f"{sub_cap_id}@{sub_version}")
                 else:
                     print(f"    Sub-capability {sub_cap_id}@{sub_version} is already a member of bundle '{bundle_conflict}'.")
                     print(f"    Use --force to reassign to '{bundle_id}'.")
                     continue
+            elif force:
+                print(f"    --force: reinstalling {sub_cap_id}@{sub_version}")
             else:
                 print(f"  Sub-capability {sub_cap_id}@{sub_version} already installed.")
-            sub_fingerprints.append(existing.fingerprint)
-            registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
-            continue
+                sub_fingerprints.append(existing.fingerprint)
+                registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
+                continue
 
         _install_single_sub_cap(
             sub_name, sub_version, source_path, owner, registry, storage, no_lock,
-            force=force, all_frameworks=all_frameworks,
+            bundle_dir=bundle_dir, force=force, all_frameworks=all_frameworks,
         )
 
         sub_cap = registry.get_capability(sub_cap_id, sub_version)
@@ -616,13 +619,28 @@ def _install_single_sub_cap(
     registry: Registry,
     storage: StorageManager,
     no_lock: bool,
+    bundle_dir: Optional[Path] = None,
     force: bool = False,
     all_frameworks: bool = False,
 ) -> None:
-    package_dir = storage.get_package_dir(sub_name, version, owner=owner)
-    if package_dir.exists():
-        shutil.rmtree(package_dir)
-    shutil.copytree(source_path, package_dir)
+    source_path = source_path.resolve()
+    shares_bundle_storage = False
+    if bundle_dir is not None:
+        try:
+            source_path.relative_to(bundle_dir.resolve())
+            shares_bundle_storage = True
+        except ValueError:
+            pass
+
+    if shares_bundle_storage:
+        package_dir = storage.create_package_reference(
+            sub_name, version, source_path, owner=owner
+        )
+    else:
+        package_dir = storage.get_package_path(sub_name, version, owner=owner)
+        package_dir.parent.mkdir(parents=True, exist_ok=True)
+        storage.remove_package_path(package_dir)
+        shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
     sub_frameworks = resolve_frameworks(
@@ -636,7 +654,7 @@ def _install_single_sub_cap(
             adapter = get_adapter(fw)
         except ValueError:
             continue
-        adapter.install_capability(sub_name, version, source_path, owner=owner, kind=sub_manifest.kind or "skill")
+        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_manifest.kind or "skill")
 
     sub_errors = sub_manifest.validate()
     if sub_errors:
@@ -645,8 +663,8 @@ def _install_single_sub_cap(
 
     if sub_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, source_path, registry, storage, no_lock,
-            all_frameworks=all_frameworks,
+            sub_manifest, owner, package_dir, registry, storage, no_lock,
+            force=force, all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
@@ -695,8 +713,10 @@ def _remove_superseded_versions(
         old_id = f"{cap_id}@{existing.version}"
         registry.remove_bundle_references(old_id)
         registry.remove_capability(cap_id, existing.version)
-        if existing.install_path and existing.install_path.exists():
-            shutil.rmtree(existing.install_path, ignore_errors=True)
+        if existing.install_path and (
+            existing.install_path.exists() or existing.install_path.is_symlink()
+        ):
+            StorageManager.remove_package_path(existing.install_path)
 
 
 def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:

@@ -55,11 +55,11 @@ class _RemovalSnapshot:
     def park_tree(self, path: Path) -> None:
         """Move a package tree aside instead of deleting it outright."""
         path = Path(path)
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             return
         parked = path.with_name(path.name + ".removing")
         idx = 0
-        while parked.exists():
+        while parked.exists() or parked.is_symlink():
             idx += 1
             parked = path.with_name(f"{path.name}.removing{idx}")
         path.rename(parked)
@@ -68,7 +68,9 @@ class _RemovalSnapshot:
     # ── outcome ────────────────────────────────────────────────────────
     def restore(self) -> None:
         for original, parked in reversed(self._moves):
-            if parked.exists() and not original.exists():
+            parked_present = parked.exists() or parked.is_symlink()
+            original_present = original.exists() or original.is_symlink()
+            if parked_present and not original_present:
                 parked.rename(original)
         for path, content in self._files.items():
             try:
@@ -105,7 +107,7 @@ class _RemovalSnapshot:
 
     def commit(self) -> None:
         for _original, parked in self._moves:
-            shutil.rmtree(parked, ignore_errors=True)
+            StorageManager.remove_package_path(parked)
 
 
 def _snapshot_cap_surfaces(snapshot: _RemovalSnapshot, cap_name: str,
