@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..adapters.mcp_config_patcher import McpConfigPatcher
 from ..registry import Registry
+from ..storage import StorageManager
 
 
 def _claude_desktop_path() -> Path:
@@ -135,6 +136,41 @@ def _repair_backups(
         removed += 1
     print(f"\nRemoved {removed}/{len(existing)} excess MCP config backup(s).")
     return removed
+
+
+def _repair_empty_package_stubs(
+    stubs: List[Path],
+    dry_run: bool = False,
+    auto_yes: bool = False,
+) -> int:
+    """Offer removal of payload-free owner/name package trees."""
+    if not stubs:
+        return 0
+    for path in stubs:
+        print(f"\n[empty package stub] {path}")
+
+    if dry_run:
+        print(
+            f"\n{len(stubs)} empty package stub(s) detected. "
+            "Run without --dry-run to remove."
+        )
+        return 0
+
+    if not auto_yes:
+        try:
+            response = input(
+                f"\nRemove {len(stubs)} empty package stub(s)? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return 0
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    removed = StorageManager().prune_empty_package_stubs()
+    print(f"\nRemoved {len(removed)}/{len(stubs)} empty package stub(s).")
+    return len(removed)
 
 
 def _entry_is_capacium_managed(
@@ -546,4 +582,9 @@ def repair(args) -> bool:
     if cap_spec is None and not json_output:
         backups = _find_excess_backups()
         _repair_backups(backups, dry_run=dry_run, auto_yes=auto_yes)
+        storage = StorageManager(migrate=not dry_run)
+        stubs = storage.find_empty_package_stubs()
+        _repair_empty_package_stubs(
+            stubs, dry_run=dry_run, auto_yes=auto_yes
+        )
     return True

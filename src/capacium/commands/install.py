@@ -88,6 +88,7 @@ def install_capability(
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
     project: Optional[str] = None,
+    prune: bool = False,
 ) -> bool:
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
@@ -500,9 +501,6 @@ def install_capability(
         print(f"  Computing fingerprint for {cap_name}...")
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
 
-    if force:
-        _remove_superseded_versions(registry, cap_name, owner, version)
-
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
@@ -546,6 +544,18 @@ def install_capability(
         return False
 
     StorageManager.write_meta(cap, frameworks=resolved_frameworks)
+
+    if force or prune:
+        from .gc import prune_superseded_versions
+
+        if manifest.kind == "bundle":
+            for member_id in _installed_bundle_member_refs(registry, f"{cap_id}@{version}"):
+                member_cap_id, member_version = member_id.rsplit("@", 1)
+                member_owner, member_name = Registry.parse_cap_id(member_cap_id)
+                prune_superseded_versions(
+                    member_owner, member_name, member_version
+                )
+        prune_superseded_versions(owner, cap_name, version)
 
     print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
     return True
@@ -686,37 +696,29 @@ def _install_single_sub_cap(
         source_url=source_url,
     )
 
-    if force:
-        _remove_superseded_versions(registry, sub_name, owner, version)
-
     if not registry.add_capability(capacity):
         registry.update_capability(capacity)
     _record_install_status(registry, f"{owner}/{sub_name}", version, sub_frameworks)
     StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
 
-def _remove_superseded_versions(
-    registry: Registry,
-    cap_name: str,
-    owner: str,
-    keep_version: str,
-) -> None:
-    """Remove registry/package entries for older versions on force installs."""
-    cap_id = f"{owner}/{cap_name}"
-    for existing in list(registry.list_capabilities()):
-        if (
-            existing.owner != owner
-            or existing.name != cap_name
-            or existing.version == keep_version
-        ):
-            continue
-        old_id = f"{cap_id}@{existing.version}"
-        registry.remove_bundle_references(old_id)
-        registry.remove_capability(cap_id, existing.version)
-        if existing.install_path and (
-            existing.install_path.exists() or existing.install_path.is_symlink()
-        ):
-            StorageManager.remove_package_path(existing.install_path)
+def _installed_bundle_member_refs(registry: Registry, bundle_id: str) -> List[str]:
+    """Return current bundle descendants leaf-first for post-success pruning."""
+    ordered = []
+    queue = [bundle_id]
+    seen = {bundle_id}
+    while queue:
+        current = queue.pop(0)
+        for member_id in registry.get_bundle_members(current):
+            if member_id in seen:
+                continue
+            seen.add(member_id)
+            ordered.append(member_id)
+            member_cap_id, member_version = member_id.rsplit("@", 1)
+            member = registry.get_capability(member_cap_id, member_version)
+            if member is not None and member.kind == Kind.BUNDLE:
+                queue.append(member_id)
+    return list(reversed(ordered))
 
 
 def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:

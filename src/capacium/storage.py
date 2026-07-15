@@ -7,12 +7,13 @@ from .models import Capability
 
 class StorageManager:
 
-    def __init__(self, base_dir: Optional[Path] = None):
+    def __init__(self, base_dir: Optional[Path] = None, migrate: bool = True):
         if base_dir is None:
             base_dir = Path.home() / ".capacium" / "packages"
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._maybe_migrate_old_structure()
+        if migrate:
+            self._maybe_migrate_old_structure()
 
     def _maybe_migrate_old_structure(self) -> None:
         has_old_structure = False
@@ -199,6 +200,33 @@ class StorageManager:
                             cap_dir.rmdir()
                 if not any(owner_dir.iterdir()):
                     owner_dir.rmdir()
+
+    def find_empty_package_stubs(self) -> List[Path]:
+        """Return owner/name trees that contain directories but no payload."""
+        stubs = []
+        for owner_dir in self.base_dir.iterdir():
+            if not owner_dir.is_dir() or owner_dir.is_symlink():
+                continue
+            for cap_dir in owner_dir.iterdir():
+                if not cap_dir.is_dir() or cap_dir.is_symlink():
+                    continue
+                has_payload = any(
+                    child.is_file() or child.is_symlink()
+                    for child in cap_dir.rglob("*")
+                )
+                if not has_payload:
+                    stubs.append(cap_dir)
+        return sorted(stubs)
+
+    def prune_empty_package_stubs(self) -> List[Path]:
+        """Remove payload-free owner/name trees and newly empty owners."""
+        stubs = self.find_empty_package_stubs()
+        for stub in stubs:
+            shutil.rmtree(stub)
+        for owner_dir in list(self.base_dir.iterdir()):
+            if owner_dir.is_dir() and not owner_dir.is_symlink() and not any(owner_dir.iterdir()):
+                owner_dir.rmdir()
+        return stubs
 
     def migrate_old_structure(self) -> int:
         migrated = 0
