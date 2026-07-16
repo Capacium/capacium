@@ -7,12 +7,13 @@ from .models import Capability
 
 class StorageManager:
 
-    def __init__(self, base_dir: Optional[Path] = None):
+    def __init__(self, base_dir: Optional[Path] = None, migrate: bool = True):
         if base_dir is None:
             base_dir = Path.home() / ".capacium" / "packages"
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._maybe_migrate_old_structure()
+        if migrate:
+            self._maybe_migrate_old_structure()
 
     def _maybe_migrate_old_structure(self) -> None:
         has_old_structure = False
@@ -50,13 +51,48 @@ class StorageManager:
             return "global", cap_id.strip()
 
     def get_package_dir(self, cap_name: str, version: str = "latest", owner: Optional[str] = None) -> Path:
+        version_dir = self.get_package_path(cap_name, version, owner)
+        version_dir.mkdir(parents=True, exist_ok=True)
+        return version_dir
+
+    def get_package_path(self, cap_name: str, version: str = "latest", owner: Optional[str] = None) -> Path:
+        """Return a package path without creating its version directory."""
         if owner is None:
             owner, cap_name = self.parse_cap_id(cap_name)
 
         cap_dir = self.base_dir / owner / cap_name
-        version_dir = cap_dir / version
-        version_dir.mkdir(parents=True, exist_ok=True)
-        return version_dir
+        return cap_dir / version
+
+    @staticmethod
+    def remove_package_path(path: Path) -> None:
+        """Remove a package directory or reference without following symlinks."""
+        path = Path(path)
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+
+    def create_package_reference(
+        self,
+        cap_name: str,
+        version: str,
+        target: Path,
+        owner: Optional[str] = None,
+    ) -> Path:
+        """Create a package-store reference to bytes owned by another package.
+
+        Bundle members use this instead of copying their subtree into a second
+        package directory. The reference remains a normal package path for
+        adapters and discovery while the bundle is the sole physical owner.
+        """
+        target = Path(target).resolve()
+        package_path = self.get_package_path(cap_name, version, owner)
+        package_path.parent.mkdir(parents=True, exist_ok=True)
+        self.remove_package_path(package_path)
+        package_path.symlink_to(target, target_is_directory=True)
+        return package_path
 
     def create_symlink(self, cap_name: str, version: str, target_framework: str = "opencode", owner: Optional[str] = None) -> bool:
         source_dir = self.get_package_dir(cap_name, version, owner)
@@ -126,6 +162,9 @@ class StorageManager:
             "fingerprint": cap.fingerprint,
             "installed_at": cap.installed_at.isoformat() if cap.installed_at else "",
             "frameworks": framework_list,
+            "source_url": cap.source_url or "",
+            "source_ref": cap.source_ref or "",
+            "source_commit": cap.source_commit or "",
         }
         meta_path.write_text(json.dumps(data, indent=2) + "\n")
 
@@ -139,9 +178,12 @@ class StorageManager:
                     if cap_dir.is_dir():
                         package_count += 1
                         for version_dir in cap_dir.iterdir():
+                            if version_dir.is_symlink():
+                                # Shared bundle members have no payload of their own.
+                                continue
                             if version_dir.is_dir():
                                 for file_path in version_dir.rglob("*"):
-                                    if file_path.is_file():
+                                    if file_path.is_file() and not file_path.is_symlink():
                                         total_size += file_path.stat().st_size
 
         return total_size, package_count
@@ -158,6 +200,33 @@ class StorageManager:
                             cap_dir.rmdir()
                 if not any(owner_dir.iterdir()):
                     owner_dir.rmdir()
+
+    def find_empty_package_stubs(self) -> List[Path]:
+        """Return owner/name trees that contain directories but no payload."""
+        stubs = []
+        for owner_dir in self.base_dir.iterdir():
+            if not owner_dir.is_dir() or owner_dir.is_symlink():
+                continue
+            for cap_dir in owner_dir.iterdir():
+                if not cap_dir.is_dir() or cap_dir.is_symlink():
+                    continue
+                has_payload = any(
+                    child.is_file() or child.is_symlink()
+                    for child in cap_dir.rglob("*")
+                )
+                if not has_payload:
+                    stubs.append(cap_dir)
+        return sorted(stubs)
+
+    def prune_empty_package_stubs(self) -> List[Path]:
+        """Remove payload-free owner/name trees and newly empty owners."""
+        stubs = self.find_empty_package_stubs()
+        for stub in stubs:
+            shutil.rmtree(stub)
+        for owner_dir in list(self.base_dir.iterdir()):
+            if owner_dir.is_dir() and not owner_dir.is_symlink() and not any(owner_dir.iterdir()):
+                owner_dir.rmdir()
+        return stubs
 
     def migrate_old_structure(self) -> int:
         migrated = 0

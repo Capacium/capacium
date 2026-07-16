@@ -1,10 +1,12 @@
 import os
+import json as _json
 import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, Optional, List
 from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
@@ -22,6 +24,55 @@ from ..framework_detector import resolve_frameworks, create_framework_symlinks, 
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
+_CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SOURCE_PROVENANCE_FILE = ".capacium-source.json"
+
+
+@dataclass(frozen=True)
+class SourceProvenance:
+    source_url: str
+    source_ref: str
+    source_commit: str
+    version: str
+
+
+@dataclass(frozen=True)
+class RemoteTag:
+    tag: str
+    version: str
+    source_ref: str
+    source_commit: str
+
+
+def _write_source_provenance(repo_dir: Path, provenance: SourceProvenance) -> None:
+    (repo_dir / _SOURCE_PROVENANCE_FILE).write_text(
+        _json.dumps(
+            {
+                "source_url": provenance.source_url,
+                "source_ref": provenance.source_ref,
+                "source_commit": provenance.source_commit,
+                "version": provenance.version,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def _read_source_provenance(repo_dir: Path) -> Optional[SourceProvenance]:
+    path = repo_dir / _SOURCE_PROVENANCE_FILE
+    if not path.exists():
+        return None
+    try:
+        data = _json.loads(path.read_text())
+        return SourceProvenance(
+            source_url=str(data["source_url"]),
+            source_ref=str(data["source_ref"]),
+            source_commit=str(data["source_commit"]),
+            version=str(data["version"]),
+        )
+    except (KeyError, TypeError, ValueError, _json.JSONDecodeError, OSError):
+        return None
 
 
 def install_capability(
@@ -38,6 +89,7 @@ def install_capability(
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
     project: Optional[str] = None,
+    prune: bool = False,
 ) -> bool:
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
@@ -109,13 +161,39 @@ def install_capability(
             owner = existing_by_name.owner
             cap_id = f"{owner}/{cap_name}"
 
+    # Bundle roots intentionally have no client artifact, so filesystem-based
+    # conflict detection cannot discover an installed bundle. Resolve an
+    # explicit framework augmentation from the registry before any source or
+    # network lookup. This also makes the operation work offline.
+    registered_version = None if version_spec in ("latest", "stable", "") else version_spec
+    registered = registry.get_capability(cap_id, registered_version)
+    if (
+        framework
+        and registered is not None
+        and not force
+        and (
+            registered.kind == Kind.BUNDLE
+            or not _is_framework_already(
+                cap_name, owner, registered.version, framework
+            )
+        )
+    ):
+        return _append_framework(
+            cap_name, owner, registered.version, framework
+        )
+
     # ── Conflict detection ─────────────────────────────────────────
     conflict = check_conflict(cap_name, owner, version_spec)
-    if conflict.state != ConflictState.NO_CONFLICT:
+    defer_latest_conflict = version_spec in ("latest", "stable") and conflict.state in (
+        ConflictState.ALREADY_INSTALLED,
+        ConflictState.VERSION_MISMATCH,
+    )
+    if conflict.state != ConflictState.NO_CONFLICT and not defer_latest_conflict:
         if conflict.state == ConflictState.ALREADY_INSTALLED:
             if framework and not _is_framework_already(cap_name, owner, version_spec, framework):
-                _append_framework(cap_name, owner, version_spec, framework)
-                return True
+                return _append_framework(
+                    cap_name, owner, version_spec, framework
+                )
             # --force: always reinstall (update framework configs, re-run npm, etc.)
             if force or yes:
                 print(f"  {conflict.message} — reinstalling (--force)")
@@ -188,6 +266,7 @@ def install_capability(
 
     # ── Resolve source ─────────────────────────────────────────────
     source_url = None
+    source_provenance = None
     if from_tarball is not None:
         resolved = _install_from_tarball(from_tarball, storage, cap_name, owner)
         if resolved is None:
@@ -237,23 +316,79 @@ def install_capability(
                 print("  Use --source to install from a local path.")
                 return False
 
+    source_provenance = _read_source_provenance(Path(source_dir))
+
     if sub_skill_repo:
         member_dir = _resolve_sub_skill_dir(source_dir, cap_name)
         if member_dir is None:
             return False
         source_dir = member_dir
 
+    source_manifest = Manifest.detect_from_directory(source_dir)
+    requested_cap_id = cap_id
+    canonical_cap_id = _canonical_identity(
+        source_manifest, requested_cap_id, source_url
+    )
+    if canonical_cap_id != requested_cap_id:
+        _relocate_registry_identity(
+            registry,
+            storage,
+            requested_cap_id,
+            canonical_cap_id,
+            source_url=source_manifest.repository or source_url,
+        )
+        owner, cap_name = Registry.parse_cap_id(canonical_cap_id)
+        cap_id = canonical_cap_id
+        print(f"  Canonical relocation: {requested_cap_id} → {canonical_cap_id}")
+
     if version_spec in ["latest", "stable"]:
-        version = VersionManager.detect_version(source_dir)
+        version = (
+            source_provenance.version
+            if source_provenance is not None
+            else VersionManager.detect_version(source_dir)
+        )
     else:
         version = version_spec
 
+    current = registry.get_capability(cap_id)
+    if (
+        version_spec in ("latest", "stable")
+        and current is not None
+        and current.version != version
+    ):
+        current_key = VersionManager.semver_key(current.version)
+        resolved_key = VersionManager.semver_key(version)
+        if current_key is not None and resolved_key is not None and resolved_key <= current_key:
+            print(
+                f"No newer version found for {cap_id}: "
+                f"installed {current.version}, resolved {version}."
+            )
+            return True
+
+        print(f"Update available: {cap_id} {current.version} → {version}")
+        if force or yes:
+            print("  Replacing installed version (--yes/--force).")
+        elif not _is_interactive():
+            print(
+                "  Non-interactive session: replacement skipped. "
+                "Re-run with --yes or --force."
+            )
+            return True
+        elif not PromptHandler.ask(
+            f"Replace {cap_id} {current.version} → {version}?",
+            default=False,
+        ):
+            print("  Installation skipped.")
+            return True
+        force = True
+
     existing = registry.get_capability(cap_id, version)
     if existing and not (force or yes):
+        if framework and not _is_framework_already(cap_name, owner, version, framework):
+            return _append_framework(cap_name, owner, version, framework)
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
-    source_manifest = Manifest.detect_from_directory(source_dir)
     if not cap_name and source_manifest.name:
         cap_name = source_manifest.name
         owner = source_manifest.owner or owner or "global"
@@ -306,6 +441,8 @@ def install_capability(
     if errors:
         for e in errors:
             print(f"Warning: {e}")
+    if manifest.kind == "bundle":
+        _warn_bundle_frontmatter_collisions(manifest, package_dir)
 
     # V11/STAB-007: warn when declared env vars never appear in the server
     # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
@@ -404,9 +541,6 @@ def install_capability(
         print(f"  Computing fingerprint for {cap_name}...")
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
 
-    if force:
-        _remove_superseded_versions(registry, cap_name, owner, version)
-
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
@@ -422,6 +556,8 @@ def install_capability(
         framework=first_fw,
         frameworks=list(resolved_frameworks),
         source_url=source_url,
+        source_ref=(source_provenance.source_ref if source_provenance else None),
+        source_commit=(source_provenance.source_commit if source_provenance else None),
     )
 
     if not registry.add_capability(cap):
@@ -448,6 +584,18 @@ def install_capability(
         return False
 
     StorageManager.write_meta(cap, frameworks=resolved_frameworks)
+
+    if force or prune:
+        from .gc import prune_superseded_versions
+
+        if manifest.kind == "bundle":
+            for member_id in _installed_bundle_member_refs(registry, f"{cap_id}@{version}"):
+                member_cap_id, member_version = member_id.rsplit("@", 1)
+                member_owner, member_name = Registry.parse_cap_id(member_cap_id)
+                prune_superseded_versions(
+                    member_owner, member_name, member_version
+                )
+        prune_superseded_versions(owner, cap_name, version)
 
     print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
     return True
@@ -486,19 +634,22 @@ def _install_bundle_members(
             if bundle_conflict:
                 if force:
                     print(f"    --force: reassigning {sub_cap_id} from '{bundle_conflict}' to '{bundle_id}'")
+                    registry.remove_bundle_references(f"{sub_cap_id}@{sub_version}")
                 else:
                     print(f"    Sub-capability {sub_cap_id}@{sub_version} is already a member of bundle '{bundle_conflict}'.")
                     print(f"    Use --force to reassign to '{bundle_id}'.")
                     continue
+            elif force:
+                print(f"    --force: reinstalling {sub_cap_id}@{sub_version}")
             else:
                 print(f"  Sub-capability {sub_cap_id}@{sub_version} already installed.")
-            sub_fingerprints.append(existing.fingerprint)
-            registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
-            continue
+                sub_fingerprints.append(existing.fingerprint)
+                registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
+                continue
 
         _install_single_sub_cap(
             sub_name, sub_version, source_path, owner, registry, storage, no_lock,
-            force=force, all_frameworks=all_frameworks,
+            bundle_dir=bundle_dir, force=force, all_frameworks=all_frameworks,
         )
 
         sub_cap = registry.get_capability(sub_cap_id, sub_version)
@@ -518,13 +669,28 @@ def _install_single_sub_cap(
     registry: Registry,
     storage: StorageManager,
     no_lock: bool,
+    bundle_dir: Optional[Path] = None,
     force: bool = False,
     all_frameworks: bool = False,
 ) -> None:
-    package_dir = storage.get_package_dir(sub_name, version, owner=owner)
-    if package_dir.exists():
-        shutil.rmtree(package_dir)
-    shutil.copytree(source_path, package_dir)
+    source_path = source_path.resolve()
+    shares_bundle_storage = False
+    if bundle_dir is not None:
+        try:
+            source_path.relative_to(bundle_dir.resolve())
+            shares_bundle_storage = True
+        except ValueError:
+            pass
+
+    if shares_bundle_storage:
+        package_dir = storage.create_package_reference(
+            sub_name, version, source_path, owner=owner
+        )
+    else:
+        package_dir = storage.get_package_path(sub_name, version, owner=owner)
+        package_dir.parent.mkdir(parents=True, exist_ok=True)
+        storage.remove_package_path(package_dir)
+        shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
     sub_frameworks = resolve_frameworks(
@@ -538,7 +704,7 @@ def _install_single_sub_cap(
             adapter = get_adapter(fw)
         except ValueError:
             continue
-        adapter.install_capability(sub_name, version, source_path, owner=owner, kind=sub_manifest.kind or "skill")
+        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_manifest.kind or "skill")
 
     sub_errors = sub_manifest.validate()
     if sub_errors:
@@ -547,8 +713,8 @@ def _install_single_sub_cap(
 
     if sub_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, source_path, registry, storage, no_lock,
-            all_frameworks=all_frameworks,
+            sub_manifest, owner, package_dir, registry, storage, no_lock,
+            force=force, all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
@@ -570,35 +736,181 @@ def _install_single_sub_cap(
         source_url=source_url,
     )
 
-    if force:
-        _remove_superseded_versions(registry, sub_name, owner, version)
-
     if not registry.add_capability(capacity):
         registry.update_capability(capacity)
     _record_install_status(registry, f"{owner}/{sub_name}", version, sub_frameworks)
     StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
 
-def _remove_superseded_versions(
-    registry: Registry,
-    cap_name: str,
-    owner: str,
-    keep_version: str,
-) -> None:
-    """Remove registry/package entries for older versions on force installs."""
-    cap_id = f"{owner}/{cap_name}"
-    for existing in list(registry.list_capabilities()):
+def _installed_bundle_member_refs(registry: Registry, bundle_id: str) -> List[str]:
+    """Return current bundle descendants leaf-first for post-success pruning."""
+    ordered = []
+    queue = [bundle_id]
+    seen = {bundle_id}
+    while queue:
+        current = queue.pop(0)
+        for member_id in registry.get_bundle_members(current):
+            if member_id in seen:
+                continue
+            seen.add(member_id)
+            ordered.append(member_id)
+            member_cap_id, member_version = member_id.rsplit("@", 1)
+            member = registry.get_capability(member_cap_id, member_version)
+            if member is not None and member.kind == Kind.BUNDLE:
+                queue.append(member_id)
+    return list(reversed(ordered))
+
+
+def _repository_identity(repository: Optional[str]) -> Optional[str]:
+    if not repository:
+        return None
+    value = repository.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    if ":" in value and "/" not in value.split(":", 1)[0]:
+        value = value.split(":", 1)[1]
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, name = parts[-2], parts[-1]
+    return _safe_canonical_identity(f"{owner}/{name}")
+
+
+def _safe_canonical_identity(value: str) -> Optional[str]:
+    """Return a normalized owner/name that cannot escape package storage."""
+    parts = [part.strip() for part in value.split("/")]
+    if len(parts) != 2:
+        return None
+    owner, name = parts
+    if not all(_CANONICAL_ID_COMPONENT_RE.fullmatch(part) for part in (owner, name)):
+        return None
+    return f"{owner}/{name}"
+
+
+def _canonical_identity(
+    manifest: Manifest,
+    requested_id: str,
+    source_url: Optional[str],
+) -> str:
+    moved_to = (manifest.moved_to or "").strip()
+    if moved_to:
+        canonical_moved_to = _safe_canonical_identity(moved_to)
+        if canonical_moved_to is not None:
+            return canonical_moved_to
+        print(f"Warning: ignoring unsafe canonical identity '{moved_to}'.")
+
+    declared_id = None
+    if manifest.owner and manifest.name:
+        declared_id = _safe_canonical_identity(
+            f"{manifest.owner}/{manifest.name}"
+        )
+    if declared_id and requested_id in (manifest.replaces or []):
+        return declared_id
+
+    repository_id = _repository_identity(manifest.repository or source_url)
+    if repository_id:
+        requested_owner, requested_name = Registry.parse_cap_id(requested_id)
+        repo_owner, repo_name = Registry.parse_cap_id(repository_id)
         if (
-            existing.owner != owner
-            or existing.name != cap_name
-            or existing.version == keep_version
+            repo_name.lower() == requested_name.lower()
+            and repo_owner.lower() != requested_owner.lower()
         ):
+            return repository_id
+    return requested_id
+
+
+def _relocate_registry_identity(
+    registry: Registry,
+    storage: StorageManager,
+    old_id: str,
+    new_id: str,
+    source_url: Optional[str] = None,
+) -> None:
+    old_owner, old_name = Registry.parse_cap_id(old_id)
+    new_owner, new_name = Registry.parse_cap_id(new_id)
+    install_paths = {}
+    for cap in registry.list_capabilities():
+        if cap.owner != old_owner or cap.name != old_name:
             continue
-        old_id = f"{cap_id}@{existing.version}"
-        registry.remove_bundle_references(old_id)
-        registry.remove_capability(cap_id, existing.version)
-        if existing.install_path and existing.install_path.exists():
-            shutil.rmtree(existing.install_path, ignore_errors=True)
+        old_path = Path(cap.install_path) if cap.install_path else None
+        expected_old = storage.get_package_path(
+            old_name, cap.version, owner=old_owner
+        )
+        if old_path != expected_old:
+            continue
+        new_path = storage.get_package_path(
+            new_name, cap.version, owner=new_owner
+        )
+        old_present = old_path.exists() or old_path.is_symlink()
+        new_present = new_path.exists() or new_path.is_symlink()
+        if old_present and not new_present:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            old_path.rename(new_path)
+            install_paths[cap.version] = new_path
+        elif new_present:
+            install_paths[cap.version] = new_path
+
+    registry.relocate_capability(
+        old_id,
+        new_id,
+        install_paths=install_paths,
+        source_url=source_url,
+    )
+    old_name_dir = storage.base_dir / old_owner / old_name
+    old_owner_dir = storage.base_dir / old_owner
+    if old_name_dir.is_dir() and not any(old_name_dir.iterdir()):
+        old_name_dir.rmdir()
+    if old_owner_dir.is_dir() and not any(old_owner_dir.iterdir()):
+        old_owner_dir.rmdir()
+
+
+def _skill_frontmatter_name(skill_file: Path) -> Optional[str]:
+    try:
+        content = skill_file.read_text(errors="replace")
+    except OSError:
+        return None
+    if not content.startswith("---"):
+        return None
+    end = content.find("---", 3)
+    if end < 0:
+        return None
+    for line in content[3:end].splitlines():
+        match = re.match(r"^name:\s*(.+)$", line.strip())
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
+
+def _bundle_frontmatter_collisions(
+    manifest: Manifest, bundle_dir: Path
+) -> Dict[str, List[str]]:
+    members_by_name: Dict[str, List[str]] = {}
+    for entry in manifest.capabilities:
+        member_name = str(entry.get("name", "")).strip()
+        source = entry.get("source")
+        if not member_name or not source:
+            continue
+        member_dir = _resolve_source_path(str(source), bundle_dir)
+        frontmatter_name = _skill_frontmatter_name(member_dir / "SKILL.md")
+        if frontmatter_name:
+            members_by_name.setdefault(frontmatter_name, []).append(member_name)
+    return {
+        name: sorted(members)
+        for name, members in sorted(members_by_name.items())
+        if len(members) > 1
+    }
+
+
+def _warn_bundle_frontmatter_collisions(
+    manifest: Manifest, bundle_dir: Path
+) -> None:
+    for frontmatter_name, members in _bundle_frontmatter_collisions(
+        manifest, bundle_dir
+    ).items():
+        print(
+            f"Warning: bundle frontmatter name '{frontmatter_name}' "
+            f"is shared by: {', '.join(members)}"
+        )
 
 
 def _record_install_status(registry, cap_id: str, version: str, frameworks) -> None:
@@ -657,7 +969,7 @@ def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
 
 
 def _is_git_remote_url(value: str) -> bool:
-    return value.startswith("https://") or value.startswith("git@") or value.startswith("http://")
+    return value.startswith(("https://", "http://", "git@", "file://"))
 
 
 def _resolve_source(
@@ -678,6 +990,85 @@ def _resolve_source(
     return None
 
 
+def _fetch_remote_tag_refs(repo_url: str) -> List[RemoteTag]:
+    """Resolve SemVer tag refs, preferring peeled annotated-tag commits."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", repo_url],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return []
+
+    refs: dict[str, dict[str, str]] = {}
+    for line in result.stdout.splitlines():
+        try:
+            commit, source_ref = line.split("\t", 1)
+        except ValueError:
+            continue
+        if not source_ref.startswith("refs/tags/"):
+            continue
+        peeled = source_ref.endswith("^{}")
+        base_ref = source_ref[:-3] if peeled else source_ref
+        record = refs.setdefault(base_ref, {})
+        record["peeled" if peeled else "object"] = commit
+
+    tags: List[RemoteTag] = []
+    for source_ref, commits in refs.items():
+        tag = source_ref.removeprefix("refs/tags/")
+        version = VersionManager.normalize_semver(tag)
+        if VersionManager.semver_key(version) is None:
+            continue
+        source_commit = commits.get("peeled") or commits.get("object")
+        if source_commit:
+            tags.append(
+                RemoteTag(
+                    tag=tag,
+                    version=version,
+                    source_ref=source_ref,
+                    source_commit=source_commit,
+                )
+            )
+    return tags
+
+
+def _select_remote_tag(
+    tags: List[RemoteTag],
+    version_filter: Optional[str],
+) -> Optional[RemoteTag]:
+    if version_filter:
+        requested = VersionManager.normalize_semver(version_filter)
+        return next((tag for tag in tags if tag.version == requested), None)
+
+    stable = [tag for tag in tags if VersionManager.is_stable_semver(tag.version)]
+    if not stable:
+        return None
+    return max(
+        stable,
+        key=lambda tag: (VersionManager.semver_key(tag.version), tag.tag),
+    )
+
+
+def _git_output(repo_dir: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return ""
+    return result.stdout.strip()
+
+
 def _clone_remote_source(
     source_str: str,
     version_filter: Optional[str] = None,
@@ -695,14 +1086,19 @@ def _clone_remote_source(
     clone_url = url
     if github_token and "github.com" in url:
         clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
-    clone_args = ["git", "clone", "--depth=1"]
-    if version_filter:
-        tag = version_filter if version_filter.startswith("v") else f"v{version_filter}"
-        clone_args.extend(["--branch", tag])
-    clone_args.extend([clone_url, str(tmp_dir / "repo")])
+
+    tags = _fetch_remote_tag_refs(clone_url)
+    selected_tag = _select_remote_tag(tags, version_filter)
+
+    clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
 
     display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
-    print(f"  Cloning {display_url}" + (f" (tag: {version_filter})" if version_filter else "") + "...")
+    selected_label = selected_tag.tag if selected_tag else version_filter
+    print(
+        f"  Cloning {display_url}"
+        + (f" (tag: {selected_label})" if selected_label else "")
+        + "..."
+    )
     try:
         result = subprocess.run(
             clone_args,
@@ -718,9 +1114,68 @@ def _clone_remote_source(
         return None
 
     repo_dir = tmp_dir / "repo"
-    manifest = Manifest.detect_from_directory(repo_dir)
-    if not manifest.name or manifest.name == repo_dir.name and manifest.version == "1.0.0":
-        _auto_generate_manifest(repo_dir, url)
+    if not tags:
+        # A transient ls-remote failure must not make us label default-branch
+        # bytes as tagless after a successful full clone.
+        tags = _fetch_remote_tag_refs(str(repo_dir))
+        selected_tag = _select_remote_tag(tags, version_filter)
+    if version_filter and selected_tag is None:
+        print(f"  Version {version_filter} not found in remote tags.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if selected_tag is not None:
+        checkout = subprocess.run(
+            ["git", "checkout", "--detach", selected_tag.source_commit],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if checkout.returncode != 0:
+            print(f"  Checkout failed: {checkout.stderr.strip()}")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+
+    head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
+    if not head_commit:
+        print("  Clone failed: unable to resolve the checked-out commit.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+    if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
+        print("  Checkout failed: resolved commit does not match selected tag.")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    resolved_commit = head_commit
+    if selected_tag is not None:
+        source_ref = selected_tag.source_ref
+        version = selected_tag.version
+    else:
+        source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
+        version = VersionManager.detect_embedded_version(repo_dir)
+        if not version:
+            version = f"0.0.0+{resolved_commit[:12]}"
+
+    (repo_dir / ".capacium-version").write_text(f"{version}\n")
+    _write_source_provenance(
+        repo_dir,
+        SourceProvenance(
+            source_url=url,
+            source_ref=source_ref,
+            source_commit=resolved_commit,
+            version=version,
+        ),
+    )
+
+    manifest_paths = (
+        repo_dir / "capability.yaml",
+        repo_dir / "capability.yml",
+        repo_dir / "capability.json",
+    )
+    if not any(path.exists() for path in manifest_paths):
+        _auto_generate_manifest(repo_dir, url, resolved_version=version)
 
     return repo_dir, url
 
@@ -751,7 +1206,12 @@ def _fetch_remote_tags(repo_url: str) -> List[str]:
         return []
 
 
-def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Optional[dict] = None) -> None:
+def _auto_generate_manifest(
+    repo_dir: Path,
+    repo_url: str,
+    registry_meta: Optional[dict] = None,
+    resolved_version: Optional[str] = None,
+) -> None:
     dest = repo_dir / "capability.yaml"
     if dest.exists():
         return
@@ -760,7 +1220,7 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
         name = registry_meta.get("name", repo_dir.name)
         owner = registry_meta.get("owner", "unknown")
         kind = registry_meta.get("kind", "skill")
-        version = registry_meta.get("version", "1.0.0")
+        version = resolved_version or registry_meta.get("version", "1.0.0")
         description = registry_meta.get("description", f"Auto-detected capability {name}")
         if version in ("", "latest", "stable"):
             version = "1.0.0"
@@ -774,9 +1234,9 @@ def _auto_generate_manifest(repo_dir: Path, repo_url: str, registry_meta: Option
             name = m.group(2)
         tags_list = []
 
-        tags = _fetch_remote_tags(repo_url)
-        version = "1.0.0"
-        if tags:
+        tags = _fetch_remote_tags(repo_url) if resolved_version is None else []
+        version = resolved_version or "1.0.0"
+        if tags and resolved_version is None:
             def _vk(v):
                 parts = []
                 for p in v.split("."):
@@ -932,33 +1392,36 @@ def _fetch_from_registry(
         print(f"  Capability '{cap_id}' not found in registry.")
         return None, None
 
-    best_version = remote.version
-    if version_spec not in ("latest", "stable", "") and version_spec != best_version:
-        if version_spec in (remote.versions or []):
-            best_version = version_spec
-        else:
-            print(f"  Version {version_spec} not found in registry for {cap_id}.")
-            if remote.versions:
-                print(f"  Available versions: {', '.join(sorted(remote.versions))}")
-            else:
-                print(f"  Latest: {best_version}")
-            return None, None
-
-    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
-    if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
-        print(f"  Using cached {cap_id}@{best_version}")
-        return cache_dir, remote.repository
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-
     repository = remote.repository
     if not repository:
-        print(f"  No source repository for {cap_id}@{best_version}")
+        print(f"  No source repository for {cap_id}@{remote.version}")
         return None, None
 
-    repo_dir = _clone_registry_repo(repository, best_version, github_token=github_token)
-    if repo_dir is None:
+    floating_version = version_spec in ("latest", "stable", "")
+    requested_version = None if floating_version else version_spec
+    best_version = remote.version if floating_version else version_spec
+
+    # Explicit versions may use the cache directly. Floating installs always
+    # resolve upstream first so a stale Exchange label cannot mask newer tags.
+    if not floating_version:
+        cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+        if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
+            print(f"  Using cached {cap_id}@{best_version}")
+            return cache_dir, repository
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+
+    resolved = _clone_remote_source(
+        repository,
+        version_filter=requested_version,
+        github_token=github_token,
+    )
+    if resolved is None:
         return None, None
+    repo_dir, resolved_url = resolved
+    provenance = _read_source_provenance(repo_dir)
+    if provenance is not None:
+        best_version = provenance.version
 
     manifest = Manifest.detect_from_directory(repo_dir)
     if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
@@ -981,58 +1444,29 @@ def _fetch_from_registry(
         shutil.rmtree(cache_dir)
     shutil.copytree(repo_dir, cache_dir)
     shutil.rmtree(repo_dir.parent, ignore_errors=True)
-    return cache_dir, repository
+    return cache_dir, resolved_url
 
 
 def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
-    """Clone a repository from URL into temp + return path.
-
-    Clones the specific tag (v{version}). If the tag doesn't exist,
-    git clone falls back to HEAD — we detect this and return None.
-    """
-    import tempfile
-
-    tag = "" if version in ("", "0.0.0", "latest", "stable") else (
-        version if version.startswith("v") else f"v{version}"
+    """Backward-compatible wrapper around exact source resolution."""
+    version_filter = None if version in ("", "0.0.0", "latest", "stable") else version
+    resolved = _clone_remote_source(
+        repo_url,
+        version_filter=version_filter,
+        github_token=github_token,
     )
-    tmp_dir = Path(tempfile.mkdtemp(prefix="cap-registry-"))
-    clone_url = repo_url
-    if github_token and "github.com" in repo_url:
-        clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
-    clone_args = ["git", "clone", "--depth=1"]
-    if tag:
-        clone_args.extend(["--branch", tag])
-    clone_args.extend([clone_url, str(tmp_dir / "repo")])
-
-    display_url = repo_url.replace("https://", "https://***@") if github_token and "github.com" in repo_url else repo_url
-    print(f"  Fetching {display_url}" + (f"@{version}" if tag else "@HEAD") + "...")
-    try:
-        result = subprocess.run(clone_args, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            print(f"  Clone failed: {result.stderr.strip()}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None
-
-        repo_dir = tmp_dir / "repo"
-        tag_result = subprocess.run(
-            ["git", "tag", "--points-at", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-            cwd=str(repo_dir),
-        )
-        if tag and tag not in (tag_result.stdout or "").splitlines():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            print(f"  Tag {tag} not found in repository.")
-            print(f"  Available tags: {', '.join((tag_result.stdout or '').splitlines()[:5])}")
-            return None
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"  Clone failed: {e}")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
-
-    return repo_dir
+    return resolved[0] if resolved is not None else None
 
 
 def _is_framework_already(cap_name: str, owner: str, version_spec: str, framework: str) -> bool:
+    from ..adapters import get_adapter
+    try:
+        adapter = get_adapter(framework)
+    except ValueError:
+        adapter = None
+    if adapter is not None and adapter.capability_exists(cap_name):
+        return True
+
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS
     skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
     if skills_dir is not None:
@@ -1052,33 +1486,134 @@ def _append_framework(
     owner: str,
     version_spec: str,
     framework: str,
-) -> None:
+    _bundle_stack: Optional[set[str]] = None,
+) -> bool:
+    from ..adapters import get_adapter
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
 
     registry = Registry()
     cap_id = f"{owner}/{cap_name}"
-    existing = registry.get_capability(cap_id, version_spec)
+    lookup_version = None if version_spec in ("latest", "stable", "") else version_spec
+    existing = registry.get_capability(cap_id, lookup_version)
     if existing is None:
         print(f"  Error: {cap_id}@{version_spec} not found in registry")
-        return
+        return False
 
     package_dir = existing.install_path
     if package_dir is None or not package_dir.exists():
         print(f"  Error: install path not found for {cap_id}@{version_spec}")
-        return
+        return False
 
-    version = version_spec
-    if version_spec in ("latest", "stable", ""):
-        version = existing.version
+    version = existing.version
+    capability_ref = f"{cap_id}@{version}"
+
+    if existing.kind == Kind.BUNDLE:
+        bundle_stack = set(_bundle_stack or ())
+        if capability_ref in bundle_stack:
+            print(
+                f"  Error: cyclic bundle membership detected at "
+                f"{capability_ref}"
+            )
+            return False
+        bundle_stack.add(capability_ref)
+
+        member_refs = registry.get_bundle_members(capability_ref)
+        if not member_refs:
+            print(
+                f"  Error: installed bundle {capability_ref} has no "
+                "registered members"
+            )
+            return False
+
+        members: List[tuple[str, str, str, Capability]] = []
+        for member_ref in member_refs:
+            member_cap_id, separator, member_version = member_ref.rpartition("@")
+            if not separator or not member_cap_id or not member_version:
+                print(
+                    f"  Error: invalid bundle member reference "
+                    f"'{member_ref}' in {capability_ref}"
+                )
+                return False
+            member_owner, member_name = Registry.parse_cap_id(member_cap_id)
+            member = registry.get_capability(member_cap_id, member_version)
+            if member is None:
+                print(
+                    f"  Error: bundle member {member_ref} is missing from "
+                    "the registry"
+                )
+                return False
+            members.append(
+                (member_owner, member_name, member_version, member)
+            )
+
+        for member_owner, member_name, member_version, member in members:
+            member_cap_id = f"{member_owner}/{member_name}"
+            if _is_framework_already(
+                member_name, member_owner, member_version, framework
+            ):
+                _update_registered_framework(
+                    registry, member, member_cap_id, framework
+                )
+                print(
+                    f"  Framework '{framework}' already present for "
+                    f"{member_cap_id}@{member_version}"
+                )
+                continue
+            if not _append_framework(
+                member_name,
+                member_owner,
+                member_version,
+                framework,
+                _bundle_stack=bundle_stack,
+            ):
+                print(
+                    f"  Error: could not add framework '{framework}' to "
+                    f"bundle member {member_cap_id}@{member_version}"
+                )
+                return False
+
+        all_frameworks = _update_registered_framework(
+            registry, existing, cap_id, framework
+        )
+        print(
+            f"  Added framework '{framework}' to bundle "
+            f"{capability_ref} ({len(members)} members)"
+        )
+        print(f"  Frameworks: {', '.join(all_frameworks)}")
+        return True
 
     kind_str = existing.kind.value if existing.kind else "skill"
 
-    # Skills-dir-backed frameworks: use symlinks
-    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
-    if skills_dir is not None:
+    try:
+        adapter = get_adapter(framework)
+    except ValueError:
+        adapter = None
+
+    if adapter is not None:
+        success = adapter.install_capability(
+            cap_name,
+            version,
+            package_dir,
+            owner=owner,
+            kind=kind_str,
+        )
+        if not success:
+            print(
+                f"  Warning: Could not install capability for framework "
+                f"'{framework}'. Skipping."
+            )
+            return False
+    else:
+        # Generic skills-dir fallback for frameworks without a dedicated
+        # adapter. Registered adapters are preferred because they resolve the
+        # current HOME and project scope dynamically.
+        skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+        if skills_dir is None:
+            print(f"  Unknown framework: {framework}")
+            return False
         fingerprint = existing.fingerprint
         trust_state = "untrusted"
-        create_framework_symlinks(
+        created = create_framework_symlinks(
             package_dir=package_dir,
             cap_name=cap_name,
             owner=owner,
@@ -1088,25 +1623,40 @@ def _append_framework(
             frameworks=[framework],
             trust_state=trust_state,
         )
-    else:
-        # Config-backed frameworks (e.g. claude-desktop): use adapter
-        try:
-            from ..adapters import get_adapter
-            adapter = get_adapter(framework)
-        except ValueError:
-            print(f"  Unknown framework: {framework}")
-            return
-        success = adapter.install_capability(cap_name, version, package_dir, owner=owner, kind=kind_str)
-        if not success:
-            print(f"  Warning: Could not install capability for framework '{framework}'. Skipping.")
-            return
+        from ..models import SKILL_LAYER_KIND_VALUES
+        if kind_str in SKILL_LAYER_KIND_VALUES and framework not in created:
+            print(
+                f"  Warning: Could not install capability for framework "
+                f"'{framework}'. Skipping."
+            )
+            return False
 
-    all_frameworks = list(existing.frameworks) if existing.frameworks else [existing.framework] if existing.framework else []
+    all_frameworks = _update_registered_framework(
+        registry, existing, cap_id, framework
+    )
+
+    print(f"  Added framework '{framework}' to {cap_id}@{version}")
+    print(f"  Frameworks: {', '.join(all_frameworks)}")
+    return True
+
+
+def _update_registered_framework(
+    registry: Registry,
+    existing: Capability,
+    cap_id: str,
+    framework: str,
+) -> List[str]:
+    all_frameworks = (
+        list(existing.frameworks)
+        if existing.frameworks
+        else [existing.framework]
+        if existing.framework
+        else []
+    )
     if framework not in all_frameworks:
         all_frameworks.append(framework)
 
-    from ..models import Capability as CapModel
-    updated = CapModel(
+    updated = Capability(
         owner=existing.owner,
         name=existing.name,
         version=existing.version,
@@ -1118,11 +1668,14 @@ def _append_framework(
         framework=existing.framework,
         frameworks=all_frameworks,
         source_url=existing.source_url,
+        source_ref=existing.source_ref,
+        source_commit=existing.source_commit,
     )
     registry.update_capability(updated)
-
-    print(f"  Added framework '{framework}' to {cap_id}@{version}")
-    print(f"  Frameworks: {', '.join(all_frameworks)}")
+    _record_install_status(
+        registry, cap_id, existing.version, [framework]
+    )
+    return all_frameworks
 
 
 def _is_interactive() -> bool:

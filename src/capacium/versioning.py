@@ -7,8 +7,14 @@ from typing import Optional, Dict, List, Tuple
 
 class VersionManager:
 
+    _SEMVER_RE = re.compile(
+        r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+        r"(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$"
+    )
+
     @staticmethod
-    def detect_version(directory: Path) -> str:
+    def detect_embedded_version(directory: Path) -> Optional[str]:
+        """Read version metadata from the exact bytes in ``directory``."""
         version_file = directory / ".capacium-version"
         if version_file.exists():
             version = version_file.read_text().strip()
@@ -20,27 +26,12 @@ class VersionManager:
             if manifest_path.exists():
                 try:
                     from .manifest import Manifest
+
                     manifest = Manifest.load(manifest_path)
                     if manifest.version:
                         return manifest.version
                 except Exception:
                     pass
-
-        try:
-            result = subprocess.run(
-                ["git", "describe", "--tags", "--abbrev=0"],
-                cwd=directory,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                tag = result.stdout.strip()
-                if tag.startswith("v"):
-                    tag = tag[1:]
-                return tag
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
 
         package_json = directory / "package.json"
         if package_json.exists():
@@ -57,6 +48,7 @@ class VersionManager:
         if pyproject.exists():
             try:
                 from .utils.toml_compat import tomllib
+
                 with open(pyproject, "rb") as f:
                     data = tomllib.load(f)
                 version = data.get("project", {}).get("version")
@@ -74,7 +66,49 @@ class VersionManager:
             if match:
                 return match.group(1)
 
+        return None
+
+    @staticmethod
+    def detect_version(directory: Path) -> str:
+        embedded = VersionManager.detect_embedded_version(directory)
+        if embedded:
+            return embedded
+
+        try:
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--abbrev=0"],
+                cwd=directory,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                tag = result.stdout.strip()
+                if tag.startswith("v"):
+                    tag = tag[1:]
+                return tag
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
         return "1.0.0"
+
+    @staticmethod
+    def semver_key(version: str) -> Optional[Tuple[int, int, int]]:
+        """Return a precedence key for a strict three-part SemVer string."""
+        match = VersionManager._SEMVER_RE.fullmatch(version.strip())
+        if not match:
+            return None
+        return tuple(int(match.group(index)) for index in (1, 2, 3))
+
+    @staticmethod
+    def is_stable_semver(version: str) -> bool:
+        match = VersionManager._SEMVER_RE.fullmatch(version.strip())
+        return bool(match and match.group(4) is None)
+
+    @staticmethod
+    def normalize_semver(version: str) -> str:
+        value = version.strip()
+        return value[1:] if value.startswith("v") else value
 
     @staticmethod
     def parse_skill_id(skill_id: str) -> Tuple[str, str]:

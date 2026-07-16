@@ -12,9 +12,11 @@ from ..adapters import get_adapter
 from ..models import Kind
 from ..registry_client import RegistryClient, RegistryClientError
 from ..commands.install import (
+    _fetch_remote_tag_refs,
     _has_package_json,
     _install_npm_dependencies,
     _preflight_runtimes,
+    _select_remote_tag,
     install_capability,
 )
 from .hold import get_hold
@@ -47,45 +49,28 @@ def _parse_version(v: str) -> tuple:
 
 
 def _fetch_remote_git_tags(repo_url: str) -> List[str]:
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--tags", "--sort=-v:refname", repo_url],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return []
-        seen = set()
-        tags = []
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) != 2:
-                continue
-            ref = parts[1]
-            if ref.endswith("^{}"):
-                continue
-            tag = ref.removeprefix("refs/tags/")
-            tag = tag[1:] if tag.startswith("v") else tag
-            if VersionManager.is_valid_version(tag) and tag not in seen:
-                seen.add(tag)
-                tags.append(tag)
-        return tags
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return []
+    return [tag.version for tag in _fetch_remote_tag_refs(repo_url)]
 
 
 def _check_for_newer_version(cap_id: str, current_version: str, source_url: Optional[str]) -> bool:
     if source_url and _is_git_url(source_url):
-        tags = _fetch_remote_git_tags(source_url)
-        if tags:
-            latest = max(tags, key=_parse_version)
-            if _parse_version(latest) > _parse_version(current_version):
-                print(f"  Newer version {latest} found via remote tags.")
-                print(f"  Installing {cap_id}@{latest}...")
-                return install_capability(f"{cap_id}@{latest}", force=True, yes=True)
+        latest = _select_remote_tag(_fetch_remote_tag_refs(source_url), None)
+        if latest is not None:
+            current_key = VersionManager.semver_key(current_version)
+            latest_key = VersionManager.semver_key(latest.version)
+            is_newer = (
+                current_key is None
+                or latest_key is not None and latest_key > current_key
+            )
+            if is_newer:
+                print(f"  Newer version {latest.version} found via remote tags.")
+                print(f"  Installing {cap_id}@{latest.version}...")
+                return install_capability(
+                    f"{cap_id}@{latest.version}",
+                    source_dir=source_url,
+                    force=True,
+                    yes=True,
+                )
 
     client = RegistryClient()
     try:

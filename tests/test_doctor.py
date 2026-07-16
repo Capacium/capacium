@@ -31,7 +31,7 @@ def tmp_home(monkeypatch):
 
 
 @pytest.fixture
-def mock_dummy_caps(monkeypatch):
+def mock_dummy_caps(monkeypatch, tmp_home):
     caps = [
         Capability(
             owner="acme", name="test-skill", version="1.0.0",
@@ -55,9 +55,9 @@ def mock_dummy_caps(monkeypatch):
 
 class TestDoctorDeep:
 
-    def test_deep_checks_returns_seven_results(self, mock_dummy_caps):
+    def test_deep_checks_returns_ten_results(self, mock_dummy_caps, tmp_home):
         results = _deep_checks()
-        assert len(results) == 7  # incl. MCP stdout purity (VER-001)
+        assert len(results) == 10
         for name, passed, detail in results:
             assert isinstance(name, str)
             assert isinstance(passed, bool)
@@ -367,7 +367,7 @@ mcp:
 
     # ---- doctor() function integration ----
 
-    def test_doctor_basic_no_caps(self, monkeypatch):
+    def test_doctor_basic_no_caps(self, monkeypatch, tmp_home):
         monkeypatch.setattr(
             "capacium.commands.doctor.Registry.list_capabilities",
             MagicMock(return_value=[]),

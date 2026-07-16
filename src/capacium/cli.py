@@ -61,6 +61,11 @@ def main():
         help="Force installation even if a different owner is detected",
     )
     install_parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="After a successful install, prune safe superseded versions",
+    )
+    install_parser.add_argument(
         "--from-tarball",
         help="Install from a local .tar.gz file",
     )
@@ -261,6 +266,22 @@ def main():
     repair_parser.add_argument(
         "--json", action="store_true",
         help="Output as JSON (for programmatic use)",
+    )
+
+    gc_parser = subparsers.add_parser(
+        "gc",
+        help="Prune superseded package versions and empty package stubs",
+    )
+    gc_parser.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        help="Versions to retain per package (default: config keep_versions or 1)",
+    )
+    gc_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List reclaimable versions and bytes without changing anything",
     )
 
     runtimes_parser = subparsers.add_parser(
@@ -530,6 +551,7 @@ def main():
                 offline=getattr(args, "offline", False),
                 framework=getattr(args, "framework", None),
                 force=getattr(args, "force", False),
+                prune=getattr(args, "prune", False),
                 from_tarball=getattr(args, "from_tarball", None),
                 yes=getattr(args, "yes", False),
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
@@ -696,6 +718,12 @@ def main():
             from .commands.repair import repair
             success = repair(args)
             sys.exit(0 if success else 1)
+
+        elif args.command == "gc":
+            from .commands.gc import garbage_collect
+
+            garbage_collect(keep=args.keep, dry_run=args.dry_run)
+            sys.exit(0)
 
         elif args.command == "runtimes":
             from .commands.runtimes_cmd import list_runtimes, show_install_hint

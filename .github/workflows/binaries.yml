@@ -88,17 +88,19 @@ jobs:
 
       - name: Build .deb and .rpm
         env:
-          VERSION: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
+          VERSION="${RELEASE_TAG#v}"
+          export VERSION
+          mkdir -p dist release
           cp cap-Linux-X64/cap dist/capacium
           chmod +x dist/capacium
-          ./nfpm package --target "release/${VERSION}" --packager deb
-          ./nfpm package --target "release/${VERSION}" --packager rpm
+          ./nfpm package --target "release/capacium_${VERSION}.deb" --packager deb
+          ./nfpm package --target "release/capacium_${VERSION}.rpm" --packager rpm
 
       - name: Upload .deb and .rpm
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/*/capacium_*.deb
-            release/*/capacium_*.rpm
+            release/capacium_*.deb
+            release/capacium_*.rpm

@@ -21,6 +21,7 @@ DEFAULT_USER_CONFIG: Dict[str, Any] = {
     "auto_overwrite": False,
     "offline_mode": False,
     "skip_runtime_check": False,
+    "keep_versions": 1,
 }
 
 DEFAULT_APP_CONFIG: Dict[str, Any] = {

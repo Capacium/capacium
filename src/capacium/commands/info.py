@@ -98,6 +98,8 @@ def _to_info_json(detail: Dict[str, Any]) -> str:
             "dependencies": detail.get("dependencies", {}),
             "fingerprint": detail.get("fingerprint", ""),
             "source_url": detail.get("source_url", ""),
+            "source_ref": detail.get("source_ref", ""),
+            "source_commit": detail.get("source_commit", ""),
             "publisher": detail.get("publisher", ""),
             "updated_at": detail.get("updated_at", ""),
         },
@@ -116,6 +118,8 @@ def _render_info(detail: Dict[str, Any]) -> str:
     version = detail.get("version", "")
     description = detail.get("description", "")
     source_url = detail.get("source_url", "")
+    source_ref = detail.get("source_ref", "")
+    source_commit = detail.get("source_commit", "")
     publisher = detail.get("publisher", "")
     updated_at = detail.get("updated_at", "")
     stars = detail.get("stars")
@@ -184,6 +188,10 @@ def _render_info(detail: Dict[str, Any]) -> str:
 
     if source_url:
         lines.append(f"  {_DIM}Source:{_RESET} {source_url}")
+    if source_ref:
+        lines.append(f"  {_DIM}Source ref:{_RESET} {source_ref}")
+    if source_commit:
+        lines.append(f"  {_DIM}Source commit:{_RESET} {source_commit}")
 
     lines.append(rule)
     lines.append(f"  {_DIM}[i]{_RESET} install  {_DIM}[c]{_RESET} compare  {_DIM}[v]{_RESET} verify fingerprint  {_DIM}[q]{_RESET} back")
@@ -285,6 +293,8 @@ def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
         "runtimes": {},
         "dependencies": {},
         "source_url": cap.source_url or "",
+        "source_ref": cap.source_ref or "",
+        "source_commit": cap.source_commit or "",
         "publisher": "",
         "updated_at": cap.installed_at.isoformat() if cap.installed_at else "",
     }
