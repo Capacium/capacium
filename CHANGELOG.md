@@ -2,6 +2,58 @@
 
 All notable changes to this project will be documented in this file.
 
+## Capacium v0.16.0 — Exact provenance, safe storage & repair (2026-07-16)
+
+Completes the post-v0.15 follow-up set with exact source/version semantics,
+shared bundle storage, guarded garbage collection, deeper diagnostics, and an
+attended eight-client verification.
+
+### Added
+- **Exact source provenance:** installs select and check out the highest stable
+  SemVer tag (including annotated tags), record the source URL/ref/commit, and
+  derive deterministic versions for tagless sources from the resolved bytes.
+- **Safe package garbage collection:** `cap gc` supports dry-run and explicit
+  application, configurable retention, held/linked/shared-member protection,
+  byte reporting, and opt-in post-install pruning.
+- **Deep hygiene reporting:** `cap doctor --deep` reports duplicate or divergent
+  client content, mixed-runtime and package/runtime-version drift, package-store
+  size, largest packages, and prunable versions.
+- **Repair inventories:** `cap repair` can identify stale bundle-root links,
+  excess MCP configuration backups, and empty owner/name stubs before attended
+  removal.
+
+### Changed
+- **Bundle storage:** exploded members reference their owning bundle bytes
+  instead of copying member files into separate package trees; retention keeps
+  the physical storage owner while any shared member remains live.
+- **Bundle framework augmentation:** one offline bundle-level `cap install`
+  command can add a newly installed framework to every registered member,
+  including project-scoped Cursor, without a bundle-root link or `--force`.
+- **Update semantics:** install/update compare real source versions, show the
+  exact old-to-new transition, support attended confirmation and explicit
+  `--yes`/`--force`, and give non-TTY callers an actionable command.
+- **Canonical identity:** repository relocation metadata is recorded without
+  duplicate registry rows, while unsafe manifest-provided identities are
+  rejected before package-store moves.
+- **Bundle reinstall:** `--force` propagates to every bundle member and records
+  per-adapter install status.
+
+### Fixed
+- MCP config backups use collision-resistant names and retain the newest five
+  by default; Claude Desktop sandbox paths normalize macOS `/tmp` aliases.
+- Duplicate bundle-member frontmatter names produce a deterministic warning.
+- `.deb` and `.rpm` packaging strips the leading tag `v`, creates distinct
+  output paths, and uploads the generated files from the actual release folder.
+- Garbage collection protects the bundle version that physically owns retained
+  shared-member bytes, even when another retained bundle references the member.
+
+### Verification
+- Core: 899 passed, 3 skipped; Ruff and release workflow checks pass.
+- Permanent Forgejo-first Test Lab runner: 689 passed, 4 skipped.
+- All eight P0 clients completed the attended SkillWeave walkthrough; remaining
+  description inconsistencies are classified as next-version SkillWeave source
+  metadata work, not Capacium placement failures.
+
 ## Capacium v0.15.1 — Release-pipeline fixes (2026-07-14)
 
 Patch for two CI issues found while shipping v0.15.0 (the v0.15.0 artifacts
