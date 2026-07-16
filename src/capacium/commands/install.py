@@ -161,6 +161,27 @@ def install_capability(
             owner = existing_by_name.owner
             cap_id = f"{owner}/{cap_name}"
 
+    # Bundle roots intentionally have no client artifact, so filesystem-based
+    # conflict detection cannot discover an installed bundle. Resolve an
+    # explicit framework augmentation from the registry before any source or
+    # network lookup. This also makes the operation work offline.
+    registered_version = None if version_spec in ("latest", "stable", "") else version_spec
+    registered = registry.get_capability(cap_id, registered_version)
+    if (
+        framework
+        and registered is not None
+        and not force
+        and (
+            registered.kind == Kind.BUNDLE
+            or not _is_framework_already(
+                cap_name, owner, registered.version, framework
+            )
+        )
+    ):
+        return _append_framework(
+            cap_name, owner, registered.version, framework
+        )
+
     # ── Conflict detection ─────────────────────────────────────────
     conflict = check_conflict(cap_name, owner, version_spec)
     defer_latest_conflict = version_spec in ("latest", "stable") and conflict.state in (
@@ -170,8 +191,9 @@ def install_capability(
     if conflict.state != ConflictState.NO_CONFLICT and not defer_latest_conflict:
         if conflict.state == ConflictState.ALREADY_INSTALLED:
             if framework and not _is_framework_already(cap_name, owner, version_spec, framework):
-                _append_framework(cap_name, owner, version_spec, framework)
-                return True
+                return _append_framework(
+                    cap_name, owner, version_spec, framework
+                )
             # --force: always reinstall (update framework configs, re-run npm, etc.)
             if force or yes:
                 print(f"  {conflict.message} — reinstalling (--force)")
@@ -363,8 +385,7 @@ def install_capability(
     existing = registry.get_capability(cap_id, version)
     if existing and not (force or yes):
         if framework and not _is_framework_already(cap_name, owner, version, framework):
-            _append_framework(cap_name, owner, version, framework)
-            return True
+            return _append_framework(cap_name, owner, version, framework)
         print(f"Capability {cap_id}@{version} already installed.")
         return False
 
@@ -1438,6 +1459,14 @@ def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str
 
 
 def _is_framework_already(cap_name: str, owner: str, version_spec: str, framework: str) -> bool:
+    from ..adapters import get_adapter
+    try:
+        adapter = get_adapter(framework)
+    except ValueError:
+        adapter = None
+    if adapter is not None and adapter.capability_exists(cap_name):
+        return True
+
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS
     skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
     if skills_dir is not None:
@@ -1457,33 +1486,134 @@ def _append_framework(
     owner: str,
     version_spec: str,
     framework: str,
-) -> None:
+    _bundle_stack: Optional[set[str]] = None,
+) -> bool:
+    from ..adapters import get_adapter
     from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
 
     registry = Registry()
     cap_id = f"{owner}/{cap_name}"
-    existing = registry.get_capability(cap_id, version_spec)
+    lookup_version = None if version_spec in ("latest", "stable", "") else version_spec
+    existing = registry.get_capability(cap_id, lookup_version)
     if existing is None:
         print(f"  Error: {cap_id}@{version_spec} not found in registry")
-        return
+        return False
 
     package_dir = existing.install_path
     if package_dir is None or not package_dir.exists():
         print(f"  Error: install path not found for {cap_id}@{version_spec}")
-        return
+        return False
 
-    version = version_spec
-    if version_spec in ("latest", "stable", ""):
-        version = existing.version
+    version = existing.version
+    capability_ref = f"{cap_id}@{version}"
+
+    if existing.kind == Kind.BUNDLE:
+        bundle_stack = set(_bundle_stack or ())
+        if capability_ref in bundle_stack:
+            print(
+                f"  Error: cyclic bundle membership detected at "
+                f"{capability_ref}"
+            )
+            return False
+        bundle_stack.add(capability_ref)
+
+        member_refs = registry.get_bundle_members(capability_ref)
+        if not member_refs:
+            print(
+                f"  Error: installed bundle {capability_ref} has no "
+                "registered members"
+            )
+            return False
+
+        members: List[tuple[str, str, str, Capability]] = []
+        for member_ref in member_refs:
+            member_cap_id, separator, member_version = member_ref.rpartition("@")
+            if not separator or not member_cap_id or not member_version:
+                print(
+                    f"  Error: invalid bundle member reference "
+                    f"'{member_ref}' in {capability_ref}"
+                )
+                return False
+            member_owner, member_name = Registry.parse_cap_id(member_cap_id)
+            member = registry.get_capability(member_cap_id, member_version)
+            if member is None:
+                print(
+                    f"  Error: bundle member {member_ref} is missing from "
+                    "the registry"
+                )
+                return False
+            members.append(
+                (member_owner, member_name, member_version, member)
+            )
+
+        for member_owner, member_name, member_version, member in members:
+            member_cap_id = f"{member_owner}/{member_name}"
+            if _is_framework_already(
+                member_name, member_owner, member_version, framework
+            ):
+                _update_registered_framework(
+                    registry, member, member_cap_id, framework
+                )
+                print(
+                    f"  Framework '{framework}' already present for "
+                    f"{member_cap_id}@{member_version}"
+                )
+                continue
+            if not _append_framework(
+                member_name,
+                member_owner,
+                member_version,
+                framework,
+                _bundle_stack=bundle_stack,
+            ):
+                print(
+                    f"  Error: could not add framework '{framework}' to "
+                    f"bundle member {member_cap_id}@{member_version}"
+                )
+                return False
+
+        all_frameworks = _update_registered_framework(
+            registry, existing, cap_id, framework
+        )
+        print(
+            f"  Added framework '{framework}' to bundle "
+            f"{capability_ref} ({len(members)} members)"
+        )
+        print(f"  Frameworks: {', '.join(all_frameworks)}")
+        return True
 
     kind_str = existing.kind.value if existing.kind else "skill"
 
-    # Skills-dir-backed frameworks: use symlinks
-    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
-    if skills_dir is not None:
+    try:
+        adapter = get_adapter(framework)
+    except ValueError:
+        adapter = None
+
+    if adapter is not None:
+        success = adapter.install_capability(
+            cap_name,
+            version,
+            package_dir,
+            owner=owner,
+            kind=kind_str,
+        )
+        if not success:
+            print(
+                f"  Warning: Could not install capability for framework "
+                f"'{framework}'. Skipping."
+            )
+            return False
+    else:
+        # Generic skills-dir fallback for frameworks without a dedicated
+        # adapter. Registered adapters are preferred because they resolve the
+        # current HOME and project scope dynamically.
+        skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+        if skills_dir is None:
+            print(f"  Unknown framework: {framework}")
+            return False
         fingerprint = existing.fingerprint
         trust_state = "untrusted"
-        create_framework_symlinks(
+        created = create_framework_symlinks(
             package_dir=package_dir,
             cap_name=cap_name,
             owner=owner,
@@ -1493,25 +1623,40 @@ def _append_framework(
             frameworks=[framework],
             trust_state=trust_state,
         )
-    else:
-        # Config-backed frameworks (e.g. claude-desktop): use adapter
-        try:
-            from ..adapters import get_adapter
-            adapter = get_adapter(framework)
-        except ValueError:
-            print(f"  Unknown framework: {framework}")
-            return
-        success = adapter.install_capability(cap_name, version, package_dir, owner=owner, kind=kind_str)
-        if not success:
-            print(f"  Warning: Could not install capability for framework '{framework}'. Skipping.")
-            return
+        from ..models import SKILL_LAYER_KIND_VALUES
+        if kind_str in SKILL_LAYER_KIND_VALUES and framework not in created:
+            print(
+                f"  Warning: Could not install capability for framework "
+                f"'{framework}'. Skipping."
+            )
+            return False
 
-    all_frameworks = list(existing.frameworks) if existing.frameworks else [existing.framework] if existing.framework else []
+    all_frameworks = _update_registered_framework(
+        registry, existing, cap_id, framework
+    )
+
+    print(f"  Added framework '{framework}' to {cap_id}@{version}")
+    print(f"  Frameworks: {', '.join(all_frameworks)}")
+    return True
+
+
+def _update_registered_framework(
+    registry: Registry,
+    existing: Capability,
+    cap_id: str,
+    framework: str,
+) -> List[str]:
+    all_frameworks = (
+        list(existing.frameworks)
+        if existing.frameworks
+        else [existing.framework]
+        if existing.framework
+        else []
+    )
     if framework not in all_frameworks:
         all_frameworks.append(framework)
 
-    from ..models import Capability as CapModel
-    updated = CapModel(
+    updated = Capability(
         owner=existing.owner,
         name=existing.name,
         version=existing.version,
@@ -1527,9 +1672,10 @@ def _append_framework(
         source_commit=existing.source_commit,
     )
     registry.update_capability(updated)
-
-    print(f"  Added framework '{framework}' to {cap_id}@{version}")
-    print(f"  Frameworks: {', '.join(all_frameworks)}")
+    _record_install_status(
+        registry, cap_id, existing.version, [framework]
+    )
+    return all_frameworks
 
 
 def _is_interactive() -> bool:
