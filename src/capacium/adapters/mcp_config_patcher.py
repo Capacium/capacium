@@ -236,7 +236,10 @@ class McpConfigPatcher:
             elif isinstance(value, (int, float)):
                 f.write(f"{key} = {value}\n")
             else:
-                f.write(f'{key} = "{value}"\n')
+                # JSON string quoting is also valid TOML basic-string quoting
+                # and correctly escapes Windows backslashes, quotes, and
+                # control characters.
+                f.write(f"{key} = {json.dumps(str(value), ensure_ascii=False)}\n")
 
     @staticmethod
     def enrich_mcp_meta_for_git(

@@ -4,6 +4,7 @@ Tests verify JSON/TOML roundtrip safety: inject → verify → remove → verify
 Ensures no data destruction on patch/unpatch operations.
 """
 import json
+from io import StringIO
 from unittest.mock import patch
 
 import pytest
@@ -72,6 +73,30 @@ class TestMcpConfigPatcherJson:
         McpConfigPatcher.write_json(config, data)
         roundtripped = McpConfigPatcher.read_json(config)
         assert roundtripped == original
+
+
+class TestMcpConfigPatcherToml:
+    def test_simple_writer_escapes_windows_paths(self):
+        from capacium.utils.toml_compat import tomllib
+
+        output = StringIO()
+        windows_path = r"C:\Users\runneradmin\.capacium\packages\server.py"
+        McpConfigPatcher._write_toml_simple(
+            output,
+            {
+                "mcp_servers": {
+                    "test-server": {
+                        "command": windows_path,
+                        "args": [windows_path, '--label="Windows"'],
+                    }
+                }
+            },
+        )
+
+        parsed = tomllib.loads(output.getvalue())
+        entry = parsed["mcp_servers"]["test-server"]
+        assert entry["command"] == windows_path
+        assert entry["args"] == [windows_path, '--label="Windows"']
 
 
 class TestBuildMcpEntry:

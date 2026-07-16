@@ -2139,10 +2139,10 @@ def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:
 
     has_lock = (runtime_dir / "package-lock.json").exists()
     if has_lock:
-        cmd = ["npm", "ci", "--production"]
+        cmd = [npm_path, "ci", "--production"]
         print(f"  Running npm ci in {runtime_dir}...")
     else:
-        cmd = ["npm", "install", "--production"]
+        cmd = [npm_path, "install", "--production"]
         print(f"  Running npm install in {runtime_dir}...")
 
     try:

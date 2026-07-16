@@ -1,4 +1,5 @@
 import subprocess
+from unittest.mock import patch
 
 
 class TestResolveSource:
@@ -338,6 +339,28 @@ frameworks:
         assert result is False
         out = capsys.readouterr().out
         assert "Use --source" in out
+
+
+class TestInstallNpmDependencies:
+    def test_uses_resolved_npm_executable(self, tmp_path):
+        from capacium.commands.install import _install_npm_dependencies
+
+        (tmp_path / "package.json").write_text('{"name": "test-server"}')
+        npm_executable = r"C:\Program Files\nodejs\npm.cmd"
+        completed = subprocess.CompletedProcess(
+            [npm_executable, "install", "--production"],
+            0,
+            stdout="installed",
+            stderr="",
+        )
+
+        with patch("shutil.which", return_value=npm_executable), patch(
+            "capacium.commands.install.subprocess.run",
+            return_value=completed,
+        ) as run:
+            assert _install_npm_dependencies(tmp_path, "test-server") is True
+
+        assert run.call_args.args[0][0] == npm_executable
 
 
 class TestFetchRemoteTags:
