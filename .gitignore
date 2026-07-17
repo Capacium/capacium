@@ -13,7 +13,6 @@ site/
 *.db
 .capacium/
 .DS_Store
-.skillweave/
 AGENTS.md
 .codenomad/
 prd/
@@ -35,3 +34,7 @@ perplexity.log
 
 # Agent session state (path-keyed, not for VCS)
 .opencode/
+
+# SkillWeave runtime stays local; the organization planning helper is tracked.
+.skillweave/*
+!.skillweave/agents.md
