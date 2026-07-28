@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from ..kinds import CapaciumKind
 from .adapt import _split_canonical
 
 
@@ -41,7 +42,7 @@ def export_mcp(
     output: Optional[str] = None,
     registry_url: Optional[str] = None,
 ) -> bool:
-    return _export(canonical, "mcp-server", output, registry_url)
+    return _export(canonical, CapaciumKind.MCP.value, output, registry_url)
 
 
 def export_opencode(

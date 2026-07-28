@@ -3,6 +3,8 @@
 import re
 from typing import Any, Dict, List
 
+from ..kinds import CapaciumKind
+
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
@@ -11,19 +13,20 @@ _GREEN = "\033[32m"
 _PURPLE = "\033[35m"
 _BLUE = "\033[34m"
 _CYAN = "\033[36m"
-_RED = "\033[31m"
 
 _KIND_COLORS = {
-    "skill": _GREEN,
-    "mcp-server": _PURPLE,
-    "tool": _BLUE,
-    "bundle": _CYAN,
-    "prompt": _YELLOW,
-    "agent": _RED,
-    "template": _DIM,
-    "workflow": _DIM,
-    "connector-pack": _DIM,
-    "resource": _GREEN,
+    k.value: v
+    for k, v in {
+        CapaciumKind.SKILL: _GREEN,
+        CapaciumKind.MCP: _PURPLE,
+        CapaciumKind.TOOL: _BLUE,
+        CapaciumKind.BUNDLE: _CYAN,
+        CapaciumKind.PROMPT: _YELLOW,
+        CapaciumKind.TEMPLATE: _DIM,
+        CapaciumKind.WORKFLOW: _DIM,
+        CapaciumKind.CONNECTOR: _DIM,
+        CapaciumKind.RESOURCE: _GREEN,
+    }.items()
 }
 
 _TRUST_COLORS = {

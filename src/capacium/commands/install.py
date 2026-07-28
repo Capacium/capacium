@@ -14,6 +14,7 @@ from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..manifest import Manifest
 from ..models import Capability, ConflictResult, ConflictState, Kind
+from ..kinds import CapaciumKind
 from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
@@ -1247,18 +1248,18 @@ def _auto_generate_manifest(
                 return tuple(parts)
             version = max(tags, key=_vk)
 
-        kind = "skill"
+        kind = CapaciumKind.SKILL.value
         topics_lower = name.lower()
         if "mcp" in topics_lower or "mcp-server" in topics_lower:
-            kind = "mcp-server"
+            kind = CapaciumKind.MCP.value
         elif "bundle" in topics_lower or "pack" in topics_lower:
-            kind = "bundle"
+            kind = CapaciumKind.BUNDLE.value
         elif "tool" in topics_lower:
-            kind = "tool"
+            kind = CapaciumKind.TOOL.value
         elif "template" in topics_lower:
-            kind = "template"
+            kind = CapaciumKind.TEMPLATE.value
         elif "workflow" in topics_lower:
-            kind = "workflow"
+            kind = CapaciumKind.WORKFLOW.value
 
         description = f"Auto-detected capability {name}"
 
@@ -1268,11 +1269,11 @@ def _auto_generate_manifest(
     # V13/STAB-001: multi-skill repositories become bundles with member
     # skills instead of a single undiscoverable root skill.
     members = []
-    if kind in ("skill", "bundle"):
+    if kind in (CapaciumKind.SKILL.value, CapaciumKind.BUNDLE.value):
         from ..manifest import infer_multi_skill_members
         members = infer_multi_skill_members(repo_dir)
         if members:
-            kind = "bundle"
+            kind = CapaciumKind.BUNDLE.value
             description = f"Multi-skill bundle {name} ({len(members)} skills)"
 
     yaml_data = {
@@ -1582,7 +1583,7 @@ def _append_framework(
         print(f"  Frameworks: {', '.join(all_frameworks)}")
         return True
 
-    kind_str = existing.kind.value if existing.kind else "skill"
+    kind_str = existing.kind.value if existing.kind else CapaciumKind.SKILL.value
 
     try:
         adapter = get_adapter(framework)

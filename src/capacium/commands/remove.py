@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
+from ..kinds import CapaciumKind
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
@@ -176,7 +177,7 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
             except ValueError:
                 continue
             adapter.remove_capability(
-                cap_name, owner=owner, kind=cap.kind.value if cap.kind else "skill"
+                cap_name, owner=owner,                 kind=cap.kind.value if cap.kind else CapaciumKind.SKILL.value
             )
 
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)
@@ -276,7 +277,7 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         except ValueError:
             continue
         if adapter.capability_exists(cap_name):
-            adapter.remove_capability(cap_name, kind="mcp-server")
+            adapter.remove_capability(cap_name, kind=CapaciumKind.MCP.value)
 
 
 def _remove_sub_capabilities(

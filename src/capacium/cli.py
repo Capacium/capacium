@@ -5,6 +5,7 @@ from pathlib import Path
 
 from . import __version__
 from .commands.registry import add_registry_parser
+from .commands.init import VALID_TEMPLATES
 
 
 def main():
@@ -156,7 +157,7 @@ def main():
     )
     init_parser.add_argument(
         "--template",
-        choices=["skill", "mcp-server", "bundle", "resource"],
+        choices=sorted(VALID_TEMPLATES),
         help="Scaffold from template: skill | mcp-server | bundle | resource. Creates capability.yaml + SKILL.md + README.md.",
     )
     init_parser.add_argument(

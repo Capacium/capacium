@@ -36,13 +36,10 @@ except ImportError:
 SCHEMA_URL = "https://capacium.xyz/spec/v1.0/schema.json"
 SCHEMA_CACHE_PATH = Path.home() / ".capacium" / "cache" / "spec-v1.0-schema.json"
 
-VALID_KINDS = {
-    "skill", "mcp-server", "bundle", "tool", "prompt",
-    "template", "workflow", "connector-pack",
-    "operator", "checkpoint", "policy",
-}
+from ..kinds import ACTIVE_KINDS, CapaciumKind, _LEGACY_SPEC_KIND_VALUES as LEGACY_SPEC_KIND_VALUES
 
-LEGACY_SPEC_KINDS = {"operator", "checkpoint", "policy"}
+_ACTIVE_KINDS = ACTIVE_KINDS
+_LEGACY_KINDS = LEGACY_SPEC_KIND_VALUES
 
 TRUST_STATES = ["discovered", "audited", "verified", "signed"]
 
@@ -107,31 +104,31 @@ def _semantic_checks(data: Dict[str, Any], strict: bool) -> Tuple[List[str], Lis
             warnings.append("  version '0.0.0' — update to a real release version")
 
     # Kind-specific
-    if kind == "mcp-server" and "mcp_meta" not in data:
+    if kind == CapaciumKind.MCP.value and "mcp_meta" not in data:
         warnings.append(
             "  kind 'mcp-server' missing 'mcp_meta' block\n"
             "    Add: mcp_meta.transport, mcp_meta.tools list"
         )
 
-    if kind == "bundle" and "bundle_meta" not in data:
+    if kind == CapaciumKind.BUNDLE.value and "bundle_meta" not in data:
         warnings.append(
             "  kind 'bundle' missing 'bundle_meta' block\n"
             "    Add: bundle_meta.capabilities list"
         )
 
-    if kind == "operator" and "operator_meta" not in data:
+    if kind in _LEGACY_KINDS and "operator_meta" not in data:
         errors.append(
             "  kind 'operator' is legacy spec-only — must migrate to kind: workflow\n"
             "    See: MANIFESTO §5.3 — no operator Kind in active Capacium registry"
         )
 
-    if kind == "checkpoint" and "checkpoint_meta" not in data:
+    if kind in _LEGACY_KINDS and "checkpoint_meta" not in data:
         errors.append(
             "  kind 'checkpoint' is legacy spec-only — must migrate to kind: workflow\n"
             "    See: MANIFESTO §5.3 — no checkpoint Kind in active Capacium registry"
         )
 
-    if kind == "policy" and "policy_meta" not in data:
+    if kind in _LEGACY_KINDS and "policy_meta" not in data:
         errors.append(
             "  kind 'policy' is legacy spec-only — must migrate to kind: workflow\n"
             "    See: MANIFESTO §5.3 — no policy Kind in active Capacium registry"

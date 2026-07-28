@@ -13,6 +13,8 @@ import tty
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..kinds import CapaciumKind
+
 from ..index import Index
 from ..registry_client import RegistryClient, RegistryClientError, RegistryDetail
 from ..ui import _BOLD, _DIM, _RESET, KindPill, TrustBadge, term_width
@@ -279,7 +281,7 @@ def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
     return {
         "name": cap.name,
         "owner": cap.owner,
-        "kind": cap.kind.value if cap.kind else "skill",
+        "kind": cap.kind.value if cap.kind else CapaciumKind.SKILL.value,
         "version": cap.version,
         "description": "",
         "fingerprint": cap.fingerprint,

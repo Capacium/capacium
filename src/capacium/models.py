@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
+from .kinds import CapaciumKind
+
 
 class ConflictState(Enum):
     NO_CONFLICT = "no_conflict"
@@ -36,14 +38,21 @@ class ConflictResult:
 
 class Kind(Enum):
     SKILL = "skill"
+    MCP_SERVER = "mcp-server"
     BUNDLE = "bundle"
     TOOL = "tool"
     PROMPT = "prompt"
     TEMPLATE = "template"
     WORKFLOW = "workflow"
-    MCP_SERVER = "mcp-server"
     CONNECTOR_PACK = "connector-pack"
     RESOURCE = "resource"
+
+    @classmethod
+    def _missing_(cls, value):
+        for member in cls:
+            if member.value == value:
+                return member
+        raise ValueError(f"'{value}' is not a valid {cls.__name__}")
 
 
 # Kind-placement contract (V6): only these kinds may materialize as links in
@@ -78,6 +87,8 @@ class Capability:
     source_url: Optional[str] = None
     source_ref: Optional[str] = None
     source_commit: Optional[str] = None
+    _migration_note: Optional[str] = None
+    _original_kind: Optional[str] = None
 
     @property
     def id(self) -> str:
@@ -126,7 +137,17 @@ class Capability:
                     validated = validate_kind(kind_val)
                     filtered["kind"] = Kind(validated.value)
                 except ValueError:
-                    filtered["kind"] = Kind.SKILL  # legacy compat for stored data
+                    from .kinds import is_legacy_spec_kind, legacy_migration_note
+                    if is_legacy_spec_kind(kind_val):
+                        note = legacy_migration_note(kind_val)
+                        filtered["_migration_note"] = note
+                        filtered["_original_kind"] = kind_val
+                        filtered["kind"] = Kind.WORKFLOW
+                    else:
+                        raise ValueError(
+                            f"Cannot load Capability with unknown kind '{kind_val}'. "
+                            f"Must be a valid CapaciumKind."
+                        )
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
         if "frameworks" in filtered and isinstance(filtered["frameworks"], str):

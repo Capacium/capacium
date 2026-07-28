@@ -146,33 +146,34 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Manifest":
-        kind_raw = data.pop("kind", None)
+        data_copy = dict(data)
+        kind_raw = data_copy.pop("kind", None)
         if isinstance(kind_raw, str):
-            data["kind"] = kind_raw
+            data_copy["kind"] = kind_raw
         else:
-            data["kind"] = ""  # will fail validation, no silent coercion
+            data_copy["kind"] = ""  # will fail validation, no silent coercion
         # Ensure mcp section is a dict
-        if "mcp" in data and not isinstance(data["mcp"], dict):
-            data["mcp"] = {}
+        if "mcp" in data_copy and not isinstance(data_copy["mcp"], dict):
+            data_copy["mcp"] = {}
         # Ensure runtimes section is a dict of str -> str
-        if "runtimes" in data:
-            if isinstance(data["runtimes"], dict):
-                data["runtimes"] = {
+        if "runtimes" in data_copy:
+            if isinstance(data_copy["runtimes"], dict):
+                data_copy["runtimes"] = {
                     str(k): ("*" if v is None else str(v))
-                    for k, v in data["runtimes"].items()
+                    for k, v in data_copy["runtimes"].items()
                 }
             else:
-                data["runtimes"] = {}
+                data_copy["runtimes"] = {}
         # Filter out unknown keys to prevent TypeError
         from .interfaces import QualifiedInterface
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in data.items() if k in known_fields}
+        filtered = {k: v for k, v in data_copy.items() if k in known_fields}
         result = cls(**filtered)
         # Parse qualified interfaces into typed objects if present
-        if "qualified_interfaces" in data and isinstance(data["qualified_interfaces"], list):
+        if "qualified_interfaces" in data_copy and isinstance(data_copy["qualified_interfaces"], list):
             result.qualified_interfaces = [
                 QualifiedInterface.from_dict(qi) if isinstance(qi, dict) else qi
-                for qi in data["qualified_interfaces"]
+                for qi in data_copy["qualified_interfaces"]
             ]
         return result
 

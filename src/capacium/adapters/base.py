@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from ..kinds import CapaciumKind
+
 
 def _cap_id(cap_name: str, owner: str = "global") -> str:
     """Return the client-facing filesystem name for a capability.
@@ -25,7 +27,7 @@ def ensure_package_dir(storage, cap_name: str, version: str, source_dir: Path, o
 
 class FrameworkAdapter(ABC):
     def install_capability(self, cap_name: str, version: str, source_dir: Path, owner: str = "global", kind: str = "skill") -> bool:
-        if kind == "mcp-server":
+        if kind == CapaciumKind.MCP.value:
             return self.install_mcp_server(cap_name, version, source_dir, owner)
         from ..models import SKILL_LAYER_KIND_VALUES
         if kind not in SKILL_LAYER_KIND_VALUES:
@@ -36,7 +38,7 @@ class FrameworkAdapter(ABC):
         return self.install_skill(cap_name, version, source_dir, owner)
 
     def remove_capability(self, cap_name: str, owner: str = "global", kind: str = "skill") -> bool:
-        if kind == "mcp-server":
+        if kind == CapaciumKind.MCP.value:
             return self.remove_mcp_server(cap_name, owner)
         return self.remove_skill(cap_name, owner)
 

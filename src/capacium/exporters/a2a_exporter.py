@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from .base import BaseExporter
 from ..manifest import Manifest
+from ..kinds import CapaciumKind
 
 
 class A2AExporter(BaseExporter):
@@ -21,7 +22,11 @@ class A2AExporter(BaseExporter):
         return "a2a-agent-card"
 
     def can_export(self, manifest: Manifest) -> bool:
-        return manifest.kind in ("skill", "mcp-server", "bundle")
+        return manifest.kind in (
+            CapaciumKind.SKILL.value,
+            CapaciumKind.MCP.value,
+            CapaciumKind.BUNDLE.value,
+        )
 
     def export(self, manifest: Manifest) -> Dict[str, Any]:
         card: Dict[str, Any] = {

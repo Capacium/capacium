@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
+from ..kinds import CapaciumKind
+
 
 class ManifestSchemaError(ValueError):
     """Raised when a manifest field fails schema validation at the IR layer."""
@@ -22,7 +24,7 @@ class CapabilityIR:
     canonical: str = ""
     name: str = ""
     owner: str = ""
-    kind: str = "skill"
+    kind: str = CapaciumKind.SKILL.value
     description: str = ""
     version: str = ""
     tools: List[Dict[str, Any]] = field(default_factory=list)
@@ -53,7 +55,7 @@ class CapabilityIR:
         ir = cls(
             name=name,
             owner=owner,
-            kind=manifest.get("kind", "skill"),
+            kind=manifest.get("kind", CapaciumKind.SKILL.value),
             description=manifest.get("description", manifest.get("short_description", "")),
             version=manifest.get("version", "0.1.0"),
             runtimes=manifest.get("runtimes", {}),
@@ -258,7 +260,7 @@ class OpenCodeAdapter(CapabilityAdapter):
             canonical=f"{descriptor.get('owner','')}/{descriptor.get('name','')}".strip("/"),
             name=descriptor.get("name", ""),
             owner=descriptor.get("owner", ""),
-            kind=descriptor.get("kind", "skill"),
+            kind=descriptor.get("kind", CapaciumKind.SKILL.value),
             version=descriptor.get("version", ""),
             description=descriptor.get("description", ""),
         )
@@ -294,7 +296,7 @@ class ClaudeDesktopAdapterAdapt(CapabilityAdapter):
 # ── Adapter registry ─────────────────────────────────────────────────────────
 
 ADAPTER_REGISTRY: Dict[str, CapabilityAdapter] = {
-    "mcp-server": MCPAdapter(),
+    CapaciumKind.MCP.value: MCPAdapter(),
     "a2a-agent": A2AAdapter(),
     "aws-agentcore": AWSAgentCoreAdapter(),
     "opencode": OpenCodeAdapter(),

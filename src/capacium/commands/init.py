@@ -5,13 +5,18 @@ from typing import Optional, List, Dict
 from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
-from ..kinds import ACTIVE_KINDS
+from ..kinds import ACTIVE_KINDS, CapaciumKind
 
-VALID_TEMPLATES = {"skill", "mcp-server", "bundle", "resource"}
+VALID_TEMPLATES = frozenset({
+    CapaciumKind.SKILL.value,
+    CapaciumKind.MCP.value,
+    CapaciumKind.BUNDLE.value,
+    CapaciumKind.RESOURCE.value,
+})
 
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 VALID_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-VALID_KINDS = ACTIVE_KINDS
+_VALID_KINDS = ACTIVE_KINDS
 
 
 def _validate_name(name: str) -> Optional[str]:
@@ -25,8 +30,8 @@ def _validate_name(name: str) -> Optional[str]:
 def _validate_kind(kind: str) -> Optional[str]:
     if not kind:
         return "kind is required"
-    if kind not in VALID_KINDS:
-        kinds_str = ", ".join(sorted(VALID_KINDS))
+    if kind not in _VALID_KINDS:
+        kinds_str = ", ".join(sorted(_VALID_KINDS))
         return f"invalid kind '{kind}': must be one of {kinds_str}"
     return None
 
@@ -54,7 +59,7 @@ def init_capability(
         if err:
             print(f"Error: {err}")
             return False
-        kind = kind or "skill"
+        kind = kind or CapaciumKind.SKILL.value
         err = _validate_kind(kind)
         if err:
             print(f"Error: {err}")
@@ -78,7 +83,7 @@ def init_capability(
                 continue
             break
 
-        print(f"\n  Kinds: {', '.join(sorted(VALID_KINDS))}")
+        print(f"\n  Kinds: {', '.join(sorted(_VALID_KINDS))}")
         while True:
             kind = input("  Kind [skill]: ").strip() or "skill"
             err = _validate_kind(kind)
@@ -233,8 +238,8 @@ def init_skill() -> bool:
 
     manifest.name = _prompt_required("Capability name (kebab-case)", "my-capability")
 
-    print("\n  Available kinds: skill, bundle, tool, prompt, template, workflow, mcp-server, connector-pack, resource")
-    default_kind = "skill"
+    print(f"\n  Available kinds: {', '.join(k.value for k in CapaciumKind)}")
+    default_kind = CapaciumKind.SKILL.value
     manifest.kind = _prompt_with_default("Kind", default_kind).strip() or default_kind
 
     manifest.version = _prompt_with_default("Version", "1.0.0").strip() or "1.0.0"

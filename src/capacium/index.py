@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .kinds import CapaciumKind
+
 
 class Index:
 
@@ -372,7 +374,7 @@ class Index:
         import random
         import string
 
-        kinds = ["skill", "mcp-server", "tool", "bundle", "prompt", "template", "workflow", "connector-pack"]
+        kinds = [k.value for k in CapaciumKind]
         trusts = ["discovered", "audited", "verified", "signed"]
         listings = []
         for i in range(n):

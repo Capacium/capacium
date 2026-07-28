@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from .kinds import CapaciumKind
+
 
 def framework_skills_dirs() -> Dict[str, Path]:
     """Skills directories per framework, resolved against the *current* HOME.
@@ -37,7 +39,7 @@ def framework_skills_dirs() -> Dict[str, Path]:
 FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = framework_skills_dirs()
 
 FRAMEWORK_KINDS: Dict[str, Set[str]] = {
-    "claude-desktop": {"mcp-server", "skill"},
+    "claude-desktop": {CapaciumKind.MCP.value, CapaciumKind.SKILL.value},
 }
 """Frameworks whose default kinds differ from the universal set.
 
