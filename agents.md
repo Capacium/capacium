@@ -296,3 +296,31 @@ SHA=$(shasum -a 256 /tmp/cap.tar.gz | awk '{print $1}')
 # Commit and push:
 cd "$TAP" && git add Formula/capacium.rb && git commit -m "chore(capacium): bump to vX.Y.Z" && git push origin main
 ```
+
+## Where to work — Forgejo-first
+
+- **Canonical origin:** Forgejo `git@git.langevc.com:capacium/capacium.git` — work **here**.
+- **GitHub** `github.com/Capacium/capacium` is a read-only mirror (force-pushed from Forgejo) — do **not** push there.
+- **Local clone:** `~/Documents/repositories/forgejo/capacium/capacium` (layout `<provider>/<org>/<repo>`); remotes `origin`=Forgejo, `github`=mirror.
+- Pull requests on Forgejo. CI: Forgejo for dev; some workflows are guarded to GitHub (hybrid) — see `capacium-internal-docs/docs/develop/forgejo-first-workflow.md`.
+
+## Neutrality Realignment (2026-07-28)
+
+This repository is subject to the Capacium Neutral Core Manifesto (MANIFESTO.md).
+
+### Binding Constraints for Agents
+
+1. Read MANIFESTO.md before any Core change.
+2. Do not introduce product-policy semantics (entitlement, PERMITTED/RESTRICTED, commercial actions) into Core.
+3. Do not add a `process` package Kind.
+4. Do not create mandatory SkillWeave, Elementeer, or hosted-service dependencies.
+5. Do not use `capacium.xyz` namespace for third-party product semantics.
+6. Any new Core Kind or normative contract change requires a CIP neutrality-impact section.
+7. The R4 contract bundle (`contracts/cap-g1b-r4/` in capacium-test-lab) is LEGACY_REFERENCE_PROFILE_V1ALPHA1 — byte-frozen, never mutated.
+
+### Governance Documents
+
+- MANIFESTO.md — binding architecture constraints
+- CHARTER.md — project charter and scope
+- GOVERNANCE.md — decision-making process
+- CIP (Capacium Improvement Proposal) — normative change process
