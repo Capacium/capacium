@@ -62,6 +62,7 @@ _KIND_COLORS_256 = {
     "template": "\033[38;5;244m",
     "workflow": "\033[38;5;208m",
     "connector-pack": "\033[38;5;175m",
+    "resource": "\033[38;5;180m",
 }
 
 _KIND_COLORS_16 = {
@@ -73,6 +74,7 @@ _KIND_COLORS_16 = {
     "template": "\033[90m",
     "workflow": "\033[33m",
     "connector-pack": "\033[35m",
+    "resource": "\033[36m",
 }
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -140,6 +142,8 @@ class KindPill:
             "bundle": "BNDL",
             "prompt": "PRMT",
             "template": "TMPL",
+            "workflow": "WFLW",
+            "resource": "RES",
             "workflow": "WFLW",
         }
         k = (kind or "skill").lower()

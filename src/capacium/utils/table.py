@@ -23,6 +23,7 @@ _KIND_COLORS = {
     "template": _DIM,
     "workflow": _DIM,
     "connector-pack": _DIM,
+    "resource": _GREEN,
 }
 
 _TRUST_COLORS = {

@@ -42,6 +42,8 @@ VALID_KINDS = {
     "operator", "checkpoint", "policy",
 }
 
+LEGACY_SPEC_KINDS = {"operator", "checkpoint", "policy"}
+
 TRUST_STATES = ["discovered", "audited", "verified", "signed"]
 
 SEMVER_RE = re.compile(
@@ -119,20 +121,20 @@ def _semantic_checks(data: Dict[str, Any], strict: bool) -> Tuple[List[str], Lis
 
     if kind == "operator" and "operator_meta" not in data:
         errors.append(
-            "  kind 'operator' requires 'operator_meta' block\n"
-            "    Add: operator_meta.role, operator_meta.sla_hours, operator_meta.approval_modes"
+            "  kind 'operator' is legacy spec-only — must migrate to kind: workflow\n"
+            "    See: MANIFESTO §5.3 — no operator Kind in active Capacium registry"
         )
 
     if kind == "checkpoint" and "checkpoint_meta" not in data:
         errors.append(
-            "  kind 'checkpoint' requires 'checkpoint_meta' block\n"
-            "    Add: checkpoint_meta.fallback (approve|reject|escalate)"
+            "  kind 'checkpoint' is legacy spec-only — must migrate to kind: workflow\n"
+            "    See: MANIFESTO §5.3 — no checkpoint Kind in active Capacium registry"
         )
 
     if kind == "policy" and "policy_meta" not in data:
         errors.append(
-            "  kind 'policy' requires 'policy_meta' block\n"
-            "    Add: policy_meta.minimum_trust_state (discovered|audited|verified|signed)"
+            "  kind 'policy' is legacy spec-only — must migrate to kind: workflow\n"
+            "    See: MANIFESTO §5.3 — no policy Kind in active Capacium registry"
         )
 
     # Description

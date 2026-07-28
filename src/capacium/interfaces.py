@@ -1,4 +1,7 @@
-"""CAPN-P02 Lane C — Qualified Interfaces for Capacium packages."""
+"""Capacium Qualified Interface — wire contract (CAPN-P02 v1alpha1).
+
+Implements CAP-A08: typed compatibility result across all normative fields.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +13,16 @@ from typing import Optional
 class InterfaceStatus(str, Enum):
     REQUIRED = "required"
     OPTIONAL = "optional"
+
+
+class CompatibilityResult(str, Enum):
+    MATCH = "match"
+    PROVIDER_MISMATCH = "provider_mismatch"
+    INTERFACE_MISMATCH = "interface_mismatch"
+    INTERFACE_VERSION_MISMATCH = "interface_version_mismatch"
+    SCHEMA_VERSION_MISMATCH = "schema_version_mismatch"
+    DIGEST_MISMATCH = "digest_mismatch"
+    REQUIRED_VS_OPTIONAL = "required_vs_optional"
 
 
 @dataclass(frozen=True)
@@ -50,9 +63,21 @@ class QualifiedInterface:
             owner_payload=data.get("owner_payload", {}),
         )
 
-    def is_compatible_with(self, other: QualifiedInterface) -> bool:
+    def compatibility(self, other: QualifiedInterface) -> CompatibilityResult:
+        """Typed compatibility check across all normative fields."""
         if self.provider_id != other.provider_id:
-            return False
+            return CompatibilityResult.PROVIDER_MISMATCH
         if self.interface_id != other.interface_id:
-            return False
-        return self.interface_version == other.interface_version
+            return CompatibilityResult.INTERFACE_MISMATCH
+        if self.interface_version != other.interface_version:
+            return CompatibilityResult.INTERFACE_VERSION_MISMATCH
+        if self.schema_version != other.schema_version:
+            return CompatibilityResult.SCHEMA_VERSION_MISMATCH
+        if self.digest and other.digest and self.digest != other.digest:
+            return CompatibilityResult.DIGEST_MISMATCH
+        if self.status != other.status:
+            return CompatibilityResult.REQUIRED_VS_OPTIONAL
+        return CompatibilityResult.MATCH
+
+    def is_compatible_with(self, other: QualifiedInterface) -> bool:
+        return self.compatibility(other) == CompatibilityResult.MATCH

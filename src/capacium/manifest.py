@@ -44,6 +44,7 @@ class Manifest:
     size_hint: Optional[str] = None
     access: Optional[Dict[str, Any]] = None
     compatibility: Optional[Dict[str, Any]] = None
+    qualified_interfaces: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -178,9 +179,17 @@ class Manifest:
             else:
                 data["runtimes"] = {}
         # Filter out unknown keys to prevent TypeError
+        from .interfaces import QualifiedInterface
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in known_fields}
-        return cls(**filtered)
+        result = cls(**filtered)
+        # Parse qualified interfaces into typed objects if present
+        if "qualified_interfaces" in data and isinstance(data["qualified_interfaces"], list):
+            result.qualified_interfaces = [
+                QualifiedInterface.from_dict(qi) if isinstance(qi, dict) else qi
+                for qi in data["qualified_interfaces"]
+            ]
+        return result
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
