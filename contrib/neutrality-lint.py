@@ -18,7 +18,7 @@ PROHIBITED_TERMS = [
     (r'\bRESTRICTED\b', 'authorization decision constant (MANIFESTO §4)'),
     (r'\bPERMITTED_WITH_WARNING\b', 'authorization decision constant (MANIFESTO §4)'),
     (r'\bEntitlementDecision\b', 'entitlement/approval logic (MANIFESTO §§3-4)'),
-    (r'(?<!")(?:\b|_)entitlement(?!")\b', 'entitlement semantics in Core (MANIFESTO §3) — exempt: quoted "entitlement" in docstrings'),
+    (r'(?:\b|_)entitlement\b', 'entitlement semantics in Core (MANIFESTO §3)'),
 ]
 
 PROHIBITED_IMPORTS = [
@@ -42,14 +42,28 @@ def lint_file(path: Path) -> list[str]:
         content = path.read_text()
     except Exception as exc:
         return [f"ERROR reading {path}: {exc}"]
+    
+    # Filter out docstring lines — neutral descriptions of prohibited terms are allowed
+    in_docstring = False
+    filtered_lines = []
+    for line in content.splitlines(True):
+        stripped = line.strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            in_docstring = not in_docstring
+            continue
+        if in_docstring:
+            continue
+        filtered_lines.append(line)
+    docstring_free = ''.join(filtered_lines)
+    
     for pattern, reason in PROHIBITED_TERMS:
-        matches = re.findall(pattern, content, re.IGNORECASE)
+        matches = re.findall(pattern, docstring_free, re.IGNORECASE)
         for m in matches:
             errors.append(
                 f"PROHIBITED: '{m}' in {_display_path(path)} — {reason}"
             )
     for pattern, reason in PROHIBITED_IMPORTS:
-        for line_no, line in enumerate(content.splitlines(), 1):
+        for line_no, line in enumerate(docstring_free.splitlines(), 1):
             if re.match(pattern, line, re.IGNORECASE):
                 stripped = line.strip()
                 errors.append(
