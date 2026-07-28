@@ -1,0 +1,16 @@
+{
+  "inventory": {
+    "broken_exception_count": 0,
+    "broken_exceptions": [],
+    "broken_record_count": 0,
+    "broken_records": [],
+    "finding_count": 0,
+    "findings": [],
+    "is_clean": true,
+    "is_inventory_intact": true,
+    "violation_count": 0,
+    "violations": []
+  },
+  "scan_root": "src/capacium",
+  "schema_version": 1
+}

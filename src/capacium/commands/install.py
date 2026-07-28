@@ -1269,7 +1269,9 @@ def _auto_generate_manifest(
                 return tuple(parts)
             version = max(tags, key=_vk)
 
-        # VERSIONED_MIGRATION: auto-generate manifest for pre-neutrality installs
+        # VERSIONED_MIGRATION(v1): auto-generate manifest for pre-neutrality
+        # installs. Contract v1 infers a Kind from repository naming signals
+        # for sources that predate the Kind neutrality format.
         kind = CapaciumKind.SKILL.value
         topics_lower = name.lower()
         if "mcp" in topics_lower or "mcp-server" in topics_lower:

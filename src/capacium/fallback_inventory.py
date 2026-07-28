@@ -14,9 +14,12 @@ Usage:
 from __future__ import annotations
 
 import ast
+import io
 import json
 import os
+import re
 import sys
+import tokenize
 from dataclasses import dataclass, field as _field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +47,22 @@ _SINK_PATTERNS: frozenset[str] = frozenset({
     "add_capability", "remove_capability", "adapt",
     "validate_kind", "resolve_frameworks", "init_capability",
     "install_capability", "package_capability", "sync_index",
+    # Persistence sinks — an empty or non-canonical Kind reaching any of these
+    # is written through to durable state.
+    "persist", "save", "store", "write", "record", "put", "insert",
+    "update_capability", "set_kind",
 })
+
+# Marker name assembled at runtime so this module never matches its own
+# detector when the canonical package tree is scanned.
+_MIGRATION_MARKER: str = "VERSIONED_" + "MIGRATION"
+
+# A migration marker is versioned only when it carries an explicit version
+# tag, e.g. ``VERSIONED_MIGRATION(v1):`` or ``VERSIONED_MIGRATION(2.1)``.
+_MARKER_VERSION_RE = re.compile(
+    re.escape(_MIGRATION_MARKER) + r"\s*\(\s*v?\d+(?:\.\d+)*\s*\)"
+)
+_MARKER_ANY_RE = re.compile(re.escape(_MIGRATION_MARKER))
 
 # ── Exclusion: directories that must never enter the scan ─────────────────────
 
@@ -571,6 +589,203 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     return ret
 
 
+def _kind_operand_name(node: ast.AST) -> str:
+    """Return the Kind-ish identifier a fallback expression reads from.
+
+    Recognises ``kind``, ``self.kind``, ``payload["kind"]`` and
+    ``payload.get("kind")`` forms.  Returns ``""`` when the operand does not
+    reference a Kind.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Subscript):
+        sl = node.slice
+        if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+            return sl.value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.args and isinstance(node.args[0], ast.Constant):
+            if isinstance(node.args[0].value, str):
+                return node.args[0].value
+    return ""
+
+
+def _boolop_reads_kind(node: ast.BoolOp) -> bool:
+    """True when an ``or`` chain draws its live value from a Kind operand."""
+    return any(
+        "kind" in _kind_operand_name(v).lower()
+        for v in node.values
+        if not isinstance(v, ast.Constant)
+    )
+
+
+def _noncanonical_string_fallbacks(node: ast.BoolOp) -> list:
+    """Return string constants in an ``or`` chain that are not active Kinds.
+
+    Covers both the unknown-sentinel form (``kind or "unknown"``) and the
+    empty-string form (``kind or ""``).  Canonical Kind literals are handled
+    by the existing canonical scanners and are not returned here.
+    """
+    out = []
+    for v in node.values:
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+            if v.value not in _KIND_LITERALS:
+                out.append(v.value)
+    return out
+
+
+def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
+    """Flag non-canonical Kind fallbacks reaching a dispatch/persistence sink.
+
+    Patterns:
+        ``adapter.dispatch(kind or "unknown")``   — unknown sentinel sink
+        ``adapter.dispatch(kind or "")``          — empty-string sink
+        ``store.upsert(kind=kind or "")``         — empty-string persistence
+
+    A canonical Kind literal is *not* reported here; only values outside the
+    active Kind set, which can never be a legitimate dispatch value.
+    """
+    ret = []
+
+    def _record(call: ast.Call, boolop: ast.BoolOp, via_kwarg: bool) -> None:
+        for value in _noncanonical_string_fallbacks(boolop):
+            empty = value.strip() == ""
+            func = _get_enclosing_func(tree, call)
+            ret.append(Finding(
+                file=rel_path, line=call.lineno, function=func,
+                pattern=("sink-empty-default" if empty
+                         else "sink-noncanonical-default"),
+                sink_role="dispatch-sink",
+                disposition="unlisted",
+                code=(ast.unparse(call).strip() if hasattr(ast, "unparse")
+                      else f'.{call.func.attr}(kind=...)'),
+                resolved_kind=value,
+            ))
+
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call) or not isinstance(n.func, ast.Attribute):
+            continue
+        if n.func.attr not in _SINK_PATTERNS:
+            continue
+        for arg in n.args:
+            if isinstance(arg, ast.BoolOp) and isinstance(arg.op, ast.Or):
+                if _boolop_reads_kind(arg):
+                    _record(n, arg, via_kwarg=False)
+        for kw in n.keywords:
+            if kw.arg != "kind":
+                continue
+            if isinstance(kw.value, ast.BoolOp) and isinstance(kw.value.op, ast.Or):
+                _record(n, kw.value, via_kwarg=True)
+            elif (isinstance(kw.value, ast.Constant)
+                  and isinstance(kw.value.value, str)
+                  and kw.value.value not in _KIND_LITERALS):
+                func = _get_enclosing_func(tree, n)
+                empty = kw.value.value.strip() == ""
+                ret.append(Finding(
+                    file=rel_path, line=n.lineno, function=func,
+                    pattern=("sink-empty-default" if empty
+                             else "sink-noncanonical-default"),
+                    sink_role="dispatch-sink",
+                    disposition="unlisted",
+                    code=f'.{n.func.attr}(kind="{kw.value.value}")',
+                    resolved_kind=kw.value.value,
+                ))
+    return ret
+
+
+def _scan_migration_markers(source: str, tree: ast.AST, rel_path: str) -> list:
+    """Flag migration markers that carry no explicit version tag.
+
+    A versioned migration must declare which migration version it implements,
+    e.g. ``VERSIONED_MIGRATION(v1):``.  A bare marker — whether written as a
+    comment or as an assignment such as ``VERSIONED_MIGRATION = True`` —
+    provides no migration contract and is reported as unversioned.
+
+    Comment-form markers are matched against raw source lines because comments
+    are not represented in the AST.
+    """
+    ret = []
+
+    for lineno, comment in _iter_comments(source):
+        if not _MARKER_ANY_RE.search(comment):
+            continue
+        if _MARKER_VERSION_RE.search(comment):
+            continue
+        ret.append(Finding(
+            file=rel_path, line=lineno, function=_func_for_line(tree, lineno),
+            pattern="unversioned-migration-marker",
+            sink_role="migration-boundary",
+            disposition="unlisted",
+            code=comment.strip(),
+            resolved_kind="<unversioned>",
+        ))
+
+    # Assignment form: the value must be a non-empty version string.
+    for n in ast.walk(tree):
+        targets = []
+        if isinstance(n, ast.Assign):
+            targets = [t for t in n.targets if isinstance(t, ast.Name)]
+            value = n.value
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            targets = [n.target]
+            value = n.value
+        else:
+            continue
+        for t in targets:
+            if _MIGRATION_MARKER not in t.id:
+                continue
+            versioned = (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+                and bool(value.value.strip())
+            )
+            if versioned:
+                continue
+            ret.append(Finding(
+                file=rel_path, line=n.lineno,
+                function=_get_enclosing_func(tree, n) or "<module>",
+                pattern="unversioned-migration-marker",
+                sink_role="migration-boundary",
+                disposition="unlisted",
+                code=(ast.unparse(n).strip() if hasattr(ast, "unparse")
+                      else f"{t.id} = ..."),
+                resolved_kind="<unversioned>",
+            ))
+    return ret
+
+
+def _iter_comments(source: str):
+    """Yield ``(lineno, comment_text)`` for every comment token in *source*.
+
+    Tokenizing is required so that a marker mentioned in executable code or
+    inside a string literal is not mistaken for a comment-form marker.
+    Untokenizable source yields nothing; such files are already reported as
+    broken records by the caller.
+    """
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                yield tok.start[0], tok.string
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return
+
+
+def _func_for_line(tree: ast.AST, lineno: int) -> str:
+    """Return the innermost function enclosing *lineno*, or ``<module>``."""
+    best = "<module>"
+    best_span = None
+    for n in ast.walk(tree):
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        end = getattr(n, "end_lineno", None) or n.lineno
+        if n.lineno <= lineno <= end:
+            span = end - n.lineno
+            if best_span is None or span < best_span:
+                best, best_span = n.name, span
+    return best
+
+
 def _scan_enum_conditional(tree: ast.AST, rel_path: str) -> list:
     """Flag if/else blocks that assign Kind enum defaults.
 
@@ -641,28 +856,99 @@ def _check_misclassified_entry(exc: ExceptionEntry,
     return False
 
 
+def _resolve_project_root(src_dir: Path) -> Optional[Path]:
+    """Resolve the project root that owns *src_dir*, independent of CWD.
+
+    Walks upward from the scanned package directory looking for a directory
+    that carries both a ``tests/`` tree and a project marker
+    (``pyproject.toml`` or ``.git``).  Resolution is derived purely from the
+    scan root, never from the process working directory, so ``--integrity``
+    behaves identically from the repository root and from an unrelated CWD.
+
+    Returns ``None`` when *src_dir* is not part of a checked-out project
+    (e.g. an installed site-packages tree or a bare temp directory).
+    """
+    src_dir = src_dir.resolve()
+    for candidate in (src_dir, *src_dir.parents):
+        if not (candidate / "tests").is_dir():
+            continue
+        if (candidate / "pyproject.toml").is_file() or (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _resolve_tests_dir(src_dir: Path) -> Optional[Path]:
+    """Return the project's ``tests/`` directory, or ``None`` if unavailable."""
+    root = _resolve_project_root(src_dir)
+    if root is None:
+        return None
+    tests_dir = root / "tests"
+    return tests_dir if tests_dir.is_dir() else None
+
+
+def _collect_test_symbols(tests_dir: Path) -> FrozenSet[str]:
+    """Build an exact test-symbol index for *tests_dir*.
+
+    The index contains, for every collectable test module:
+
+    - the module stem (e.g. ``test_p01b_lifecycle_matrix``);
+    - the dotted module path relative to ``tests/``;
+    - every top-level and nested ``def`` / ``async def`` / ``class`` name.
+
+    Membership is exact-match only.  A ``test_ref`` is never satisfied by a
+    substring appearing anywhere in a file's text, which previously let an
+    arbitrary mention inside a comment or unrelated identifier count as proof.
+    """
+    symbols: set = set()
+    for pyfile in sorted(tests_dir.rglob("*.py")):
+        if any(_is_excluded(part) for part in pyfile.parts):
+            continue
+        symbols.add(pyfile.stem)
+        try:
+            rel = pyfile.relative_to(tests_dir).with_suffix("")
+            symbols.add(".".join(rel.parts))
+        except ValueError:
+            pass
+        try:
+            tree = ast.parse(pyfile.read_text())
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                symbols.add(node.name)
+    return frozenset(symbols)
+
+
 def _check_test_ref_integrity(src_dir: Path) -> list:
-    """Verify every ExceptionEntry.test_ref resolves to an existing test file.
-    Returns broken ref descriptions (empty list = all valid)."""
-    tests_dir = src_dir / "tests"
-    if not tests_dir.exists():
-        return ["tests/ directory not found"]
+    """Verify every ``ExceptionEntry.test_ref`` resolves to a real test symbol.
+
+    Resolution is CWD-independent: the tests tree is located from the project
+    that owns *src_dir*, not from ``src_dir / "tests"``.  Each ``test_ref`` is
+    matched exactly against the collected test-symbol index (module stems,
+    dotted module paths, and function/class names) rather than by substring
+    coincidence.
+
+    Returns broken-ref descriptions (empty list = all valid).
+    """
+    tests_dir = _resolve_tests_dir(src_dir)
+    if tests_dir is None:
+        return [
+            f"tests/ directory not found for scan root {src_dir} "
+            f"(no parent with tests/ plus pyproject.toml or .git)"
+        ]
+    symbols = _collect_test_symbols(tests_dir)
+    if not symbols:
+        return [f"no test symbols collected from {tests_dir}"]
     broken: list = []
-    for exc in KNOWN_EXCEPTIONS:
+    for exc in sorted(KNOWN_EXCEPTIONS, key=lambda e: (e.file, e.kind)):
         if not exc.test_ref:
             broken.append(f"{exc.file}: test_ref is empty")
             continue
-        found = False
-        for pyfile in tests_dir.rglob("*.py"):
-            try:
-                if exc.test_ref in pyfile.read_text():
-                    found = True
-                    break
-            except OSError:
-                continue
-        if not found:
+        if exc.test_ref not in symbols:
             broken.append(
-                f"{exc.file}: test_ref '{exc.test_ref}' not found in any test file"
+                f"{exc.file}: test_ref '{exc.test_ref}' does not resolve to a "
+                f"collected test module or test symbol"
             )
     return broken
 
@@ -712,6 +998,8 @@ def scan_directory(src_dir: Path) -> ScanResult:
             findings.extend(_scan_literal_assign_defaults(tree, rel_path))
             findings.extend(_scan_dataclass_defaults(tree, rel_path))
             findings.extend(_scan_sink_defaults(tree, rel_path))
+            findings.extend(_scan_noncanonical_sink_defaults(tree, rel_path))
+            findings.extend(_scan_migration_markers(source, tree, rel_path))
             findings.extend(_scan_enum_conditional(tree, rel_path))
 
     # Stable sort: file, line, pattern
@@ -775,6 +1063,142 @@ def _resolve_scan_root(args: list) -> Path:
 _DIFF_KEYS = ("finding_count", "violation_count", "broken_exception_count",
               "broken_record_count", "is_clean", "is_inventory_intact")
 
+# ── Deterministic inventory fixture ───────────────────────────────────────────
+
+FIXTURE_SCHEMA_VERSION = 1
+FIXTURE_RELPATH = ("tests", "neutrality", "fixtures", "fallback_inventory.json")
+
+_REQUIRED_INVENTORY_KEYS = (
+    "is_clean", "is_inventory_intact", "finding_count", "violation_count",
+    "broken_exception_count", "broken_record_count", "violations",
+    "broken_exceptions", "broken_records", "findings",
+)
+
+
+class BaselineError(Exception):
+    """Raised when the committed inventory baseline is missing or invalid."""
+
+
+def default_fixture_path(src_dir: Path) -> Optional[Path]:
+    """Return the committed fixture path for the project owning *src_dir*."""
+    root = _resolve_project_root(src_dir)
+    if root is None:
+        return None
+    return root.joinpath(*FIXTURE_RELPATH)
+
+
+def build_fixture(result: "ScanResult") -> dict:
+    """Build the deterministic, committable fixture payload for *result*."""
+    return {
+        "schema_version": FIXTURE_SCHEMA_VERSION,
+        "scan_root": "src/capacium",
+        "inventory": result.to_inventory(),
+    }
+
+
+def dump_fixture(payload: dict) -> str:
+    """Serialize a fixture deterministically (sorted keys, trailing newline)."""
+    return json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
+
+
+def load_baseline(path: Path) -> dict:
+    """Load and structurally validate a committed inventory baseline.
+
+    Fails closed: a missing, unreadable, non-JSON, wrong-schema, or
+    structurally incomplete baseline raises :class:`BaselineError` rather than
+    degrading to a "first scan" success.
+    """
+    if not path.exists():
+        raise BaselineError(f"baseline fixture not found: {path}")
+    try:
+        raw = json.loads(path.read_text())
+    except OSError as exc:
+        raise BaselineError(f"baseline fixture unreadable: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise BaselineError(f"baseline fixture is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise BaselineError("baseline fixture must be a JSON object")
+    if raw.get("schema_version") != FIXTURE_SCHEMA_VERSION:
+        raise BaselineError(
+            f"baseline schema_version {raw.get('schema_version')!r} != "
+            f"expected {FIXTURE_SCHEMA_VERSION}"
+        )
+    inventory = raw.get("inventory")
+    if not isinstance(inventory, dict):
+        raise BaselineError("baseline fixture has no 'inventory' object")
+    missing = [k for k in _REQUIRED_INVENTORY_KEYS if k not in inventory]
+    if missing:
+        raise BaselineError(
+            f"baseline inventory missing required keys: {', '.join(sorted(missing))}"
+        )
+    if not isinstance(inventory.get("findings"), list):
+        raise BaselineError("baseline inventory 'findings' must be a list")
+    return raw
+
+
+def _finding_key(entry: dict) -> tuple:
+    return (
+        str(entry.get("file", "")), int(entry.get("line", 0) or 0),
+        str(entry.get("pattern", "")), str(entry.get("resolved_kind", "")),
+        str(entry.get("function", "")),
+    )
+
+
+def reconcile_inventory(baseline_inventory: dict, current: dict) -> list:
+    """Compare the *complete* deterministic inventory, not only counts.
+
+    Returns a list of human-readable semantic drift descriptions.  An empty
+    list means the current scan reconciles exactly with the baseline.
+    """
+    drift: list = []
+
+    for key in ("is_clean", "is_inventory_intact"):
+        bv, cv = baseline_inventory.get(key), current.get(key)
+        if bv != cv:
+            drift.append(f"{key}: {bv} -> {cv}")
+
+    for key in ("finding_count", "violation_count", "broken_exception_count",
+                "broken_record_count"):
+        bv, cv = baseline_inventory.get(key), current.get(key)
+        if bv != cv:
+            drift.append(f"{key}: {bv} -> {cv}")
+
+    # Full record-level reconciliation of every finding.
+    base_map = {_finding_key(e): e for e in baseline_inventory.get("findings", [])}
+    curr_map = {_finding_key(e): e for e in current.get("findings", [])}
+
+    for key in sorted(set(base_map) - set(curr_map)):
+        e = base_map[key]
+        drift.append(
+            f"finding removed: {e.get('file')}:{e.get('line')}:"
+            f"{e.get('pattern')} kind={e.get('resolved_kind')!r}"
+        )
+    for key in sorted(set(curr_map) - set(base_map)):
+        e = curr_map[key]
+        drift.append(
+            f"finding added: {e.get('file')}:{e.get('line')}:"
+            f"{e.get('pattern')} kind={e.get('resolved_kind')!r}"
+        )
+    for key in sorted(set(base_map) & set(curr_map)):
+        b, c = base_map[key], curr_map[key]
+        for field_name in ("sink_role", "disposition", "code", "is_exception",
+                           "test_proof"):
+            if b.get(field_name) != c.get(field_name):
+                drift.append(
+                    f"finding changed: {c.get('file')}:{c.get('line')}:"
+                    f"{c.get('pattern')} {field_name}: "
+                    f"{b.get(field_name)!r} -> {c.get(field_name)!r}"
+                )
+
+    for key in ("violations", "broken_exceptions", "broken_records"):
+        bset, cset = set(baseline_inventory.get(key, [])), set(current.get(key, []))
+        for item in sorted(bset - cset):
+            drift.append(f"{key} removed: {item}")
+        for item in sorted(cset - bset):
+            drift.append(f"{key} added: {item}")
+
+    return drift
+
 
 def _diff_artifact(prev: dict, current: dict) -> list:
     changed = []
@@ -791,12 +1215,15 @@ def verify_inventory(
     json_output: bool = False,
     show_diff: bool = False,
     check_integrity: bool = False,
+    baseline_path: Optional[Path] = None,
 ) -> int:
     """Run scanner and return exit code.
 
     Returns:
         0 — clean and inventory intact
-        1 — violations, broken records, broken exceptions, or integrity failures
+        1 — violations, broken records, broken exceptions, integrity failures,
+            or (with ``show_diff``) a missing/invalid baseline or any semantic
+            drift against the committed fixture
     """
     result = scan_directory(src_dir)
     broken_refs: list = []
@@ -814,28 +1241,38 @@ def verify_inventory(
         return 0 if result.is_clean and result.is_inventory_intact else 1
 
     if show_diff:
-        artifact_path = src_dir / ".fallback_artifact.json"
-        if artifact_path.exists():
-            try:
-                prev = json.loads(artifact_path.read_text())
-                current = result.to_inventory()
-                prev_stripped = {k: prev.get(k) for k in _DIFF_KEYS}
-                curr_stripped = {k: current.get(k) for k in _DIFF_KEYS}
-                if prev_stripped == curr_stripped:
-                    print("No diff since last scan.")
-                    return 0
-                changed = _diff_artifact(prev_stripped, curr_stripped)
-                if changed:
-                    print("Diff detected: scan result changed.")
-                    for line in changed:
-                        print(line)
-                else:
-                    print("No diff since last scan.")
-                return 0 if result.is_clean and result.is_inventory_intact else 1
-            except (json.JSONDecodeError, OSError):
-                print("Could not read previous artifact; showing current state.")
-        else:
-            print("No previous artifact found; this is the first scan.")
+        path = baseline_path or default_fixture_path(src_dir)
+        if path is None:
+            print(
+                "BASELINE ERROR: cannot locate the committed inventory fixture "
+                f"for scan root {src_dir}"
+            )
+            print("Result: DIFF FAILED CLOSED")
+            return 1
+        try:
+            baseline = load_baseline(path)
+        except BaselineError as exc:
+            print(f"BASELINE ERROR: {exc}")
+            print("Result: DIFF FAILED CLOSED")
+            return 1
+
+        drift = reconcile_inventory(baseline["inventory"], result.to_inventory())
+        print(f"Reconciling against baseline: {path}")
+        if drift:
+            print(f"SEMANTIC DRIFT: {len(drift)} difference(s) vs baseline")
+            for line in drift:
+                print(f"  DRIFT: {line}")
+            print("Result: DRIFT DETECTED")
+            return 1
+        print(
+            f"Reconciled: {len(result.findings)} finding(s) match the baseline "
+            f"exactly."
+        )
+        if not (result.is_clean and result.is_inventory_intact):
+            print("Result: BASELINE MATCHED BUT INVENTORY NOT CLEAN")
+            return 1
+        print("Result: NO DRIFT, INVENTORY INTACT")
+        return 0
 
     print(
         f"Fallback inventory: {len(result.findings)} findings, "
@@ -858,16 +1295,55 @@ def verify_inventory(
     return 0 if result.is_clean and result.is_inventory_intact else 1
 
 
+def _flag_value(args: list, name: str) -> Optional[str]:
+    """Return the value of ``--name=VALUE`` or ``--name VALUE``, else None."""
+    prefix = f"--{name}="
+    for i, a in enumerate(args):
+        if a.startswith(prefix):
+            return a[len(prefix):]
+        if a == f"--{name}" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def _write_fixture(scan_root: Path, target: Optional[str]) -> int:
+    """Regenerate the committed deterministic inventory fixture."""
+    path = Path(target).resolve() if target else default_fixture_path(scan_root)
+    if path is None:
+        print(f"Cannot locate a fixture path for scan root {scan_root}")
+        return 1
+    result = scan_directory(scan_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dump_fixture(build_fixture(result)))
+    print(f"Wrote fixture: {path}")
+    print(
+        f"  findings={len(result.findings)} violations={len(result.violations)} "
+        f"is_clean={result.is_clean} intact={result.is_inventory_intact}"
+    )
+    return 0
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     json_output = "--json" in args
     show_diff = "--diff" in args
     check_integrity = "--integrity" in args
-    src_args = [a for a in args if not a.startswith("--")]
+    baseline_arg = _flag_value(args, "baseline")
+    fixture_arg = _flag_value(args, "write-fixture")
+    consumed = {baseline_arg, fixture_arg}
+    src_args = [
+        a for a in args
+        if not a.startswith("--") and a not in consumed
+    ]
     scan_root = _resolve_scan_root(src_args)
+
+    if "--write-fixture" in args or any(a.startswith("--write-fixture=") for a in args):
+        sys.exit(_write_fixture(scan_root, fixture_arg))
+
     sys.exit(verify_inventory(
         scan_root,
         json_output=json_output,
         show_diff=show_diff,
         check_integrity=check_integrity,
+        baseline_path=Path(baseline_arg).resolve() if baseline_arg else None,
     ))
