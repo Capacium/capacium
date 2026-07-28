@@ -96,6 +96,79 @@ def _value_contains_kind_string(node: ast.AST, pattern: str) -> bool:
     return False
 
 
+def _iterable_contains_kind(node: ast.AST) -> bool:
+    """Check if an iterable AST node contains any Kind literal values."""
+    if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+        return any(_is_kind_value(elt) for elt in node.elts)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value in _KIND_VALUES
+    return False
+
+
+def _check_comprehension(node, rel_path: Path, lineno: int, target_name: str,
+                          findings: List[Finding]) -> None:
+    """Check both output expression and iterables of a comprehension."""
+    # Output expression
+    if node.elt and _is_kind_value(node.elt):
+        findings.append(Finding(
+            kind="literal-registry",
+            file=str(rel_path),
+            line=lineno,
+            message=f"comprehension enumerates Kind literal in output: {target_name}",
+            suggestion="derive from CapaciumKind instead",
+        ))
+    # Iterables
+    for gen in node.generators:
+        if _iterable_contains_kind(gen.iter):
+            findings.append(Finding(
+                kind="literal-registry",
+                file=str(rel_path),
+                line=lineno,
+                message=f"comprehension enumerates Kind literal in iterable: {target_name}",
+                suggestion="derive from CapaciumKind instead",
+            ))
+        # Also check if filters contain Kind literals
+        for if_clause in gen.ifs:
+            if _has_any_kind_value(if_clause):
+                findings.append(Finding(
+                    kind="literal-registry",
+                    file=str(rel_path),
+                    line=lineno,
+                    message=f"comprehension filter contains Kind literal: {target_name}",
+                    suggestion="derive from CapaciumKind instead",
+                ))
+
+
+def _check_dict_comprehension(node, rel_path: Path, lineno: int, target_name: str,
+                               findings: List[Finding]) -> None:
+    """Check both key/value expressions and iterables of a dict comprehension."""
+    if node.key and _is_kind_value(node.key):
+        findings.append(Finding(
+            kind="literal-registry",
+            file=str(rel_path),
+            line=lineno,
+            message="dict comprehension enumerates Kind literal in key",
+            suggestion="derive from CapaciumKind instead",
+        ))
+    if node.value and _is_kind_value(node.value):
+        findings.append(Finding(
+            kind="literal-registry",
+            file=str(rel_path),
+            line=lineno,
+            message="dict comprehension enumerates Kind literal in value",
+            suggestion="derive from CapaciumKind instead",
+        ))
+    for gen in node.generators:
+        if _iterable_contains_kind(gen.iter):
+            findings.append(Finding(
+                kind="literal-registry",
+                file=str(rel_path),
+                line=lineno,
+                message="dict comprehension enumerates Kind literal in iterable",
+                suggestion="derive from CapaciumKind instead",
+            ))
+
+
 def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Finding]]:
     """Walk *src_dir* and return (findings, advisories).
 
@@ -237,12 +310,14 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                             key_kind_count = sum(1 for k in val.keys if k is not None and _is_kind_value(k))
                             value_kind_count = sum(1 for v in val.values if _is_kind_value(v))
                             non_kind_keys = [k for k in val.keys if k is not None and not _is_kind_value(k)]
-                            # A dict is a Kind registry when all keys are Kind values
-                            # (any count >= 1) or >= 2 values are Kind values.
+                            # A dict is a Kind registry when any keys are Kind values
+                            # (any count >= 1) or any values are Kind values (>= 1).
                             # Routing tables (e.g. {"mcp-server": MCPExporter()}) have
-                            # non-Kind keys and are not flagged.
+                            # non-Kind keys and are not flagged based on keys alone.
+                            # A single Kind value under a non-Kind key IS flagged:
+                            #   ALIASES = {"primary": "skill"}  → 1 value is "skill"
                             all_keys_kind = len(non_kind_keys) == 0 and key_kind_count >= 1
-                            if all_keys_kind or value_kind_count >= 2:
+                            if all_keys_kind or value_kind_count >= 1:
                                 kc = max(key_kind_count, value_kind_count)
                                 findings.append(Finding(
                                     kind="literal-registry",
@@ -252,33 +327,11 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                     suggestion=f"derive from CapaciumKind instead of hardcoding Kind values",
                                 ))
 
-                    # 4b: comprehensions
+                    # 4b: comprehensions — check output expressions AND iterables
                     if isinstance(node, (ast.SetComp, ast.ListComp, ast.GeneratorExp)):
-                        if node.elt and _is_kind_value(node.elt):
-                            findings.append(Finding(
-                                kind="literal-registry",
-                                file=str(rel_path),
-                                line=node.lineno,
-                                message="comprehension enumerates Kind literal",
-                                suggestion="derive from CapaciumKind instead",
-                            ))
+                        _check_comprehension(node, rel_path, node.lineno, target_name, findings)
                     elif isinstance(node, ast.DictComp):
-                        if node.key and _is_kind_value(node.key):
-                            findings.append(Finding(
-                                kind="literal-registry",
-                                file=str(rel_path),
-                                line=node.lineno,
-                                message="dict comprehension enumerates Kind literal in key",
-                                suggestion="derive from CapaciumKind instead",
-                            ))
-                        if node.value and _is_kind_value(node.value):
-                            findings.append(Finding(
-                                kind="literal-registry",
-                                file=str(rel_path),
-                                line=node.lineno,
-                                message="dict comprehension enumerates Kind literal in value",
-                                suggestion="derive from CapaciumKind instead",
-                            ))
+                        _check_dict_comprehension(node, rel_path, node.lineno, target_name, findings)
 
                     # 4c: statically resolvable literal concatenations
                     if isinstance(node, ast.Assign) and node.value:

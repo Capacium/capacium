@@ -336,6 +336,58 @@ def test_adversarial_kind_concatenation():
         assert len(literal_findings) >= 1
 
 
+def test_adversarial_single_kind_dict_value():
+    """P01H-B proof: single Kind literal as dict value with non-Kind key is flagged.
+    
+    ALIASES = {"primary": "skill"}  → value "skill" is a single Kind literal."""
+    code = 'ALIASES = {"primary": "skill"}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "single_dict_val.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1, (
+            f"Single Kind dict value should be flagged: {findings}"
+        )
+
+
+def test_adversarial_comp_iterable_kind_tuple():
+    """P01H-B proof: comprehension iterable containing Kind literals is flagged.
+    
+    KINDS = [value for value in ("skill", "bundle")]"""
+    code = 'KINDS = [value for value in ("skill", "bundle")]\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "comp_iter_tuple.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1, (
+            f"Comprehension iterable with Kind literals should be flagged: {findings}"
+        )
+
+
+def test_adversarial_comp_iterable_kind_set():
+    """P01H-B proof: comprehension iterable set containing Kind literals."""
+    code = 'KINDS = [v for v in {"skill"}]\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "comp_iter_set.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_dict_comp_iterable():
+    """P01H-B proof: dict comprehension iterable containing Kind literals."""
+    code = 'M = {k: 1 for k in ("skill", "bundle")}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "dict_comp_iter.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
 def test_adversarial_two_value_dict_probe():
     """CAP-P01G-02 executable probe: two-value Kind dict must produce finding and non-zero CLI."""
     import subprocess, sys
