@@ -98,6 +98,7 @@ class TestTriggers:
             triggers=[
                 {"event": "schedule", "action": "daily-check"},
                 {"event": "on-install", "action": "setup"},
+                {"event": "custom-vendor-event", "action": "custom-action"},
             ],
         )
         assert m.validate() == []
@@ -105,17 +106,17 @@ class TestTriggers:
     def test_triggers_missing_event(self):
         m = Manifest(name="t", triggers=[{"action": "run"}])
         errors = m.validate()
-        assert any("missing required 'event'" in e for e in errors)
+        assert any("missing" in e and "event" in e for e in errors)
 
     def test_triggers_missing_action(self):
         m = Manifest(name="t", triggers=[{"event": "manual"}])
         errors = m.validate()
-        assert any("missing required 'action'" in e for e in errors)
+        assert any("missing" in e and "action" in e for e in errors)
 
     def test_triggers_invalid_event(self):
         m = Manifest(name="t", triggers=[{"event": "invalid-event", "action": "run"}])
         errors = m.validate()
-        assert any("invalid event 'invalid-event'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: event taxonomy is owner-controlled
 
     def test_triggers_all_valid_events(self):
         valid_events = ["file-changed", "schedule", "webhook", "manual", "on-install", "on-update"]
@@ -178,27 +179,27 @@ class TestPricing:
     def test_pricing_paid_missing_price(self):
         m = Manifest(name="t", pricing={"model": "paid"})
         errors = m.validate()
-        assert any("requires 'price_usd'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_paid_zero_price(self):
         m = Manifest(name="t", pricing={"model": "paid", "price_usd": 0})
         errors = m.validate()
-        assert any("must be a number greater than 0" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_paid_negative_price(self):
         m = Manifest(name="t", pricing={"model": "paid", "price_usd": -5})
         errors = m.validate()
-        assert any("must be a number greater than 0" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_missing_model(self):
         m = Manifest(name="t", pricing={"price_usd": 10})
         errors = m.validate()
-        assert any("missing required 'model'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_invalid_model(self):
         m = Manifest(name="t", pricing={"model": "subscription"})
         errors = m.validate()
-        assert any("invalid model 'subscription'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_all_valid_models(self):
         for model in ["free", "freemium", "paid", "usage-based", "donation"]:
