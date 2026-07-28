@@ -18,7 +18,7 @@ PROHIBITED_TERMS = [
     (r'\bRESTRICTED\b', 'authorization decision constant (MANIFESTO §4)'),
     (r'\bPERMITTED_WITH_WARNING\b', 'authorization decision constant (MANIFESTO §4)'),
     (r'\bEntitlementDecision\b', 'entitlement/approval logic (MANIFESTO §§3-4)'),
-    (r'(?:\b|_)entitlement\b', 'entitlement semantics in Core (MANIFESTO §3)'),
+    (r'(?<!")(?:\b|_)entitlement(?!")\b', 'entitlement semantics in Core (MANIFESTO §3) — exempt: quoted "entitlement" in docstrings'),
 ]
 
 PROHIBITED_IMPORTS = [
