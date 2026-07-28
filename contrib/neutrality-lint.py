@@ -43,27 +43,26 @@ def lint_file(path: Path) -> list[str]:
     except Exception as exc:
         return [f"ERROR reading {path}: {exc}"]
     
-    # Filter out docstring lines — neutral descriptions of prohibited terms are allowed
-    in_docstring = False
-    filtered_lines = []
-    for line in content.splitlines(True):
-        stripped = line.strip()
-        if stripped.startswith('"""') or stripped.startswith("'''"):
-            in_docstring = not in_docstring
+    # Strip Python docstrings — any line between triple quotes is exempt
+    cleaned = []
+    in_triple = False
+    for line in content.splitlines():
+        if '"""' in line or "'''" in line:
+            in_triple = not in_triple
             continue
-        if in_docstring:
+        if in_triple:
             continue
-        filtered_lines.append(line)
-    docstring_free = ''.join(filtered_lines)
+        cleaned.append(line)
+    filtered = '\n'.join(cleaned)
     
     for pattern, reason in PROHIBITED_TERMS:
-        matches = re.findall(pattern, docstring_free, re.IGNORECASE)
+        matches = re.findall(pattern, filtered, re.IGNORECASE)
         for m in matches:
             errors.append(
                 f"PROHIBITED: '{m}' in {_display_path(path)} — {reason}"
             )
     for pattern, reason in PROHIBITED_IMPORTS:
-        for line_no, line in enumerate(docstring_free.splitlines(), 1):
+        for line_no, line in enumerate(filtered.splitlines(), 1):
             if re.match(pattern, line, re.IGNORECASE):
                 stripped = line.strip()
                 errors.append(
