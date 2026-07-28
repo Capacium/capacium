@@ -67,8 +67,8 @@ class TestDoctorDeep:
 
     def test_symlink_depth_no_symlinks(self, monkeypatch, mock_dummy_caps):
         monkeypatch.setattr(
-            "capacium.commands.doctor.FRAMEWORK_SKILLS_DIRS",
-            {},
+            "capacium.commands.doctor.framework_skills_dirs",
+            lambda: {},
         )
         name, passed, detail = _check_symlink_depth()
         assert name == "Symlink depth"
@@ -82,8 +82,8 @@ class TestDoctorDeep:
         link = skills_dir / "test-skill"
         link.symlink_to(outside)
         monkeypatch.setattr(
-            "capacium.commands.doctor.FRAMEWORK_SKILLS_DIRS",
-            {"claude-code": skills_dir},
+            "capacium.commands.doctor.framework_skills_dirs",
+            lambda: {"claude-code": skills_dir},
         )
         orig_list = MagicMock(return_value=mock_dummy_caps)
         monkeypatch.setattr(

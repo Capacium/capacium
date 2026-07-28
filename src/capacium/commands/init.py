@@ -85,7 +85,7 @@ def init_capability(
 
         print(f"\n  Kinds: {', '.join(sorted(_VALID_KINDS))}")
         while True:
-            kind = input("  Kind [skill]: ").strip() or "skill"
+            kind = input("  Kind [skill]: ").strip() or CapaciumKind.SKILL.value
             err = _validate_kind(kind)
             if err:
                 print(f"  {err}")
@@ -234,12 +234,12 @@ def init_config(
 def init_skill() -> bool:
     print("\n  Capacium \u2014 New Capability Wizard\n" + "\u2500" * 32 + "\n")
 
-    manifest = Manifest()
+    default_kind = CapaciumKind.SKILL.value
+    manifest = Manifest(kind=default_kind)
 
     manifest.name = _prompt_required("Capability name (kebab-case)", "my-capability")
 
     print(f"\n  Available kinds: {', '.join(k.value for k in CapaciumKind)}")
-    default_kind = CapaciumKind.SKILL.value
     manifest.kind = _prompt_with_default("Kind", default_kind).strip() or default_kind
 
     manifest.version = _prompt_with_default("Version", "1.0.0").strip() or "1.0.0"

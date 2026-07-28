@@ -107,6 +107,7 @@ class CapabilityIR:
         ir.endpoints = manifest.get("endpoints")
         ir.governance = manifest.get("governance")
 
+        cls.validate_kind(ir.kind)
         return ir
 
     def to_dict(self) -> Dict[str, Any]:
@@ -133,6 +134,7 @@ class CapabilityAdapter(ABC):
 
 class MCPAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
+        CapabilityIR.validate_kind(ir.kind)
         result: Dict[str, Any] = {
             "name": ir.canonical,
             "description": ir.description,
@@ -173,6 +175,7 @@ class MCPAdapter(CapabilityAdapter):
 
 class A2AAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
+        CapabilityIR.validate_kind(ir.kind)
         card: Dict[str, Any] = {
             "name": ir.canonical,
             "description": ir.description,
@@ -217,6 +220,7 @@ class A2AAdapter(CapabilityAdapter):
 
 class AWSAgentCoreAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
+        CapabilityIR.validate_kind(ir.kind)
         registry_entry: Dict[str, Any] = {
             "agentName": ir.canonical,
             "description": ir.description,
@@ -255,6 +259,7 @@ class AWSAgentCoreAdapter(CapabilityAdapter):
 
 class OpenCodeAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
+        CapabilityIR.validate_kind(ir.kind)
         return {
             "name": ir.name,
             "owner": ir.owner,
@@ -270,11 +275,14 @@ class OpenCodeAdapter(CapabilityAdapter):
         }
 
     def reverse_adapt(self, descriptor: Dict[str, Any]) -> CapabilityIR:
+        kind = descriptor.get("kind")
+        if kind:
+            CapabilityIR.validate_kind(kind)
         return CapabilityIR(
             canonical=f"{descriptor.get('owner','')}/{descriptor.get('name','')}".strip("/"),
             name=descriptor.get("name", ""),
             owner=descriptor.get("owner", ""),
-            kind=descriptor.get("kind") or "",
+            kind=kind or "",
             version=descriptor.get("version", ""),
             description=descriptor.get("description", ""),
         )
@@ -282,6 +290,7 @@ class OpenCodeAdapter(CapabilityAdapter):
 
 class ClaudeDesktopAdapterAdapt(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
+        CapabilityIR.validate_kind(ir.kind)
         entry: Dict[str, Any] = {
             "mcpServers": {
                 ir.canonical.replace("/", "-").replace("::", "-"): {

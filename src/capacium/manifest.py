@@ -14,7 +14,7 @@ _RESOURCE_DATA_ASSET_FIELDS = {"resource_type", "resource_format", "size_hint", 
 
 @dataclass
 class Manifest:
-    kind: str = "skill"
+    kind: str
     name: str = ""
     version: str = "1.0.0"
     description: str = ""
@@ -256,6 +256,7 @@ class Manifest:
             )
 
         return cls(
+            kind="skill",
             owner="unknown",
             name=directory.name,
             version=version,

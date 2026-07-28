@@ -61,7 +61,7 @@ class Capability:
     owner: str
     name: str
     version: str
-    kind: Kind = Kind.SKILL
+    kind: Kind
     fingerprint: str = ""
     install_path: Optional[Path] = None
     installed_at: Optional[datetime] = None

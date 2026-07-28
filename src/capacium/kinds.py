@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, FrozenSet, Tuple
@@ -116,7 +117,8 @@ def _freeze_payload(value: Dict[str, Any]) -> str:
     (sorted keys) and every valid JSON payload maps to exactly one string.
     """
     _validate_payload_for_json(value)
-    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    _reject_non_finite_floats(value)
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def _validate_payload_for_json(value: object, path: str = "") -> None:
@@ -145,14 +147,7 @@ def _validate_payload_for_json(value: object, path: str = "") -> None:
             f"Migration payload error: unsupported set at path '{path}' — "
             f"sets are not JSON-compatible"
         )
-    elif isinstance(value, float):
-        import math
-        if math.isnan(value) or math.isinf(value):
-            raise ValueError(
-                f"Migration payload error: non-finite float at path '{path}' — "
-                f"NaN/Infinity are not JSON-compatible"
-            )
-    elif isinstance(value, (int, str, bool, type(None))):
+    elif isinstance(value, (int, float, str, bool, type(None))):
         pass
     elif isinstance(value, bytes):
         raise ValueError(
@@ -168,6 +163,25 @@ def _validate_payload_for_json(value: object, path: str = "") -> None:
             )
 
 
+def _reject_non_finite_floats(value: object, path: str = "root") -> None:
+    """Walk the payload and reject NaN, Inf, -Inf float values.
+
+    Raises MigrationPayloadError for each non-finite float found.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _reject_non_finite_floats(v, f"{path}['{k}']")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _reject_non_finite_floats(item, f"{path}[{i}]")
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise MigrationPayloadError(
+                f"Migration payload error: non-finite float at {path} "
+                f"(NaN/Infinity not supported)"
+            )
+
+
 def _thaw_payload(frozen: str) -> Dict[str, Any]:
     """Thaw a frozen JSON string back into a mutable dict."""
     return json.loads(frozen)
@@ -176,20 +190,6 @@ def _thaw_payload(frozen: str) -> Dict[str, Any]:
 class MigrationPayloadError(ValueError):
     """Raised when a migration payload is missing, mis-typed, or structurally
     invalid (e.g. accessing payload on a scalar-only migration)."""
-
-
-class _NoPayload:
-    """Sentinel indicating a scalar migration with no payload."""
-
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __bool__(self):
-        return False
 
 
 @dataclass(frozen=True)

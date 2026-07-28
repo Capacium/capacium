@@ -692,6 +692,13 @@ def _install_single_sub_cap(
     # Validate the Kind through the canonical boundary
     from ..kinds import validate_kind
     validate_kind(source_manifest.kind)
+    # Full manifest validation — must pass before any storage write
+    manifest_errors = source_manifest.validate()
+    if manifest_errors:
+        raise ValueError(
+            f"Sub-manifest {sub_name} validation failed before write: "
+            + "; ".join(manifest_errors)
+        )
 
     # ── Only now write storage ──
     shares_bundle_storage = False
@@ -712,10 +719,9 @@ def _install_single_sub_cap(
         storage.remove_package_path(package_dir)
         shutil.copytree(source_path, package_dir)
 
-    sub_manifest = Manifest.detect_from_directory(package_dir)
-    sub_kind = source_manifest.kind  # use validated Kind
+    sub_kind = source_manifest.kind
     sub_frameworks = resolve_frameworks(
-        sub_manifest.get_target_frameworks(),
+        source_manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
         kind=sub_kind,
     )
@@ -727,14 +733,9 @@ def _install_single_sub_cap(
             continue
         adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_kind)
 
-    sub_errors = sub_manifest.validate()
-    if sub_errors:
-        for e in sub_errors:
-            print(f"  Warning ({sub_name}): {e}")
-
-    if sub_manifest.kind == "bundle":
+    if source_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, package_dir, registry, storage, no_lock,
+            source_manifest, owner, package_dir, registry, storage, no_lock,
             force=force, all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
@@ -742,12 +743,12 @@ def _install_single_sub_cap(
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"])
 
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
-    source_url = sub_manifest.repository or _detect_git_remote(source_path)
+    source_url = source_manifest.repository or _detect_git_remote(source_path)
     capacity = Capability(
         owner=owner,
         name=sub_name,
         version=version,
-        kind=Kind(sub_manifest.kind),
+        kind=Kind(source_manifest.kind),
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
@@ -1489,8 +1490,8 @@ def _is_framework_already(cap_name: str, owner: str, version_spec: str, framewor
     if adapter is not None and adapter.capability_exists(cap_name):
         return True
 
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
-    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+    from ..framework_detector import framework_skills_dirs
+    skills_dir = framework_skills_dirs().get(framework)
     if skills_dir is not None:
         link_path = skills_dir / cap_name
         return link_path.exists()
@@ -1511,7 +1512,7 @@ def _append_framework(
     _bundle_stack: Optional[set[str]] = None,
 ) -> bool:
     from ..adapters import get_adapter
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
+    from ..framework_detector import framework_skills_dirs, create_framework_symlinks
 
     registry = Registry()
     cap_id = f"{owner}/{cap_name}"
@@ -1629,7 +1630,7 @@ def _append_framework(
         # Generic skills-dir fallback for frameworks without a dedicated
         # adapter. Registered adapters are preferred because they resolve the
         # current HOME and project scope dynamically.
-        skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+        skills_dir = framework_skills_dirs().get(framework)
         if skills_dir is None:
             print(f"  Unknown framework: {framework}")
             return False
@@ -1797,9 +1798,9 @@ class PromptHandler:
 
 
 def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_framework: Optional[str] = None) -> None:
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+    from ..framework_detector import framework_skills_dirs
 
-    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+    for fw_name, skills_dir in framework_skills_dirs().items():
         if target_framework and fw_name != target_framework:
             continue
         link_path = skills_dir / cap_name
@@ -1836,7 +1837,7 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_fr
             continue
         if adapter.capability_exists(cap_name):
             print(f"  Removing old installation from {fw_name} config...")
-            adapter.remove_capability(cap_name, owner=existing_owner, kind="mcp-server")
+            adapter.remove_capability(cap_name, owner=existing_owner, kind=CapaciumKind.MCP.value)
 
 
 def _check_bundle_member_conflict(
@@ -1860,9 +1861,9 @@ def check_conflict(
     owner: str,
     version_spec: str,
 ) -> ConflictResult:
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+    from ..framework_detector import framework_skills_dirs
 
-    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+    for fw_name, skills_dir in framework_skills_dirs().items():
         link_path = skills_dir / cap_name
         if not link_path.exists():
             continue

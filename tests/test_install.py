@@ -509,7 +509,7 @@ class TestFrameworkAppend:
         skills_dir = tmp_path / "opencode" / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "test-cap").mkdir()
-        monkeypatch.setattr("capacium.framework_detector.FRAMEWORK_SKILLS_DIRS", {"opencode": skills_dir})
+        monkeypatch.setattr("capacium.framework_detector.framework_skills_dirs", lambda: {"opencode": skills_dir})
         assert _is_framework_already("test-cap", "test", "1.0.0", "opencode") is True
 
     def test_is_framework_already_returns_false_when_symlink_absent(self, monkeypatch, tmp_path):
@@ -517,7 +517,7 @@ class TestFrameworkAppend:
 
         skills_dir = tmp_path / "opencode" / "skills"
         skills_dir.mkdir(parents=True)
-        monkeypatch.setattr("capacium.framework_detector.FRAMEWORK_SKILLS_DIRS", {"opencode": skills_dir})
+        monkeypatch.setattr("capacium.framework_detector.framework_skills_dirs", lambda: {"opencode": skills_dir})
         assert _is_framework_already("test-cap", "test", "1.0.0", "opencode") is False
 
 

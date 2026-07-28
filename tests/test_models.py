@@ -21,15 +21,15 @@ class TestKind:
 
 class TestCapability:
     def test_default_kind_is_skill(self):
-        cap = Capability(owner="test", name="my-cap", version="1.0.0")
+        cap = Capability(owner="test", name="my-cap", version="1.0.0", kind=Kind.SKILL)
         assert cap.kind == Kind.SKILL
 
     def test_id_format(self):
-        cap = Capability(owner="alice", name="my-cap", version="1.0.0")
+        cap = Capability(owner="alice", name="my-cap", version="1.0.0", kind=Kind.SKILL)
         assert cap.id == "alice/my-cap"
 
     def test_id_without_owner(self):
-        cap = Capability(owner="global", name="my-cap", version="1.0.0")
+        cap = Capability(owner="global", name="my-cap", version="1.0.0", kind=Kind.SKILL)
         assert cap.id == "global/my-cap"
 
     def test_to_dict_roundtrip(self):

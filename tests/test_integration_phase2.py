@@ -95,7 +95,7 @@ capabilities:
         reg = Registry()
         sub_cap = Capability(
             owner="o", name="sub", version="1.0.0",
-            fingerprint=sub_fp, install_path=sub_dir,
+            kind=Kind.SKILL, fingerprint=sub_fp, install_path=sub_dir,
             installed_at=datetime.now(),
         )
         reg.add_capability(sub_cap)
@@ -126,7 +126,7 @@ capabilities:
         reg = Registry()
         sub_cap = Capability(
             owner="o", name="sub", version="1.0.0",
-            fingerprint="badfp", install_path=sub_dir,
+            kind=Kind.SKILL, fingerprint="badfp", install_path=sub_dir,
             installed_at=datetime.now(),
         )
         reg.add_capability(sub_cap)

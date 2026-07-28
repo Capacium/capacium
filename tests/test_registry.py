@@ -15,6 +15,7 @@ class TestRegistry:
             owner="test",
             name="test-cap",
             version="1.0.0",
+            kind=Kind.SKILL,
             fingerprint="abc123",
             install_path=Path("/tmp/test"),
             installed_at=datetime.now(),
@@ -31,14 +32,14 @@ class TestRegistry:
 
     def test_add_duplicate(self, tmp_home):
         reg = Registry()
-        cap = Capability(owner="test", name="dup", version="1.0.0", fingerprint="x",
+        cap = Capability(owner="test", name="dup", version="1.0.0", kind=Kind.SKILL, fingerprint="x",
                          install_path=Path("/tmp"), installed_at=datetime.now())
         assert reg.add_capability(cap)
         assert not reg.add_capability(cap)
 
     def test_remove_capability(self, tmp_home):
         reg = Registry()
-        cap = Capability(owner="test", name="to-remove", version="1.0.0", fingerprint="x",
+        cap = Capability(owner="test", name="to-remove", version="1.0.0", kind=Kind.SKILL, fingerprint="x",
                          install_path=Path("/tmp"), installed_at=datetime.now())
         reg.add_capability(cap)
         assert reg.remove_capability("test/to-remove")
@@ -47,7 +48,7 @@ class TestRegistry:
     def test_list_capabilities(self, tmp_home):
         reg = Registry()
         for i in range(3):
-            cap = Capability(owner="test", name=f"cap-{i}", version="1.0.0", fingerprint=str(i),
+            cap = Capability(owner="test", name=f"cap-{i}", version="1.0.0", kind=Kind.SKILL, fingerprint=str(i),
                              install_path=Path("/tmp"), installed_at=datetime.now())
             reg.add_capability(cap)
         caps = reg.list_capabilities()
@@ -67,9 +68,9 @@ class TestRegistry:
     def test_search(self, tmp_home):
         reg = Registry()
         caps = [
-            Capability(owner="alice", name="web-helper", version="1.0.0", fingerprint="a",
+            Capability(owner="alice", name="web-helper", version="1.0.0", kind=Kind.SKILL, fingerprint="a",
                        install_path=Path("/tmp"), installed_at=datetime.now()),
-            Capability(owner="bob", name="db-tool", version="2.0.0", fingerprint="b",
+            Capability(owner="bob", name="db-tool", version="2.0.0", kind=Kind.SKILL, fingerprint="b",
                        install_path=Path("/tmp"), installed_at=datetime.now()),
         ]
         for cap in caps:
@@ -81,14 +82,14 @@ class TestRegistry:
     def test_cap_count(self, tmp_home):
         reg = Registry()
         assert reg.cap_count() == 0
-        cap = Capability(owner="test", name="count-test", version="1.0.0", fingerprint="f",
+        cap = Capability(owner="test", name="count-test", version="1.0.0", kind=Kind.SKILL, fingerprint="f",
                          install_path=Path("/tmp"), installed_at=datetime.now())
         reg.add_capability(cap)
         assert reg.cap_count() == 1
 
     def test_update_capability(self, tmp_home):
         reg = Registry()
-        cap = Capability(owner="test", name="updatable", version="1.0.0", fingerprint="old",
+        cap = Capability(owner="test", name="updatable", version="1.0.0", kind=Kind.SKILL, fingerprint="old",
                          install_path=Path("/tmp/old"), installed_at=datetime.now())
         reg.add_capability(cap)
         cap.fingerprint = "new"

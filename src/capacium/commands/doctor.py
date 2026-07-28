@@ -18,7 +18,6 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ..framework_detector import FRAMEWORK_SKILLS_DIRS
 from ..framework_detector import framework_skills_dirs
 from ..manifest import Manifest
 from ..utils.mcp_probe import probe_mcp
@@ -124,7 +123,7 @@ def _check_symlink_depth() -> Tuple[str, bool, str]:
     issues = []
     for cap in capabilities:
         cap_name = cap.name
-        for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+        for fw_name, skills_dir in framework_skills_dirs().items():
             candidate = skills_dir / cap_name
             if candidate.exists() and candidate.is_symlink():
                 target = candidate.resolve()
@@ -140,7 +139,7 @@ def _check_symlink_depth() -> Tuple[str, bool, str]:
         )
     count = sum(
         1 for cap in capabilities
-        for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items()
+        for fw_name, skills_dir in framework_skills_dirs().items()
         if (skills_dir / cap.name).is_symlink()
     )
     return ("Symlink depth", True, f"{count} symlink(s) look correct")

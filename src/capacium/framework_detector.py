@@ -165,10 +165,10 @@ def _filter_frameworks_by_kind(frameworks: List[str], kind: str) -> List[str]:
 
 def resolve_frameworks(
     manifest_frameworks: Optional[List[str]],
+    kind: str,
     all_frameworks: bool = False,
     framework_filter: Optional[str] = None,
     preferred_frameworks: Optional[List[str]] = None,
-    kind: str = "skill",
 ) -> List[str]:
     framework_filter = FRAMEWORK_ALIASES.get(framework_filter or "", framework_filter) or None
     if framework_filter:
@@ -238,7 +238,7 @@ def create_framework_symlinks(
     from .symlink_manager import SymlinkManager
     sm = SymlinkManager()
     for fw in frameworks:
-        skills_dir = FRAMEWORK_SKILLS_DIRS.get(fw)
+        skills_dir = framework_skills_dirs().get(fw)
         if skills_dir is None and fw == "cursor":
             # Project-scope client: links only with an explicit project root.
             from .utils.project_scope import get_project_root
