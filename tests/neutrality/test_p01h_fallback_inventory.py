@@ -164,7 +164,7 @@ def test_stale_existing_entry_not_stale():
     src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
     if not src.exists():
         pytest.skip("No real src dir available")
-    exc = ExceptionEntry(file="capacium/kinds.py", line=0, kind="migration",
+    exc = ExceptionEntry(file="kinds.py", line=0, kind="migration",
                          symbol="CapaciumKind", reason="test", test_ref="test_x")
     assert not _check_stale_entry(exc, src)
 

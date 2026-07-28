@@ -96,13 +96,13 @@ class ExceptionEntry:
 
 KNOWN_EXCEPTIONS: FrozenSet[ExceptionEntry] = frozenset({
     ExceptionEntry(
-        file="capacium/ui.py", line=0, kind="display",
+        file="ui.py", line=0, kind="display",
         symbol="??",
         reason="Display-only unknown indicator — never flows to dispatch",
         test_ref="test_p01b_lifecycle_matrix",
     ),
     ExceptionEntry(
-        file="capacium/kinds.py", line=0, kind="migration",
+        file="kinds.py", line=0, kind="migration",
         symbol="CapaciumKind.WORKFLOW",
         reason="Versioned legacy Kind migration adapter",
         test_ref="test_migrate_legacy_kind",
@@ -607,11 +607,12 @@ def _check_stale_entry(exc: ExceptionEntry, src_dir: Path) -> bool:
 
     A ``??`` symbol is never stale (display-only indicator).
     Any other symbol: stale if file missing, unreadable, or symbol absent.
-    Exception entries use package-relative paths (e.g. ``capacium/kinds.py``).
+    Exception entries use bare filenames relative to the scan root's
+    ``src/capacium`` package directory (e.g. ``kinds.py``).
 
-    The *src_dir* is the ``src/capacium`` package directory. Exception entries
-    reference paths relative to that directory.  If the direct join fails,
-    also check the parent directory (in case src_dir is one level too deep).
+    The *src_dir* is the ``src/capacium`` package directory.  If the direct
+    join fails, also check the parent directory (in case src_dir is one level
+    too deep).
     """
     if exc.symbol == "??":
         return False

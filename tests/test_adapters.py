@@ -29,13 +29,13 @@ class TestClaudeCodeAdapter:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = ClaudeCodeAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -105,13 +105,13 @@ class TestGeminiCLIAdapter:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = GeminiCLIAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -181,13 +181,13 @@ class TestOpenClawAdapter:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = OpenClawAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -218,13 +218,13 @@ class TestHermesAdapter:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = HermesAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -255,13 +255,13 @@ class TestCopilotAdapter:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = CopilotAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -313,13 +313,13 @@ class TestCursorAdapterSkills:
         adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = CursorAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
