@@ -11,21 +11,81 @@
       "module": "capacium.models",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_parse_active_kind[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_parse_active_kind[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_parse_active_kind[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_parse_active_kind[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_parse_active_kind[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_parse_active_kind[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_parse_active_kind[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_parse_active_kind[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_parse_active_kind[connector-pack]"},
-        {"kind": "missing",          "result": "rejected", "test": "test_parse_missing_rejected"},
-        {"kind": "empty",            "result": "rejected", "test": "test_parse_empty_rejected"},
-        {"kind": "unknown",          "result": "rejected", "test": "test_parse_unknown_rejected"},
-        {"kind": "operator",         "result": "legacy_spec_only", "test": "test_parse_legacy_rejected[operator]"},
-        {"kind": "checkpoint",       "result": "legacy_spec_only", "test": "test_parse_legacy_rejected[checkpoint]"},
-        {"kind": "policy",           "result": "legacy_spec_only", "test": "test_parse_legacy_rejected[policy]"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_parse_active_kind[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_parse_active_kind[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_parse_active_kind[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_parse_active_kind[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_parse_active_kind[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_parse_active_kind[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_parse_active_kind[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_parse_active_kind[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_parse_active_kind[connector-pack]"
+        },
+        {
+          "kind": "missing",
+          "result": "rejected",
+          "test": "test_parse_missing_rejected"
+        },
+        {
+          "kind": "empty",
+          "result": "rejected",
+          "test": "test_parse_empty_rejected"
+        },
+        {
+          "kind": "unknown",
+          "result": "rejected",
+          "test": "test_parse_unknown_rejected"
+        },
+        {
+          "kind": "operator",
+          "result": "legacy_spec_only",
+          "test": "test_parse_legacy_rejected[operator]"
+        },
+        {
+          "kind": "checkpoint",
+          "result": "legacy_spec_only",
+          "test": "test_parse_legacy_rejected[checkpoint]"
+        },
+        {
+          "kind": "policy",
+          "result": "legacy_spec_only",
+          "test": "test_parse_legacy_rejected[policy]"
+        }
       ]
     },
     {
@@ -34,19 +94,71 @@
       "module": "capacium.manifest",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_manifest_validate_active[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_manifest_validate_active[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_manifest_validate_active[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_manifest_validate_active[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_manifest_validate_active[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_manifest_validate_active[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_manifest_validate_active[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_manifest_validate_active[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_manifest_validate_active[connector-pack]"},
-        {"kind": "missing",          "result": "rejected", "test": "test_manifest_validate_missing"},
-        {"kind": "operator",         "result": "rejected", "test": "test_manifest_validate_legacy[operator]"},
-        {"kind": "checkpoint",       "result": "rejected", "test": "test_manifest_validate_legacy[checkpoint]"},
-        {"kind": "policy",           "result": "rejected", "test": "test_manifest_validate_legacy[policy]"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_manifest_validate_active[connector-pack]"
+        },
+        {
+          "kind": "missing",
+          "result": "rejected",
+          "test": "test_manifest_validate_missing"
+        },
+        {
+          "kind": "operator",
+          "result": "rejected",
+          "test": "test_manifest_validate_legacy[operator]"
+        },
+        {
+          "kind": "checkpoint",
+          "result": "rejected",
+          "test": "test_manifest_validate_legacy[checkpoint]"
+        },
+        {
+          "kind": "policy",
+          "result": "rejected",
+          "test": "test_manifest_validate_legacy[policy]"
+        }
       ]
     },
     {
@@ -55,16 +167,56 @@
       "module": "capacium.commands.init",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_init_validates_active_kind[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_init_validates_active_kind[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_init_validates_active_kind[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_init_validates_active_kind[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_init_validates_active_kind[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_init_validates_active_kind[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_init_validates_active_kind[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_init_validates_active_kind[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_init_validates_active_kind[connector-pack]"},
-        {"kind": "unknown",          "result": "rejected", "test": "test_init_unknown_rejected"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_init_validates_active_kind[connector-pack]"
+        },
+        {
+          "kind": "unknown",
+          "result": "rejected",
+          "test": "test_init_unknown_rejected"
+        }
       ]
     },
     {
@@ -73,15 +225,51 @@
       "module": "capacium.registry",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_registry_add_and_get_by_kind[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_registry_add_and_get_by_kind[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_registry_add_and_get_by_kind[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_registry_add_and_get_by_kind[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_registry_add_and_get_by_kind[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_registry_add_and_get_by_kind[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_registry_add_and_get_by_kind[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_registry_add_and_get_by_kind[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_registry_add_and_get_by_kind[connector-pack]"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_registry_add_and_get_by_kind[connector-pack]"
+        }
       ]
     },
     {
@@ -90,7 +278,11 @@
       "module": "capacium.commands.install",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "workflow",         "result": "accepted", "test": "test_install_kind_survives_registry_round_trip"}
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_install_kind_survives_registry_round_trip"
+        }
       ]
     },
     {
@@ -99,15 +291,51 @@
       "module": "capacium.index",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_index_filter_by_kind[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_index_filter_by_kind[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_index_filter_by_kind[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_index_filter_by_kind[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_index_filter_by_kind[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_index_filter_by_kind[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_index_filter_by_kind[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_index_filter_by_kind[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_index_filter_by_kind[connector-pack]"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_index_filter_by_kind[connector-pack]"
+        }
       ]
     },
     {
@@ -116,11 +344,31 @@
       "module": "capacium.exporters",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_export_accepts_mcp_kinds"},
-        {"kind": "skill",            "result": "accepted", "test": "test_export_accepts_mcp_kinds"},
-        {"kind": "resource",         "result": "accepted", "test": "test_export_accepts_mcp_kinds"},
-        {"kind": "workflow",         "result": "rejected", "test": "test_export_accepts_mcp_kinds"},
-        {"kind": "bundle",           "result": "rejected", "test": "test_export_accepts_mcp_kinds"}
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_export_accepts_mcp_kinds"
+        },
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_export_accepts_mcp_kinds"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_export_accepts_mcp_kinds"
+        },
+        {
+          "kind": "workflow",
+          "result": "rejected",
+          "test": "test_export_accepts_mcp_kinds"
+        },
+        {
+          "kind": "bundle",
+          "result": "rejected",
+          "test": "test_export_accepts_mcp_kinds"
+        }
       ]
     },
     {
@@ -129,15 +377,51 @@
       "module": "capacium.models",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[skill]"},
-        {"kind": "mcp-server",       "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[mcp-server]"},
-        {"kind": "bundle",           "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[bundle]"},
-        {"kind": "tool",             "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[tool]"},
-        {"kind": "prompt",           "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[prompt]"},
-        {"kind": "template",         "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[template]"},
-        {"kind": "workflow",         "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[workflow]"},
-        {"kind": "resource",         "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[resource]"},
-        {"kind": "connector-pack",   "result": "kind_agnostic", "test": "test_lockfile_kind_agnostic_round_trip[connector-pack]"}
+        {
+          "kind": "skill",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "kind_agnostic",
+          "test": "test_lockfile_kind_agnostic_round_trip[connector-pack]"
+        }
       ]
     },
     {
@@ -146,7 +430,11 @@
       "module": "capacium.registry",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_list_filter_by_kind"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_list_filter_by_kind"
+        }
       ]
     },
     {
@@ -155,7 +443,11 @@
       "module": "capacium.sync",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_sync_preserves_kind"}
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_sync_preserves_kind"
+        }
       ]
     },
     {
@@ -164,17 +456,61 @@
       "module": "capacium.commands.package",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_package_validates_kind[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_package_validates_kind[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_package_validates_kind[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_package_validates_kind[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_package_validates_kind[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_package_validates_kind[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_package_validates_kind[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_package_validates_kind[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_package_validates_kind[connector-pack]"},
-        {"kind": "missing",          "result": "rejected", "test": "test_package_rejects_missing_kind"},
-        {"kind": "unknown",          "result": "rejected", "test": "test_package_unknown_kind_fails"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_package_validates_kind[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_package_validates_kind[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_package_validates_kind[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_package_validates_kind[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_package_validates_kind[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_package_validates_kind[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_package_validates_kind[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_package_validates_kind[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_package_validates_kind[connector-pack]"
+        },
+        {
+          "kind": "missing",
+          "result": "rejected",
+          "test": "test_package_rejects_missing_kind"
+        },
+        {
+          "kind": "unknown",
+          "result": "rejected",
+          "test": "test_package_unknown_kind_fails"
+        }
       ]
     },
     {
@@ -183,15 +519,51 @@
       "module": "capacium.models",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "skill",            "result": "accepted", "test": "test_round_trip_identity[skill]"},
-        {"kind": "mcp-server",       "result": "accepted", "test": "test_round_trip_identity[mcp-server]"},
-        {"kind": "bundle",           "result": "accepted", "test": "test_round_trip_identity[bundle]"},
-        {"kind": "tool",             "result": "accepted", "test": "test_round_trip_identity[tool]"},
-        {"kind": "prompt",           "result": "accepted", "test": "test_round_trip_identity[prompt]"},
-        {"kind": "template",         "result": "accepted", "test": "test_round_trip_identity[template]"},
-        {"kind": "workflow",         "result": "accepted", "test": "test_round_trip_identity[workflow]"},
-        {"kind": "resource",         "result": "accepted", "test": "test_round_trip_identity[resource]"},
-        {"kind": "connector-pack",   "result": "accepted", "test": "test_round_trip_identity[connector-pack]"}
+        {
+          "kind": "skill",
+          "result": "accepted",
+          "test": "test_round_trip_identity[skill]"
+        },
+        {
+          "kind": "mcp-server",
+          "result": "accepted",
+          "test": "test_round_trip_identity[mcp-server]"
+        },
+        {
+          "kind": "bundle",
+          "result": "accepted",
+          "test": "test_round_trip_identity[bundle]"
+        },
+        {
+          "kind": "tool",
+          "result": "accepted",
+          "test": "test_round_trip_identity[tool]"
+        },
+        {
+          "kind": "prompt",
+          "result": "accepted",
+          "test": "test_round_trip_identity[prompt]"
+        },
+        {
+          "kind": "template",
+          "result": "accepted",
+          "test": "test_round_trip_identity[template]"
+        },
+        {
+          "kind": "workflow",
+          "result": "accepted",
+          "test": "test_round_trip_identity[workflow]"
+        },
+        {
+          "kind": "resource",
+          "result": "accepted",
+          "test": "test_round_trip_identity[resource]"
+        },
+        {
+          "kind": "connector-pack",
+          "result": "accepted",
+          "test": "test_round_trip_identity[connector-pack]"
+        }
       ]
     },
     {
@@ -200,27 +572,75 @@
       "module": "capacium.kinds",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
-        {"kind": "operator",         "result": "migrated_to_workflow", "test": "test_migrate_payload_preserves_owner[operator]"},
-        {"kind": "checkpoint",       "result": "migrated_to_workflow", "test": "test_migrate_payload_preserves_owner[checkpoint]"},
-        {"kind": "policy",           "result": "migrated_to_workflow", "test": "test_migrate_payload_preserves_owner[policy]"},
-        {"kind": "current(skill)",   "result": "rejected",           "test": "test_migrate_payload_rejects_current_kind"},
-        {"kind": "missing",          "result": "rejected",           "test": "test_migrate_payload_rejects_missing_kind"}
+        {
+          "kind": "operator",
+          "result": "migrated_to_workflow",
+          "test": "test_migrate_payload_preserves_owner[operator]"
+        },
+        {
+          "kind": "checkpoint",
+          "result": "migrated_to_workflow",
+          "test": "test_migrate_payload_preserves_owner[checkpoint]"
+        },
+        {
+          "kind": "policy",
+          "result": "migrated_to_workflow",
+          "test": "test_migrate_payload_preserves_owner[policy]"
+        },
+        {
+          "kind": "current(skill)",
+          "result": "rejected",
+          "test": "test_migrate_payload_rejects_current_kind"
+        },
+        {
+          "kind": "missing",
+          "result": "rejected",
+          "test": "test_migrate_payload_rejects_missing_kind"
+        }
       ]
     }
   ],
   "surface_map": {
     "total_surfaces": 13,
-    "surfaces": ["parse", "validation", "init", "registry", "install", "index", "export", "lock", "list", "sync", "package", "serialization", "migration"],
-    "total_rows": 108,
+    "surfaces": [
+      "parse",
+      "validation",
+      "init",
+      "registry",
+      "install",
+      "index",
+      "export",
+      "lock",
+      "list",
+      "sync",
+      "package",
+      "serialization",
+      "migration"
+    ],
+    "total_rows": 98,
     "parameterized_tests": 95,
     "non_parameterized_tests": 13
   },
   "kind_states_tested": {
-    "active_kinds": ["skill", "mcp-server", "bundle", "tool", "prompt", "template", "workflow", "resource", "connector-pack"],
+    "active_kinds": [
+      "skill",
+      "mcp-server",
+      "bundle",
+      "tool",
+      "prompt",
+      "template",
+      "workflow",
+      "resource",
+      "connector-pack"
+    ],
     "missing_blank": true,
     "empty": true,
     "unknown": true,
-    "legacy": ["operator", "checkpoint", "policy"],
-    "silent_fallback_to_skill": "REJECTED — no active ingestion path defaults to skill"
+    "legacy": [
+      "operator",
+      "checkpoint",
+      "policy"
+    ],
+    "silent_fallback_to_skill": "REJECTED \u2014 no active ingestion path defaults to skill"
   }
 }

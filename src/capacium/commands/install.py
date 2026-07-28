@@ -545,12 +545,12 @@ def install_capability(
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
+    if not manifest.kind or not str(manifest.kind).strip():
+        raise ValueError(f"Manifest kind is required for installation: {cap_name}")
     cap = Capability(
         owner=owner,
         name=cap_name,
         version=version,
-        if not manifest.kind or not str(manifest.kind).strip():
-            raise ValueError(f"Manifest kind is required for installation: {cap_name}")
         kind=Kind(manifest.kind),
         fingerprint=fingerprint,
         install_path=package_dir,
