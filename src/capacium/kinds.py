@@ -1,7 +1,8 @@
-"""Central Kind registry.
+"""Capacium Kind registry with strict validation — no coercion of unknown kinds.
 
-No ``process`` Kind exists here. Unknown kinds fail validation — never coerced.
-Per CAPN-P02 / CAP-NEUTRALITY-G2.
+CAPN-P02 Lane B: Centralised kind definition that exports CapaciumKind and
+validate_kind.  Unknown kind strings raise ValueError with a typed message
+containing the invalid value.
 """
 
 from __future__ import annotations
@@ -11,42 +12,42 @@ from enum import Enum
 
 class CapaciumKind(Enum):
     SKILL = "skill"
+    BUNDLE = "bundle"
     TOOL = "tool"
     PROMPT = "prompt"
-    MCP_SERVER = "mcp-server"
     TEMPLATE = "template"
-    BUNDLE = "bundle"
     WORKFLOW = "workflow"
-    CONNECTOR_PACK = "connector-pack"
+    MCP = "mcp-server"
+    CONNECTOR = "connector-pack"
     RESOURCE = "resource"
-    OPERATOR = "operator"
-    CHECKPOINT = "checkpoint"
-    POLICY = "policy"
 
 
-_BUNDLE_MEMBER_KINDS = frozenset({
-    CapaciumKind.SKILL,
-    CapaciumKind.PROMPT,
-    CapaciumKind.TEMPLATE,
-    CapaciumKind.WORKFLOW,
-    CapaciumKind.TOOL,
-    CapaciumKind.RESOURCE,
-})
+_VALID_KIND_VALUES: frozenset[str] = frozenset(k.value for k in CapaciumKind)
+_VALID_KIND_NAMES: frozenset[str] = frozenset(k.name.upper() for k in CapaciumKind)
+
+KIND_EXAMPLES: tuple[str, ...] = tuple(k.value for k in CapaciumKind)
 
 
-def validate_kind(kind: str) -> CapaciumKind:
-    try:
-        return CapaciumKind(kind)
-    except ValueError:
-        valid = ", ".join(sorted(k.value for k in CapaciumKind))
-        raise ValueError(
-            f"Unknown kind '{kind}'. Valid kinds: {valid}"
-        ) from None
+def validate_kind(value: str) -> CapaciumKind:
+    """Return the matching CapaciumKind member, or raise ValueError.
 
+    Matching is case-insensitive against enum member *names* (e.g.
+    ``"WORKFLOW"`` → ``CapaciumKind.WORKFLOW``) and exact against
+    enum values (e.g. ``"mcp-server"`` → ``CapaciumKind.MCP``).
+    """
+    if not value or not value.strip():
+        raise ValueError("kind is required, got empty value")
 
-def is_workflow(kind: CapaciumKind) -> bool:
-    return kind == CapaciumKind.WORKFLOW
+    cleaned = value.strip()
 
+    if cleaned in _VALID_KIND_VALUES:
+        for k in CapaciumKind:
+            if k.value == cleaned:
+                return k
 
-def is_bundle_member(kind: CapaciumKind) -> bool:
-    return kind in _BUNDLE_MEMBER_KINDS
+    upper = cleaned.upper()
+    if upper in _VALID_KIND_NAMES:
+        return CapaciumKind[upper]
+
+    examples = ", ".join(sorted(k.name.lower() for k in CapaciumKind))
+    raise ValueError(f"Unknown kind '{value}': must be one of {examples}")
