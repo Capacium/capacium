@@ -38,6 +38,20 @@ class CapabilityIR:
     mcp_command: Optional[str] = None
     mcp_args: List[str] = field(default_factory=list)
     operator_type: Optional[str] = None
+
+    @staticmethod
+    def validate_kind(value: str) -> str:
+        """Validate and return a non-empty kind string.
+
+        Raises ValueError if kind is empty/missing.
+        Call this at dispatch boundaries before passing IR to adapters.
+        """
+        if not value:
+            raise ValueError(
+                "CapabilityIR.kind is required for dispatch — "
+                "got empty or missing Kind."
+            )
+        return value
     persona: Optional[Dict[str, Any]] = None
     behavior: Optional[Dict[str, Any]] = None
     endpoints: Optional[Dict[str, Any]] = None

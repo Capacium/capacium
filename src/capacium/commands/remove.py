@@ -176,8 +176,15 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
                 adapter = get_adapter(fw_name)
             except ValueError:
                 continue
+            # Validate Kind before adapter dispatch — never pass "unknown"
+            cap_kind = cap.kind.value if cap.kind else None
+            if not cap_kind or cap_kind == "unknown":
+                raise ValueError(
+                    f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
+                    "Cannot dispatch to adapter without a valid Capacium Kind."
+                )
             adapter.remove_capability(
-                cap_name, owner=owner,                 kind=cap.kind.value if cap.kind else "unknown"
+                cap_name, owner=owner, kind=cap_kind
             )
 
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)

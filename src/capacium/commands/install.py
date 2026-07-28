@@ -677,6 +677,23 @@ def _install_single_sub_cap(
     all_frameworks: bool = False,
 ) -> None:
     source_path = source_path.resolve()
+
+    # ── Validate before write ──
+    # Read and validate the manifest from the source path BEFORE creating
+    # any package reference or copying files. This ensures zero storage
+    # writes on invalid/missing Kind.
+    source_manifest = Manifest.detect_from_directory(source_path)
+    if not source_manifest.kind:
+        raise ValueError(
+            f"Sub-manifest {sub_name} has no 'kind' field. "
+            "This manifest predates the Kind neutrality format and must be "
+            "updated via the versioned migration adapter."
+        )
+    # Validate the Kind through the canonical boundary
+    from ..kinds import validate_kind
+    validate_kind(source_manifest.kind)
+
+    # ── Only now write storage ──
     shares_bundle_storage = False
     if bundle_dir is not None:
         try:
@@ -696,13 +713,7 @@ def _install_single_sub_cap(
         shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
-    if not sub_manifest.kind:
-        raise ValueError(
-            f"Sub-manifest {sub_name} has no 'kind' field. "
-            "This manifest predates the Kind neutrality format and must be "
-            "updated via the versioned migration adapter."
-        )
-    sub_kind = sub_manifest.kind
+    sub_kind = source_manifest.kind  # use validated Kind
     sub_frameworks = resolve_frameworks(
         sub_manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
@@ -737,7 +748,6 @@ def _install_single_sub_cap(
         name=sub_name,
         version=version,
         kind=Kind(sub_manifest.kind),
-
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
