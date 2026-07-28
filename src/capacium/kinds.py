@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import FrozenSet
+from typing import FrozenSet, Tuple
 
 
 class CapaciumKind(Enum):
@@ -20,7 +20,9 @@ class CapaciumKind(Enum):
     TEMPLATE = "template"
     WORKFLOW = "workflow"
     MCP = "mcp-server"
+    MCP_SERVER = "mcp-server"
     CONNECTOR = "connector-pack"
+    CONNECTOR_PACK = "connector-pack"
     RESOURCE = "resource"
 
 
@@ -99,4 +101,45 @@ def validate_kind(value: str) -> CapaciumKind:
 
     examples = ", ".join(sorted(k.name.lower() for k in CapaciumKind))
     raise ValueError(f"Unknown kind '{value}': must be one of {examples}")
+
+
+@dataclass(frozen=True)
+class KindMigrationResult:
+    """Typed result from the versioned legacy-kind migration adapter."""
+
+    source_format: str
+    original_kind: str
+    migrated_kind: CapaciumKind
+    migration_reason: str
+    warnings: Tuple[str, ...]
+
+
+def migrate_legacy_kind(
+    kind_value: str,
+    format_version: str = "spec-v1-legacy",
+) -> KindMigrationResult:
+    """Migrate a legacy spec-only kind to its canonical CapaciumKind.
+
+    Returns a typed migration result with evidence. Raises ValueError
+    if the kind is not a recognized legacy spec kind.
+    """
+    cleaned = kind_value.strip()
+    if cleaned not in _LEGACY_SPEC_KIND_VALUES:
+        examples = ", ".join(sorted(_LEGACY_SPEC_KIND_VALUES))
+        raise ValueError(
+            f"'{kind_value}' is not a recognized legacy kind. "
+            f"Legacy kinds: {examples}"
+        )
+    note = legacy_migration_note(cleaned)
+    warnings = (
+        f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "
+        f"({format_version}): {note}",
+    )
+    return KindMigrationResult(
+        source_format=format_version,
+        original_kind=cleaned,
+        migrated_kind=CapaciumKind.WORKFLOW,
+        migration_reason=note,
+        warnings=warnings,
+    )
 

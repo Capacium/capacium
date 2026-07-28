@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime
 from pathlib import Path
 from capacium.models import Capability, Kind
@@ -56,10 +57,15 @@ class TestCapability:
         assert restored.installed_at.date() == now.date()
         assert restored.dependencies == ["dep1", "dep2"]
 
-    def test_from_dict_defaults(self):
-        d = {"name": "minimal", "fingerprint": "x", "install_path": "/tmp/x", "installed_at": "2024-01-01T00:00:00"}
+    def test_from_dict_rejects_missing_kind(self):
+        d = {"name": "minimal", "fingerprint": "x"}
+        with pytest.raises(ValueError, match="missing 'kind'"):
+            Capability.from_dict(d)
+
+    def test_from_dict_with_kind(self):
+        d = {"kind": "skill", "name": "minimal", "fingerprint": "x", "owner": "o"}
         cap = Capability.from_dict(d)
-        assert cap.owner == "global"
+        assert cap.owner == "o"
         assert cap.kind == Kind.SKILL
         assert cap.framework is None
         assert cap.dependencies is None

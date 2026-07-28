@@ -116,23 +116,22 @@ def _semantic_checks(data: Dict[str, Any], strict: bool) -> Tuple[List[str], Lis
             "    Add: bundle_meta.capabilities list"
         )
 
-    if kind in _LEGACY_KINDS and "operator_meta" not in data:
-        errors.append(
-            "  kind 'operator' is legacy spec-only — must migrate to kind: workflow\n"
-            "    See: MANIFESTO §5.3 — no operator Kind in active Capacium registry"
-        )
-
-    if kind in _LEGACY_KINDS and "checkpoint_meta" not in data:
-        errors.append(
-            "  kind 'checkpoint' is legacy spec-only — must migrate to kind: workflow\n"
-            "    See: MANIFESTO §5.3 — no checkpoint Kind in active Capacium registry"
-        )
-
-    if kind in _LEGACY_KINDS and "policy_meta" not in data:
-        errors.append(
-            "  kind 'policy' is legacy spec-only — must migrate to kind: workflow\n"
-            "    See: MANIFESTO §5.3 — no policy Kind in active Capacium registry"
-        )
+    if kind in _LEGACY_KINDS:
+        if kind == "operator":
+            errors.append(
+                "  kind 'operator' is legacy spec-only — must migrate to kind: workflow\n"
+                "    See: MANIFESTO §5.3 — no operator Kind in active Capacium registry"
+            )
+        elif kind == "checkpoint":
+            errors.append(
+                "  kind 'checkpoint' is legacy spec-only — must migrate to kind: workflow\n"
+                "    See: MANIFESTO §5.3 — no checkpoint Kind in active Capacium registry"
+            )
+        elif kind == "policy":
+            errors.append(
+                "  kind 'policy' is legacy spec-only — must migrate to kind: workflow\n"
+                "    See: MANIFESTO §5.3 — no policy Kind in active Capacium registry"
+            )
 
     # Description
     desc = data.get("description", "")

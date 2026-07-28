@@ -36,23 +36,7 @@ class ConflictResult:
         return self.state in (ConflictState.UNRECOGNIZED, ConflictState.VERSION_MISMATCH)
 
 
-class Kind(Enum):
-    SKILL = "skill"
-    MCP_SERVER = "mcp-server"
-    BUNDLE = "bundle"
-    TOOL = "tool"
-    PROMPT = "prompt"
-    TEMPLATE = "template"
-    WORKFLOW = "workflow"
-    CONNECTOR_PACK = "connector-pack"
-    RESOURCE = "resource"
-
-    @classmethod
-    def _missing_(cls, value):
-        for member in cls:
-            if member.value == value:
-                return member
-        raise ValueError(f"'{value}' is not a valid {cls.__name__}")
+Kind = CapaciumKind
 
 
 # Kind-placement contract (V6): only these kinds may materialize as links in
@@ -87,8 +71,6 @@ class Capability:
     source_url: Optional[str] = None
     source_ref: Optional[str] = None
     source_commit: Optional[str] = None
-    _migration_note: Optional[str] = None
-    _original_kind: Optional[str] = None
 
     @property
     def id(self) -> str:
@@ -127,27 +109,29 @@ class Capability:
             filtered["dependencies"] = None
         if "owner" not in filtered:
             filtered["owner"] = "global"
-        kind_val = filtered.get("kind", "skill")
+        if "kind" not in filtered:
+            raise ValueError(
+                "missing 'kind' field — Capability.from_dict requires an explicit Kind"
+            )
+        kind_val = filtered.get("kind")
         if isinstance(kind_val, str):
+            if not kind_val.strip():
+                raise ValueError("empty 'kind' field")
+            from .kinds import validate_kind, is_legacy_spec_kind, legacy_migration_note
             try:
-                filtered["kind"] = Kind(kind_val)
-            except ValueError:
-                from .kinds import validate_kind
-                try:
-                    validated = validate_kind(kind_val)
-                    filtered["kind"] = Kind(validated.value)
-                except ValueError:
-                    from .kinds import is_legacy_spec_kind, legacy_migration_note
-                    if is_legacy_spec_kind(kind_val):
-                        note = legacy_migration_note(kind_val)
-                        filtered["_migration_note"] = note
-                        filtered["_original_kind"] = kind_val
-                        filtered["kind"] = Kind.WORKFLOW
-                    else:
-                        raise ValueError(
-                            f"Cannot load Capability with unknown kind '{kind_val}'. "
-                            f"Must be a valid CapaciumKind."
-                        )
+                validated = validate_kind(kind_val)
+                filtered["kind"] = Kind(validated.value)
+            except ValueError as e:
+                if is_legacy_spec_kind(kind_val):
+                    note = legacy_migration_note(kind_val)
+                    raise ValueError(
+                        f"Kind '{kind_val}' is a legacy spec-only kind — {note}. "
+                        "Use the versioned migration adapter to migrate before parsing."
+                    ) from e
+                raise ValueError(
+                    f"Cannot load Capability with unknown kind '{kind_val}'. "
+                    f"Must be a valid CapaciumKind."
+                ) from e
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
         if "frameworks" in filtered and isinstance(filtered["frameworks"], str):

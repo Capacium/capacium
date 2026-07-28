@@ -1,68 +1,100 @@
-"""CAPR3-P01: Prove kinds.py is the only Kind authority in src/capacium/."""
+"""CAPR3-P01A: Prove kinds.py is the only Kind authority in src/capacium/."""
 
 import ast
 import os
 from pathlib import Path
 
+import pytest
+
 SRC = Path(__file__).resolve().parents[2] / "src" / "capacium"
 
-FORBIDDEN_KIND_PATTERNS = [
-    "VALID_KINDS",
-    "LEGACY_SPEC_KINDS",
-    "KIND_EXAMPLES",
-]
-
-ALLOWED_IN_KINDS_PY = frozenset({"VALID_KINDS", "LEGACY_SPEC_KINDS", "KIND_EXAMPLES"})
+AUTHORITY_NAMES = frozenset({"VALID_KINDS", "LEGACY_SPEC_KINDS", "KIND_EXAMPLES", "ACTIVE_KINDS"})
+KIND_VALUES = frozenset({"skill", "mcp-server", "bundle", "tool", "prompt", "template", "workflow", "connector-pack", "resource"})
 
 
-def _kind_literals_in_file(path: Path):
-    """Collect set-like assignments whose target hints at a Kind registry."""
-    findings = []
-    try:
-        tree = ast.parse(path.read_text())
-    except SyntaxError:
-        return findings
-
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                name = None
-                if isinstance(target, ast.Name):
-                    name = target.id
-                elif isinstance(target, ast.Attribute):
-                    name = target.attr
-                if name and name in FORBIDDEN_KIND_PATTERNS:
-                    findings.append((path.relative_to(SRC.parent), name, node.lineno))
-    return findings
+def test_kind_is_capacium_kind():
+    """models.Kind must be identical to CapaciumKind."""
+    from capacium.models import Kind
+    from capacium.kinds import CapaciumKind
+    assert Kind is CapaciumKind, "models.Kind must be the same class as CapaciumKind"
 
 
-def test_no_duplicate_kind_registries():
-    """Only kinds.py may define VALID_KINDS / LEGACY_SPEC_KINDS / KIND_EXAMPLES."""
+def test_no_duplicate_enum_authorities():
+    """No file except kinds.py may define an Enum with Kind values."""
     violations = []
     for root, _dirs, files in os.walk(SRC):
         for fname in files:
             if not fname.endswith(".py"):
                 continue
             path = Path(root) / fname
-            findings = _kind_literals_in_file(path)
-            rel = path.relative_to(SRC)
-            if "kinds.py" in str(rel):
-                # Allow the canonical registry file
+            rel_path = path.relative_to(SRC)
+            if rel_path.name == "kinds.py":
                 continue
-            for finding in findings:
-                fpath, name, lineno = finding
-                violations.append(f"{fpath}:{lineno}: {name}")
-
+            try:
+                tree = ast.parse(path.read_text())
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                # Detect Enum subclass definitions
+                if isinstance(node, ast.ClassDef):
+                    for base in node.bases:
+                        base_name = None
+                        if isinstance(base, ast.Name):
+                            base_name = base.id
+                        elif isinstance(base, ast.Attribute):
+                            base_name = base.attr
+                        if base_name in ("Enum", "StrEnum", "IntEnum"):
+                            # Check if it defines kind-like values
+                            for child in ast.walk(node):
+                                if isinstance(child, ast.Assign):
+                                    for target in child.targets:
+                                        if isinstance(target, ast.Name) and hasattr(child, "value"):
+                                            val = child.value
+                                            if isinstance(val, ast.Constant) and val.value in KIND_VALUES:
+                                                violations.append(
+                                                    f"{rel_path}:{child.lineno}: Enum '{node.name}' defines Kind value '{val.value}'"
+                                                )
+                            break
     assert not violations, (
-        f"Kind registries found outside kinds.py:\n" + "\n".join(violations)
+        "Duplicate Kind Enum authorities found:\n" + "\n".join(violations)
+    )
+
+
+def test_no_literal_kind_registries():
+    """No file except kinds.py may define Kind registries."""
+    violations = []
+    for root, _dirs, files in os.walk(SRC):
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            path = Path(root) / fname
+            rel_path = path.relative_to(SRC)
+            if rel_path.name == "kinds.py":
+                continue
+            findings = []
+            try:
+                tree = ast.parse(path.read_text())
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        name = None
+                        if isinstance(target, ast.Name):
+                            name = target.id
+                        elif isinstance(target, ast.Attribute):
+                            name = target.attr
+                        if name and name in AUTHORITY_NAMES:
+                            findings.append(f"{rel_path}:{node.lineno}: {name}")
+            violations.extend(findings)
+    assert not violations, (
+        "Kind registries found outside kinds.py:\n" + "\n".join(violations)
     )
 
 
 def test_import_layer_maps_derive_from_kinds():
-    """No module may define Kind → X mapping that contains literal Kind strings
-    not derivable from CapaciumKind."""
-    # Check that taxomnomy._KIND_DEFAULTS covers all active kinds
+    """Taxonomy _KIND_DEFAULTS covers all active CapaciumKind values."""
     from capacium.taxonomy import _KIND_DEFAULTS
     from capacium.kinds import ACTIVE_KINDS
 
@@ -72,29 +104,61 @@ def test_import_layer_maps_derive_from_kinds():
         )
 
 
+def test_capability_from_dict_rejects_missing_kind():
+    from capacium.models import Capability
+
+    with pytest.raises(ValueError, match="missing 'kind'"):
+        Capability.from_dict({"name": "test", "owner": "op"})
+
+    with pytest.raises(ValueError, match="empty 'kind'"):
+        Capability.from_dict({"kind": "", "name": "test", "owner": "op"})
+
+
 def test_capability_from_dict_rejects_unknown_kind():
-    """Capability.from_dict() raises ValueError for unknown kinds, no silent coercion."""
-    import pytest
     from capacium.models import Capability
 
     with pytest.raises(ValueError, match="Cannot load Capability with unknown kind"):
-        Capability.from_dict({"kind": "nonexistent-kind", "name": "test", "owner": "test"})
+        Capability.from_dict({"kind": "nonexistent-kind", "name": "test", "owner": "op"})
 
 
-def test_capability_from_dict_migrates_legacy_kind():
-    """Capability.from_dict() migrates legacy spec kinds with migration note."""
+def test_capability_from_dict_rejects_legacy_kind():
+    """Legacy migration is NOT done inside from_dict — callers must use the adapter."""
     from capacium.models import Capability
 
-    cap = Capability.from_dict({"kind": "operator", "name": "test", "owner": "test"})
-    assert cap.kind.value == "workflow"
-    assert "_migration_note" in cap.__dict__
-    assert cap._migration_note and "migrate" in cap._migration_note
+    with pytest.raises(ValueError, match="legacy spec-only"):
+        Capability.from_dict({"kind": "operator", "name": "test", "owner": "op"})
+
+
+def test_legacy_migration_adapter():
+    """migrate_legacy_kind() returns typed migration result with evidence."""
+    from capacium.kinds import migrate_legacy_kind, CapaciumKind
+
+    result = migrate_legacy_kind("operator")
+    assert result.original_kind == "operator"
+    assert result.migrated_kind == CapaciumKind.WORKFLOW
+    assert "migrate" in result.migration_reason
+    assert len(result.warnings) == 1
+
+    with pytest.raises(ValueError, match="not a recognized legacy kind"):
+        migrate_legacy_kind("skill")
+
+    with pytest.raises(ValueError, match="not a recognized legacy kind"):
+        migrate_legacy_kind("unknown")
 
 
 def test_manifest_unknown_kind_rejected():
-    """Manifest.validate() rejects unknown kinds."""
     from capacium.manifest import Manifest
 
     m = Manifest(kind="totally-unknown")
     errors = m.validate()
     assert any("Unknown kind" in e for e in errors)
+
+
+def test_legacy_validation_emits_exact_one_error():
+    """operator kind must only produce operator error, not all three."""
+    from capacium.commands.validate import _semantic_checks
+
+    errors, _warnings = _semantic_checks({"kind": "operator", "name": "test/test"}, strict=False)
+    assert any("operator" in e for e in errors)
+    assert not any("checkpoint" in e for e in errors), "operator should not produce checkpoint error"
+    assert not any("policy" in e for e in errors), "operator should not produce policy error"
