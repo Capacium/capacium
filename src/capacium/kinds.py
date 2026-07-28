@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import FrozenSet, Tuple
+from typing import Any, Dict, FrozenSet, Tuple
 
 
 class CapaciumKind(Enum):
@@ -110,6 +110,7 @@ class KindMigrationResult:
     source_format: str
     original_kind: str
     migrated_kind: CapaciumKind
+    migrated_payload: Dict[str, Any]
     migration_reason: str
     warnings: Tuple[str, ...]
 
@@ -139,6 +140,43 @@ def migrate_legacy_kind(
         source_format=format_version,
         original_kind=cleaned,
         migrated_kind=CapaciumKind.WORKFLOW,
+        migrated_payload={},
+        migration_reason=note,
+        warnings=warnings,
+    )
+
+
+def migrate_legacy_payload(
+    payload: Dict[str, Any],
+    source_format: str = "spec-v1-legacy",
+) -> KindMigrationResult:
+    """Migrate a legacy payload containing a spec-only Kind.
+
+    Returns a frozen typed result containing the transformed payload.
+    Does not mutate the caller's payload dictionary.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    kind_val = payload.get("kind")
+    if not kind_val or not isinstance(kind_val, str) or not kind_val.strip():
+        raise ValueError("payload missing required 'kind' field")
+    cleaned = kind_val.strip()
+    if cleaned not in _LEGACY_SPEC_KIND_VALUES:
+        raise ValueError(
+            f"'{cleaned}' is not a recognized legacy kind."
+        )
+    note = legacy_migration_note(cleaned)
+    transformed = dict(payload)
+    transformed["kind"] = CapaciumKind.WORKFLOW.value
+    warnings = (
+        f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "
+        f"({source_format}): {note}",
+    )
+    return KindMigrationResult(
+        source_format=source_format,
+        original_kind=cleaned,
+        migrated_kind=CapaciumKind.WORKFLOW,
+        migrated_payload=transformed,
         migration_reason=note,
         warnings=warnings,
     )
