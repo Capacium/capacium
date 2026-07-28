@@ -81,6 +81,49 @@ def check_entitlement(user):
         assert result.returncode != 0
         assert "entitlement" in result.stdout
 
+    def test_entitlement_in_trust_module_rejected(self):
+        content = """
+class TrustResult:
+    has_entitlement = False
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "Entitlement inside trust module must be rejected"
+
+    def test_entitlement_via_alias_rejected(self):
+        content = """
+PermissionGrant = namedtuple('EntitlementDecision', ['ok'])
+
+def check(policy):
+    return policy.executeLocal("something")
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "Alias-isolated prohibited terms must be rejected"
+        assert "EntitlementDecision" in result.stdout
+        assert "executeLocal" in result.stdout
+
+    ENTITLEMENT_CASING_VARIANTS = [
+        "Entitlement = 'granted'",
+        "ENTITLEMENT = 1",
+        "EntitleMentDecision = True",
+    ]
+
+    @pytest.mark.parametrize("line", ENTITLEMENT_CASING_VARIANTS)
+    def test_entitlement_casing_variants_rejected(self, line):
+        content = f"\n{line}\n"
+        result = _run_lint_on(content)
+        assert result.returncode != 0, f"Casing variant must be rejected: {line}"
+        assert "entitlement" in result.stdout.lower()
+
+    def test_imported_entitlement_symbol_rejected(self):
+        content = """
+from other.module import EntitlementDecision as ED
+
+result = ED(ok=True)
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "Imported entitlement symbol must be rejected"
+        assert "EntitlementDecision" in result.stdout
+
     SKILLWEAVE_IMPORT_CASES = [
         "import skillweave\n",
         "import skillweave.core\n",
@@ -131,6 +174,40 @@ class Kind(Enum):
 """
         result = _run_lint_on(content)
         assert result.returncode == 0, f"Benign file should pass: {result.stdout}"
+
+    def test_descriptive_docstring_passes(self):
+        content = '"""Does NOT contain entitlement, permit, deny decisions."""\n'
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Descriptive docstring should pass: {result.stdout}"
+
+    def test_trust_boundary_docstring_passes(self):
+        content = '''
+class EvidenceVerificationResult:
+    """Core boundary result.
+
+    Contains ONLY verification facts. Does NOT contain:
+    - permit/deny decisions
+    - entitlement or authorization claims
+    - commercial actions
+    - lifecycle transitions
+    """
+    status: str = "VALID"
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Trust boundary docstring should pass: {result.stdout}"
+
+    def test_legacy_reference_docstring_passes(self):
+        content = '''
+class LegacyAdapter:
+    """Reads R4 legacy evidence.
+
+    Does NOT interpret entitlement decisions or commercial actions.
+    Preserves opaque bytes for migration only.
+    """
+    pass
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Legacy reference docstring should pass: {result.stdout}"
 
     def test_actual_core_passes(self):
         result = subprocess.run(

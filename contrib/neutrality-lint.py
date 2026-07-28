@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,17 +38,50 @@ def _display_path(p: Path) -> str:
         return str(p)
 
 
+def _non_comment_source(path: Path) -> tuple[str, dict[int, int]]:
+    with open(path, 'rb') as f:
+        tokens = list(tokenize.tokenize(f.readline))
+    non_comment_lines = []
+    line_map = {}
+    for tok in tokens:
+        if tok.type in (tokenize.COMMENT, tokenize.NL):
+            continue
+        start_lineno = tok.start[0]
+        if start_lineno not in line_map:
+            line_map[start_lineno] = len(non_comment_lines)
+            non_comment_lines.append(tok.line)
+    return '\n'.join(non_comment_lines), line_map
+
+
+def _source_without_docstrings(path: Path) -> str:
+    source = path.read_text()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    lines = source.splitlines()
+    result = list(lines)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Module)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                ds = body[0]
+                for lineno in range(ds.lineno, ds.end_lineno + 1):
+                    if 1 <= lineno <= len(result):
+                        result[lineno - 1] = ''
+    return '\n'.join(result)
+
+
 def lint_file(path: Path) -> list[str]:
     errors: list[str] = []
-    
-    # Skip neutrally-named trust module — describes trust boundaries in docstrings
-    if path.name == "trust.py":
-        return errors
-    
     try:
-        content = path.read_text()
-    except Exception as exc:
-        return [f"ERROR reading {path}: {exc}"]
+        content = _source_without_docstrings(path)
+    except Exception:
+        try:
+            content = path.read_text()
+        except Exception as exc:
+            return [f"ERROR reading {path}: {exc}"]
+
     for pattern, reason in PROHIBITED_TERMS:
         matches = re.findall(pattern, content, re.IGNORECASE)
         for m in matches:
