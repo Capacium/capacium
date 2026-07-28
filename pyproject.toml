@@ -54,11 +54,16 @@ yaml = ["PyYAML>=6.0"]
 signing = [
     "cryptography>=42.0.0",
 ]
+trust = [
+    "PyNaCl>=1.5.0",
+]
 
 [project.urls]
-Homepage = "https://github.com/Capacium/capacium"
-Repository = "https://github.com/Capacium/capacium"
-Issues = "https://github.com/Capacium/capacium/issues"
+Homepage = "https://capacium.xyz"
+Repository = "https://git.langevc.com/capacium/capacium"
+Issues = "https://git.langevc.com/capacium/capacium/issues"
+Source = "https://git.langevc.com/capacium/capacium"
+Mirror = "https://github.com/Capacium/capacium"
 
 [project.scripts]
 cap = "capacium.cli:main"
