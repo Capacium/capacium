@@ -121,7 +121,12 @@ class Capability:
             try:
                 filtered["kind"] = Kind(kind_val)
             except ValueError:
-                filtered["kind"] = Kind.SKILL
+                from .kinds import validate_kind
+                try:
+                    validated = validate_kind(kind_val)
+                    filtered["kind"] = Kind(validated.value)
+                except ValueError:
+                    filtered["kind"] = Kind.SKILL  # legacy compat for stored data
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
         if "frameworks" in filtered and isinstance(filtered["frameworks"], str):

@@ -5,22 +5,13 @@ from typing import Optional, List, Dict
 from ..framework_detector import detect_active_frameworks, FRAMEWORK_DETECTORS
 from ..utils.config import save_user_config, load_user_config, get_config_dir
 from ..manifest import Manifest
+from ..kinds import ACTIVE_KINDS
 
 VALID_TEMPLATES = {"skill", "mcp-server", "bundle", "resource"}
 
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 VALID_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-VALID_KINDS = {
-    "skill",
-    "tool",
-    "prompt",
-    "mcp-server",
-    "template",
-    "bundle",
-    "workflow",
-    "connector-pack",
-    "resource",
-}
+VALID_KINDS = ACTIVE_KINDS
 
 
 def _validate_name(name: str) -> Optional[str]:

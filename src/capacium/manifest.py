@@ -53,10 +53,13 @@ class Manifest:
 
     def validate(self) -> List[str]:
         errors = []
-        from .models import Kind
-        _ALLOWED_KINDS = {k.value for k in Kind}
-        if self.kind not in _ALLOWED_KINDS:
-            errors.append(f"Unsupported kind '{self.kind}'. Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
+        from .kinds import ACTIVE_KINDS, all_recognized_kind_values
+        _ALLOWED_KINDS = ACTIVE_KINDS
+        _RECOGNIZED_KINDS = all_recognized_kind_values()
+        if self.kind not in _RECOGNIZED_KINDS:
+            errors.append(f"Unknown kind '{self.kind}'. Active kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
+        elif self.kind not in _ALLOWED_KINDS:
+            errors.append(f"Legacy kind '{self.kind}' — must migrate to active kind")
         if self.kind == "bundle":
             if not self.capabilities:
                 errors.append("Bundle manifest must define at least one capability in the 'capabilities' section")
@@ -165,7 +168,10 @@ class Manifest:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Manifest":
         kind_raw = data.pop("kind", None)
-        data["kind"] = kind_raw if isinstance(kind_raw, str) else "skill"
+        if isinstance(kind_raw, str):
+            data["kind"] = kind_raw
+        else:
+            data["kind"] = ""  # will fail validation, no silent coercion
         # Ensure mcp section is a dict
         if "mcp" in data and not isinstance(data["mcp"], dict):
             data["mcp"] = {}
