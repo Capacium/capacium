@@ -266,3 +266,89 @@ def test_detect_returns_two_lists():
         findings, advisories = detect_authority_violations(Path(tmpdir))
         assert isinstance(findings, list)
         assert isinstance(advisories, list)
+
+
+# ── P01G-B: Dict, comprehension, concatenation, nested-path adversarial fixtures ──
+
+def test_adversarial_one_value_dict():
+    """Proof: one-value Kind dict is a literal registry (set/list threshold)."""
+    code = "KINDS = {'skill': 1}\n"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "one_val_dict.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_two_value_dict():
+    """Proof: two-value Kind dict is a literal registry — CAP-P01G-02 probe."""
+    code = 'KINDS = {"skill": 1, "bundle": 2}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "two_val_dict.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1, f"Two-value dict should be flagged: {findings}"
+
+
+def test_adversarial_many_value_dict():
+    """Proof: many-value Kind dict in values is a literal registry."""
+    code = 'KINDS = {"a": "skill", "b": "bundle", "c": "tool"}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "many_val_dict.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_set_comprehension():
+    """Proof: set comprehension with Kind literal is flagged."""
+    code = 'KINDS = {"skill" for _ in range(1)}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "set_comp.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_list_comprehension():
+    """Proof: list comprehension enumerating Kind literal in element is flagged."""
+    code = 'KINDS = ["skill" for _ in (1,)]\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "list_comp.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_kind_concatenation():
+    """Proof: statically resolvable Kind concatenation is flagged."""
+    code = 'KIND_NAME = "sk" + "ill"\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "concat.py"
+        f.write_text(code)
+        findings, _ = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) >= 1
+
+
+def test_adversarial_two_value_dict_probe():
+    """CAP-P01G-02 executable probe: two-value Kind dict must produce finding and non-zero CLI."""
+    import subprocess, sys
+    from capacium.authority_guard import guard_command
+    code = 'KINDS = {"skill": 1, "bundle": 2}\n'
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "probe_dict.py"
+        f.write_text(code)
+        result = subprocess.run(
+            [sys.executable, "-m", "capacium.authority_guard", str(tmpdir)],
+            capture_output=True, text=True,
+        )
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+        assert result.returncode != 0, f"Expected non-zero exit for two-value dict"
+        assert "literal-registry" in result.stdout

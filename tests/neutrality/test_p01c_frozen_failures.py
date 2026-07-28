@@ -105,7 +105,7 @@ def test_migration_result_immutable():
 
 def test_migration_to_parser_payload_method_exists():
     """to_parser_payload() returns a fresh mutable copy for parser use."""
-    from capacium.kinds import KindMigrationResult, _freeze_payload
+    from capacium.kinds import KindMigrationResult, _freeze_payload, NoPayloadError
 
     frozen = _freeze_payload({"kind": "workflow", "name": "test"})
     result = KindMigrationResult(
@@ -117,7 +117,7 @@ def test_migration_to_parser_payload_method_exists():
         warnings=(),
     )
 
-    # P01E-03: to_parser_payload returns a fresh deep-mutable copy
+    # to_parser_payload returns a fresh deep-mutable copy
     parser_payload = result.to_parser_payload()
     assert parser_payload == {"kind": "workflow", "name": "test"}
 
@@ -125,6 +125,78 @@ def test_migration_to_parser_payload_method_exists():
     parser_payload["kind"] = "skill"
     evidence = result.migrated_payload
     assert evidence["kind"] == "workflow"
+
+
+def test_scalar_migration_no_payload():
+    """Scalar-only KindMigrationResult raises NoPayloadError for
+    migrated_payload and to_parser_payload() — no empty placeholder."""
+    from capacium.kinds import migrate_legacy_kind, NoPayloadError
+
+    result = migrate_legacy_kind("operator")
+    assert result.source_format == "spec-v1-legacy"
+    assert result.original_kind == "operator"
+    assert result.migrated_kind == CapaciumKind.WORKFLOW
+    assert result.migration_reason
+    assert result.warnings
+    assert not result.has_payload
+
+    with pytest.raises(NoPayloadError):
+        _ = result.migrated_payload
+    with pytest.raises(NoPayloadError):
+        _ = result.to_parser_payload()
+
+
+def test_migration_rejects_unsupported_types():
+    """_freeze_payload rejects sets, tuples, bytes, non-finite floats,
+    non-string dict keys, and unsupported objects with a typed error."""
+    from capacium.kinds import _freeze_payload
+
+    with pytest.raises(ValueError, match="unsupported set"):
+        _freeze_payload({"k": {1, 2}})
+    with pytest.raises(ValueError, match="unsupported tuple"):
+        _freeze_payload({"k": (1,)})
+    with pytest.raises(ValueError, match="unsupported bytes"):
+        _freeze_payload({"k": b"hello"})
+    with pytest.raises(ValueError, match="non-string key"):
+        _freeze_payload({1: "value"})
+    with pytest.raises(ValueError, match="non-finite float"):
+        _freeze_payload({"k": float("nan")})
+    with pytest.raises(ValueError, match="unsupported type"):
+        import datetime
+        _freeze_payload({"k": datetime.datetime.now()})
+
+
+def test_migration_deterministic_output():
+    """_freeze_payload produces deterministic JSON string for same input."""
+    from capacium.kinds import _freeze_payload, _thaw_payload
+
+    payload = {"z": 1, "a": 2, "nested": {"c": 3, "b": 4}}
+    frozen1 = _freeze_payload(payload)
+    frozen2 = _freeze_payload(payload)
+    assert frozen1 == frozen2, "Deterministic JSON required"
+    # Verify it round-trips
+    thawed = _thaw_payload(frozen1)
+    assert thawed == payload
+
+
+def test_migration_two_parser_copies_independent():
+    """Two calls to to_parser_payload produce independent copies."""
+    from capacium.kinds import KindMigrationResult, _freeze_payload
+
+    payload = {"kind": "workflow", "value": [1, 2, 3]}
+    frozen = _freeze_payload(payload)
+    result = KindMigrationResult(
+        source_format="test",
+        original_kind="operator",
+        migrated_kind=CapaciumKind.WORKFLOW,
+        _frozen_payload=frozen,
+        migration_reason="test",
+    )
+    copy1 = result.to_parser_payload()
+    copy2 = result.to_parser_payload()
+    assert copy1 == copy2
+    copy1["value"].append(4)
+    assert len(copy2["value"]) == 3  # Independent
 
 
 # ── Matrix row count mismatch ──

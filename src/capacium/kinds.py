@@ -111,15 +111,80 @@ _PAYLOAD_CODEC_VERSION = 1
 def _freeze_payload(value: Dict[str, Any]) -> str:
     """Freeze a JSON-compatible dict into a canonical JSON string.
 
-    The string is deterministic (sorted keys) and unambiguous:
-    every valid JSON payload maps to exactly one string.
+    Strict mode: rejects NaN, Infinity, unsupported types, sets, tuples,
+    and non-string dict keys with a typed error. The string is deterministic
+    (sorted keys) and every valid JSON payload maps to exactly one string.
     """
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    _validate_payload_for_json(value)
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+def _validate_payload_for_json(value: object, path: str = "") -> None:
+    """Recursively validate that *value* is JSON-serializable without default=.
+
+    Raises ValueError with a typed message indicating what is not supported.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise ValueError(
+                    f"Migration payload error: non-string key {type(k).__name__} "
+                    f"at path '{path}' — JSON requires string keys"
+                )
+            _validate_payload_for_json(v, f"{path}.{k}")
+    elif isinstance(value, (list, tuple)):
+        if isinstance(value, tuple):
+            raise ValueError(
+                f"Migration payload error: unsupported tuple at path '{path}' — "
+                f"tuples are not JSON-compatible"
+            )
+        for i, item in enumerate(value):
+            _validate_payload_for_json(item, f"{path}[{i}]")
+    elif isinstance(value, set):
+        raise ValueError(
+            f"Migration payload error: unsupported set at path '{path}' — "
+            f"sets are not JSON-compatible"
+        )
+    elif isinstance(value, float):
+        import math
+        if math.isnan(value) or math.isinf(value):
+            raise ValueError(
+                f"Migration payload error: non-finite float at path '{path}' — "
+                f"NaN/Infinity are not JSON-compatible"
+            )
+    elif isinstance(value, (int, str, bool, type(None))):
+        pass
+    elif isinstance(value, bytes):
+        raise ValueError(
+            f"Migration payload error: unsupported bytes at path '{path}' — "
+            f"bytes are not JSON-compatible"
+        )
+    else:
+        # Reject anything not natively JSON-serializable
+        if not isinstance(value, (int, float, str, bool, type(None), dict, list)):
+            raise ValueError(
+                f"Migration payload error: unsupported type {type(value).__name__} "
+                f"at path '{path}' — only JSON-compatible types allowed"
+            )
 
 
 def _thaw_payload(frozen: str) -> Dict[str, Any]:
     """Thaw a frozen JSON string back into a mutable dict."""
     return json.loads(frozen)
+
+
+class _NoPayload:
+    """Sentinel indicating a scalar migration with no payload."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self):
+        return False
 
 
 @dataclass(frozen=True)
@@ -129,26 +194,61 @@ class KindMigrationResult:
     The ``migrated_payload`` is stored as a canonical JSON string for
     unambiguous deep immutability. Call ``to_parser_payload()`` for a
     fresh mutable dict suitable for parser consumption.
+
+    For scalar-only migrations (no payload dict), use KindMigrationResult
+    without a payload — ``to_parser_payload()`` raises NoPayloadError.
     """
 
     source_format: str
     original_kind: str
     migrated_kind: CapaciumKind
     _payload_codec_version: int = field(default=_PAYLOAD_CODEC_VERSION, repr=False)
-    _frozen_payload: str = field(default="{}", repr=False)
+    _frozen_payload: str = field(default="", repr=False)
     migration_reason: str = ""
     warnings: Tuple[str, ...] = ()
 
-    @property
-    def migrated_payload(self) -> Dict[str, Any]:
-        return _thaw_payload(self._frozen_payload)
 
-    def to_parser_payload(self) -> Dict[str, Any]:
-        """Return a fresh deep-mutable copy for parser consumption.
+class NoPayloadError(ValueError):
+    """Raised when accessing migrated_payload or to_parser_payload() on a
+    scalar-only migration result that has no payload data."""
 
-        Mutations of this copy do not affect the migration evidence.
-        """
-        return _thaw_payload(self._frozen_payload)
+
+def _has_payload(self: KindMigrationResult) -> bool:
+    return bool(self._frozen_payload)
+
+
+KindMigrationResult.has_payload = property(_has_payload)
+
+
+@property
+def _migrated_payload(self: KindMigrationResult) -> Dict[str, Any]:
+    if not self._frozen_payload:
+        raise NoPayloadError(
+            "This KindMigrationResult has no payload — it is a scalar-only "
+            "migration. Use .source_format, .original_kind, .migrated_kind, "
+            ".migration_reason, and .warnings instead."
+        )
+    return _thaw_payload(self._frozen_payload)
+
+
+KindMigrationResult.migrated_payload = _migrated_payload
+
+
+def _to_parser_payload(self: KindMigrationResult) -> Dict[str, Any]:
+    """Return a fresh deep-mutable copy for parser consumption.
+
+    Mutations of this copy do not affect the migration evidence.
+    Raises NoPayloadError if this is a scalar-only migration.
+    """
+    if not self._frozen_payload:
+        raise NoPayloadError(
+            "This KindMigrationResult has no payload — it is a scalar-only "
+            "migration."
+        )
+    return _thaw_payload(self._frozen_payload)
+
+
+KindMigrationResult.to_parser_payload = _to_parser_payload
 
 
 def migrate_legacy_kind(

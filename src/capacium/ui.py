@@ -151,9 +151,18 @@ class KindPill:
 
     @classmethod
     def short(cls, kind: str) -> str:
-        k_val = (kind or "unknown").lower()
+        if not kind:
+            color = _DIM
+            abbrev = "??"
+            return f"{color}{abbrev}{_RESET}"
+        k_val = kind.lower()
+        # Resolve via enum-derived abbreviation map
+        try:
+            cap_kind = CapaciumKind(k_val)
+            abbrev = _KIND_ABBREVIATIONS.get(cap_kind, k_val[:4].upper())
+        except ValueError:
+            abbrev = k_val[:4].upper()
         color = cls._colors.get(k_val, _DIM)
-        abbrev = k_val[:4].upper()
         return f"{color}{abbrev}{_RESET}"
 
 

@@ -24,7 +24,7 @@ class CapabilityIR:
     canonical: str = ""
     name: str = ""
     owner: str = ""
-    kind: str = CapaciumKind.SKILL.value
+    kind: str = ""
     description: str = ""
     version: str = ""
     tools: List[Dict[str, Any]] = field(default_factory=list)

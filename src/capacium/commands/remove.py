@@ -329,7 +329,7 @@ def _remove_sub_capabilities(
             adapter.remove_capability(
                 m_name,
                 owner=m_owner,
-                kind=member_cap.kind.value if member_cap and member_cap.kind else "skill",
+                kind=member_cap.kind.value,
             )
 
         if member_cap is not None:

@@ -212,8 +212,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                 suggestion=f"define Kind values in src/capacium/kinds.py only, or derive from CapaciumKind",
                             ))
 
-            # ── Requirement 4: literal Kind registries ──
-            # Test files are allowed to reference Kind values.
+            # ── Requirement 4: literal Kind registries, comprehensions, concatenations ──
             if not is_test_file:
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -223,6 +222,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                         val = node.value
                         target_name = str(targets[0].id) if isinstance(targets[0], ast.Name) else "unknown"
 
+                        # 4a: set/list/tuple/dict literals
                         if isinstance(val, (ast.Set, ast.List, ast.Tuple)):
                             kind_count = _count_kind_values_in_iterable(val)
                             if kind_count >= 1:
@@ -235,15 +235,67 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                 ))
                         elif isinstance(val, ast.Dict):
                             key_kind_count = sum(1 for k in val.keys if k is not None and _is_kind_value(k))
-                            kind_count = max(key_kind_count, sum(1 for v in val.values if _is_kind_value(v)))
-                            if kind_count >= 3:
+                            value_kind_count = sum(1 for v in val.values if _is_kind_value(v))
+                            non_kind_keys = [k for k in val.keys if k is not None and not _is_kind_value(k)]
+                            # A dict is a Kind registry when all keys are Kind values
+                            # (any count >= 1) or >= 2 values are Kind values.
+                            # Routing tables (e.g. {"mcp-server": MCPExporter()}) have
+                            # non-Kind keys and are not flagged.
+                            all_keys_kind = len(non_kind_keys) == 0 and key_kind_count >= 1
+                            if all_keys_kind or value_kind_count >= 2:
+                                kc = max(key_kind_count, value_kind_count)
                                 findings.append(Finding(
                                     kind="literal-registry",
                                     file=str(rel_path),
                                     line=node.lineno,
-                                    message=f"literal Kind registry ({kind_count} value(s) in dict): {target_name}",
+                                    message=f"literal Kind registry ({kc} key/value(s) in dict): {target_name}",
                                     suggestion=f"derive from CapaciumKind instead of hardcoding Kind values",
                                 ))
+
+                    # 4b: comprehensions
+                    if isinstance(node, (ast.SetComp, ast.ListComp, ast.GeneratorExp)):
+                        if node.elt and _is_kind_value(node.elt):
+                            findings.append(Finding(
+                                kind="literal-registry",
+                                file=str(rel_path),
+                                line=node.lineno,
+                                message="comprehension enumerates Kind literal",
+                                suggestion="derive from CapaciumKind instead",
+                            ))
+                    elif isinstance(node, ast.DictComp):
+                        if node.key and _is_kind_value(node.key):
+                            findings.append(Finding(
+                                kind="literal-registry",
+                                file=str(rel_path),
+                                line=node.lineno,
+                                message="dict comprehension enumerates Kind literal in key",
+                                suggestion="derive from CapaciumKind instead",
+                            ))
+                        if node.value and _is_kind_value(node.value):
+                            findings.append(Finding(
+                                kind="literal-registry",
+                                file=str(rel_path),
+                                line=node.lineno,
+                                message="dict comprehension enumerates Kind literal in value",
+                                suggestion="derive from CapaciumKind instead",
+                            ))
+
+                    # 4c: statically resolvable literal concatenations
+                    if isinstance(node, ast.Assign) and node.value:
+                        if isinstance(node.value, ast.BinOp) and isinstance(node.value.op, ast.Add):
+                            left = node.value.left
+                            right = node.value.right
+                            if (isinstance(left, ast.Constant) and isinstance(left.value, str) and
+                                isinstance(right, ast.Constant) and isinstance(right.value, str)):
+                                combined = left.value + right.value
+                                if combined in _KIND_VALUES:
+                                    findings.append(Finding(
+                                        kind="literal-registry",
+                                        file=str(rel_path),
+                                        line=node.lineno,
+                                        message=f"literal Kind concatenation '{combined}': {target_name}",
+                                        suggestion=f"derive from CapaciumKind instead",
+                                    ))
 
             # ── Requirement 5: Kind alias assignments (top-level module assignments only) ──
             # Test files are allowed to define Kind aliases for testing.
@@ -296,6 +348,17 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                             suggestion=f"Kind must be CapaciumKind from capacium.kinds",
                                         ))
 
+            # ── Requirement 6: nested unauthorized kinds.py files ──
+            # Any file named kinds.py outside the canonical path is suspect.
+            if fname == "kinds.py" and not is_canonical and not is_test_file:
+                findings.append(Finding(
+                    kind="duplicate-enum",
+                    file=str(rel_path),
+                    line=1,
+                    message="nested kinds.py outside canonical authority",
+                    suggestion=f"define Kind values in {_CANONICAL_KIND_RELPATH} only, or rename the file",
+                ))
+
     return findings, advisories
 
 
@@ -323,4 +386,8 @@ def guard_command(src_dir: Path | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(guard_command())
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        _sys.exit(guard_command(Path(_sys.argv[1])))
+    else:
+        _sys.exit(guard_command())

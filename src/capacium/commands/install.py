@@ -696,10 +696,17 @@ def _install_single_sub_cap(
         shutil.copytree(source_path, package_dir)
 
     sub_manifest = Manifest.detect_from_directory(package_dir)
+    if not sub_manifest.kind:
+        raise ValueError(
+            f"Sub-manifest {sub_name} has no 'kind' field. "
+            "This manifest predates the Kind neutrality format and must be "
+            "updated via the versioned migration adapter."
+        )
+    sub_kind = sub_manifest.kind
     sub_frameworks = resolve_frameworks(
         sub_manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
-        kind=sub_manifest.kind or CapaciumKind.SKILL.value,
+        kind=sub_kind,
     )
     for fw in sub_frameworks:
         try:
@@ -707,7 +714,6 @@ def _install_single_sub_cap(
             adapter = get_adapter(fw)
         except ValueError:
             continue
-        sub_kind = sub_manifest.kind or CapaciumKind.SKILL.value
         adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_kind)
 
     sub_errors = sub_manifest.validate()
@@ -730,8 +736,8 @@ def _install_single_sub_cap(
         owner=owner,
         name=sub_name,
         version=version,
-        kind=Kind(sub_manifest.kind) if sub_manifest.kind else Kind.SKILL,
-        # VERSIONED_MIGRATION: manifests without kind predate neutrality spec
+        kind=Kind(sub_manifest.kind),
+
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
@@ -1760,8 +1766,7 @@ def _resolve_install_frameworks(
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
-        # VERSIONED_MIGRATION: pre-neutrality manifests may lack kind
-        kind=manifest.kind or CapaciumKind.SKILL.value,
+        kind=manifest.kind or "",
     )
 
 
