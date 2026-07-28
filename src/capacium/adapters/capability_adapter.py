@@ -55,7 +55,7 @@ class CapabilityIR:
         ir = cls(
             name=name,
             owner=owner,
-            kind=manifest.get("kind", CapaciumKind.SKILL.value),
+            kind=manifest.get("kind") or "",
             description=manifest.get("description", manifest.get("short_description", "")),
             version=manifest.get("version", "0.1.0"),
             runtimes=manifest.get("runtimes", {}),
@@ -260,7 +260,7 @@ class OpenCodeAdapter(CapabilityAdapter):
             canonical=f"{descriptor.get('owner','')}/{descriptor.get('name','')}".strip("/"),
             name=descriptor.get("name", ""),
             owner=descriptor.get("owner", ""),
-            kind=descriptor.get("kind", CapaciumKind.SKILL.value),
+            kind=descriptor.get("kind") or "",
             version=descriptor.get("version", ""),
             description=descriptor.get("description", ""),
         )

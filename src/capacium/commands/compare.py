@@ -113,8 +113,8 @@ def _render_side_by_side(a: Dict[str, Any], b: Dict[str, Any], width: int) -> st
 
     trust_a = TrustBadge.label(a.get("trust", "discovered"))
     trust_b = TrustBadge.label(b.get("trust", "discovered"))
-    kind_a = KindPill.render(a.get("kind", "skill"))
-    kind_b = KindPill.render(b.get("kind", "skill"))
+    kind_a = KindPill.render(a.get("kind") or "unknown")
+    kind_b = KindPill.render(b.get("kind") or "unknown")
 
     stars_a = _fmt_stars(a.get("stars", 0))
     stars_b = _fmt_stars(b.get("stars", 0))
@@ -259,7 +259,7 @@ def _render_narrow(a: Dict[str, Any], b: Dict[str, Any]) -> str:
 
     lines: list[str] = []
     lines.append(f"  {_BOLD}{TrustBadge.label(a.get('trust', 'discovered'))} {left_name}{_RESET}")
-    lines.append(f"  {KindPill.render(a.get('kind', 'skill'))}")
+    lines.append(f"  {KindPill.render(a.get('kind') or 'unknown')}")
     lines.append(f"  Stars: \u2605 {_fmt_stars(a.get('stars'))}   Forks: {a.get('forks', 0)}   License: {a.get('license', '') or '-'}")
     lines.append(f"  Updated: {_fmt_updated(a.get('updated_at'))}   Frameworks: {len(a.get('frameworks', []))}   Dependencies: {len(a.get('dependencies', {}))}")
     lines.append(f"  Runtimes: {_fmt_runtimes(a.get('runtimes'))}")
@@ -272,7 +272,7 @@ def _render_narrow(a: Dict[str, Any], b: Dict[str, Any]) -> str:
     lines.append("")
 
     lines.append(f"  {_BOLD}{TrustBadge.label(b.get('trust', 'discovered'))} {right_name}{_RESET}")
-    lines.append(f"  {KindPill.render(b.get('kind', 'skill'))}")
+    lines.append(f"  {KindPill.render(b.get('kind') or 'unknown')}")
     lines.append(f"  Stars: \u2605 {_fmt_stars(b.get('stars'))}   Forks: {b.get('forks', 0)}   License: {b.get('license', '') or '-'}")
     lines.append(f"  Updated: {_fmt_updated(b.get('updated_at'))}   Frameworks: {len(b.get('frameworks', []))}   Dependencies: {len(b.get('dependencies', {}))}")
     lines.append(f"  Runtimes: {_fmt_runtimes(b.get('runtimes'))}")
@@ -299,7 +299,7 @@ def _json_safe(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": entry.get("name", ""),
         "owner": entry.get("owner", ""),
-        "kind": entry.get("kind", "skill"),
+        "kind": entry.get("kind") or "unknown",
         "trust": entry.get("trust", "discovered"),
         "stars": entry.get("stars", 0),
         "forks": entry.get("forks", 0),

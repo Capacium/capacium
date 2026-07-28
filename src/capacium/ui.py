@@ -137,26 +137,23 @@ class KindPill:
 
     @classmethod
     def render(cls, kind: str) -> str:
-        k = (kind or "skill").lower()
+        k = (kind or "unknown").lower()
         color = cls._colors.get(k, _DIM)
         pad = " " if len(k) <= 8 else ""
         return f"{color} {k}{pad}{_RESET}"
 
     @classmethod
     def label(cls, kind: str) -> str:
-        k = (kind or "skill").lower()
+        k = (kind or "unknown").lower()
         color = cls._colors.get(k, _DIM)
         label = get_kind_label(k) if get_kind_label else k
         return f"{color}{label}{_RESET}"
 
     @classmethod
     def short(cls, kind: str) -> str:
-        k_val = (kind or CapaciumKind.SKILL.value).lower()
+        k_val = (kind or "unknown").lower()
         color = cls._colors.get(k_val, _DIM)
-        abbrev = _KIND_ABBREVIATIONS.get(
-            CapaciumKind(k_val) if k_val in _KIND_COLORS_256 else None,
-            k_val[:4].upper()
-        ) if k_val in _KIND_COLORS_256 else k_val[:4].upper()
+        abbrev = k_val[:4].upper()
         return f"{color}{abbrev}{_RESET}"
 
 

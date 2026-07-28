@@ -121,7 +121,7 @@ def check_policy_compliance(
     """
     violations: List[PolicyViolation] = []
     name = capability_info.get("canonical_name", "unknown/unknown")
-    kind = capability_info.get("kind", "skill")
+    kind = capability_info.get("kind") or "unknown"
     trust_state = capability_info.get("trust_state", "discovered")
     publisher = (capability_info.get("publisher") or {}).get("slug", "")
     quality = float(capability_info.get("quality_score") or 0)

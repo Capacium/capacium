@@ -423,7 +423,7 @@ def install_capability(
         )
 
     if not resolved_frameworks:
-        print(f"  Error: '{source_manifest.kind or 'skill'}' kind is not supported by the selected framework(s).")
+        print(f"  Error: '{source_manifest.kind or 'unknown'}' kind is not supported by the selected framework(s).")
         return False
 
     _ALLOWED_KINDS = {k.value for k in Kind}
@@ -455,7 +455,7 @@ def install_capability(
     # SKILL.md is undiscoverable in skill clients. If it actually contains
     # nested member skills it is a mis-modeled multi-skill repo — refuse
     # instead of creating a dead root link.
-    if (manifest.kind or "skill") == "skill" and not (package_dir / "SKILL.md").exists():
+    if (manifest.kind or "") == "skill" and not (package_dir / "SKILL.md").exists():
         from ..manifest import infer_multi_skill_members
         nested = infer_multi_skill_members(package_dir)
         if nested:
@@ -513,7 +513,7 @@ def install_capability(
                 version,
                 package_dir,
                 owner=owner,
-                kind=manifest.kind or "skill",
+                kind=manifest.kind,
             )
         except RuntimeUnavailableError as exc:
             # Host-global condition: no client config was written and no other
@@ -699,7 +699,7 @@ def _install_single_sub_cap(
     sub_frameworks = resolve_frameworks(
         sub_manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
-        kind=sub_manifest.kind or "skill",
+        kind=sub_manifest.kind or CapaciumKind.SKILL.value,
     )
     for fw in sub_frameworks:
         try:
@@ -707,7 +707,8 @@ def _install_single_sub_cap(
             adapter = get_adapter(fw)
         except ValueError:
             continue
-        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_manifest.kind or "skill")
+        sub_kind = sub_manifest.kind or CapaciumKind.SKILL.value
+        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_kind)
 
     sub_errors = sub_manifest.validate()
     if sub_errors:
@@ -730,6 +731,7 @@ def _install_single_sub_cap(
         name=sub_name,
         version=version,
         kind=Kind(sub_manifest.kind) if sub_manifest.kind else Kind.SKILL,
+        # VERSIONED_MIGRATION: manifests without kind predate neutrality spec
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
@@ -1222,7 +1224,7 @@ def _auto_generate_manifest(
     if registry_meta:
         name = registry_meta.get("name", repo_dir.name)
         owner = registry_meta.get("owner", "unknown")
-        kind = registry_meta.get("kind", "skill")
+        kind = registry_meta.get("kind") or ""
         version = resolved_version or registry_meta.get("version", "1.0.0")
         description = registry_meta.get("description", f"Auto-detected capability {name}")
         if version in ("", "latest", "stable"):
@@ -1250,6 +1252,7 @@ def _auto_generate_manifest(
                 return tuple(parts)
             version = max(tags, key=_vk)
 
+        # VERSIONED_MIGRATION: auto-generate manifest for pre-neutrality installs
         kind = CapaciumKind.SKILL.value
         topics_lower = name.lower()
         if "mcp" in topics_lower or "mcp-server" in topics_lower:
@@ -1434,7 +1437,7 @@ def _fetch_from_registry(
             "name": remote.name,
             "owner": remote.owner,
             "version": best_version or remote.version,
-            "kind": remote.kind or "skill",
+            "kind": remote.kind or "",
             "description": remote.description or "",
             "repository": repository,
             "tags": remote.tags or [],
@@ -1585,7 +1588,7 @@ def _append_framework(
         print(f"  Frameworks: {', '.join(all_frameworks)}")
         return True
 
-    kind_str = existing.kind.value if existing.kind else CapaciumKind.SKILL.value
+    kind_str = existing.kind.value if existing.kind else "unknown"
 
     try:
         adapter = get_adapter(framework)
@@ -1757,7 +1760,8 @@ def _resolve_install_frameworks(
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
-        kind=manifest.kind or "skill",
+        # VERSIONED_MIGRATION: pre-neutrality manifests may lack kind
+        kind=manifest.kind or CapaciumKind.SKILL.value,
     )
 
 

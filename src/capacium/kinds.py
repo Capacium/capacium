@@ -8,7 +8,8 @@ with a typed message; they are never silently coerced.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, FrozenSet, Tuple
 
@@ -104,16 +105,50 @@ def validate_kind(value: str) -> CapaciumKind:
     raise ValueError(f"Unknown kind '{value}': must be one of {examples}")
 
 
+_PAYLOAD_CODEC_VERSION = 1
+
+
+def _freeze_payload(value: Dict[str, Any]) -> str:
+    """Freeze a JSON-compatible dict into a canonical JSON string.
+
+    The string is deterministic (sorted keys) and unambiguous:
+    every valid JSON payload maps to exactly one string.
+    """
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _thaw_payload(frozen: str) -> Dict[str, Any]:
+    """Thaw a frozen JSON string back into a mutable dict."""
+    return json.loads(frozen)
+
+
 @dataclass(frozen=True)
 class KindMigrationResult:
-    """Typed result from the versioned legacy-kind migration adapter."""
+    """Typed result from the versioned legacy-kind migration adapter.
+
+    The ``migrated_payload`` is stored as a canonical JSON string for
+    unambiguous deep immutability. Call ``to_parser_payload()`` for a
+    fresh mutable dict suitable for parser consumption.
+    """
 
     source_format: str
     original_kind: str
     migrated_kind: CapaciumKind
-    migrated_payload: Dict[str, Any]
-    migration_reason: str
-    warnings: Tuple[str, ...]
+    _payload_codec_version: int = field(default=_PAYLOAD_CODEC_VERSION, repr=False)
+    _frozen_payload: str = field(default="{}", repr=False)
+    migration_reason: str = ""
+    warnings: Tuple[str, ...] = ()
+
+    @property
+    def migrated_payload(self) -> Dict[str, Any]:
+        return _thaw_payload(self._frozen_payload)
+
+    def to_parser_payload(self) -> Dict[str, Any]:
+        """Return a fresh deep-mutable copy for parser consumption.
+
+        Mutations of this copy do not affect the migration evidence.
+        """
+        return _thaw_payload(self._frozen_payload)
 
 
 def migrate_legacy_kind(
@@ -141,7 +176,6 @@ def migrate_legacy_kind(
         source_format=format_version,
         original_kind=cleaned,
         migrated_kind=CapaciumKind.WORKFLOW,
-        migrated_payload={},
         migration_reason=note,
         warnings=warnings,
     )
@@ -178,7 +212,7 @@ def migrate_legacy_payload(
         source_format=source_format,
         original_kind=cleaned,
         migrated_kind=CapaciumKind.WORKFLOW,
-        migrated_payload=transformed,
+        _frozen_payload=_freeze_payload(transformed),
         migration_reason=note,
         warnings=warnings,
     )

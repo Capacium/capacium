@@ -113,7 +113,7 @@ def _render_results_table(listings: List[dict]) -> str:
             trust = r.get("trust", "discovered")
             rows.append([
                 _canonical_name(r),
-                KindPill.render(r.get("kind", "skill")),
+                KindPill.render(r.get("kind") or "unknown"),
                 _fmt_stars(r.get("stars", 0)),
                 TrustBadge.label(trust),
                 _trunc(r.get("description", ""), 40),
@@ -125,7 +125,7 @@ def _render_results_table(listings: List[dict]) -> str:
         items.append({
             "trust_badge": r.get("trust", "discovered"),
             "name": _canonical_name(r),
-            "kind": r.get("kind", "skill"),
+            "kind": r.get("kind") or "unknown",
             "description": r.get("description", ""),
             "trust": r.get("trust", "discovered"),
             "stars": r.get("stars"),
@@ -146,7 +146,7 @@ def _print_header(title: str) -> None:
 def _render_result_summary(listings: List[dict]) -> None:
     for i, r in enumerate(listings):
         trust = r.get("trust", "discovered")
-        kind = r.get("kind", "skill")
+        kind = r.get("kind") or "unknown"
         stars = _fmt_stars(r.get("stars", 0))
         name = _canonical_name(r)
         desc = _trunc(r.get("description", ""), 60)
@@ -366,7 +366,7 @@ def _show_detail(listing: dict) -> None:
     owner = owner or canonical
     name = name or listing.get("id", "")
 
-    kind = listing.get("kind", "skill")
+    kind = listing.get("kind") or "unknown"
     stars = listing.get("stars")
     license_ = listing.get("license", "")
     desc = listing.get("description", "")
@@ -507,7 +507,7 @@ class BrowseSession:
             owner, name = canonical.split("/", 1)
         owner = r.get("owner", owner)
         name = r.get("name", name)
-        kind = r.get("kind", "skill")
+        kind = r.get("kind") or "unknown"
         stars = r.get("stars")
         license_ = r.get("license", "")
         desc = r.get("description", "")

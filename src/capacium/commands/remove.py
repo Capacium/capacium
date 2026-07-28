@@ -177,7 +177,7 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
             except ValueError:
                 continue
             adapter.remove_capability(
-                cap_name, owner=owner,                 kind=cap.kind.value if cap.kind else CapaciumKind.SKILL.value
+                cap_name, owner=owner,                 kind=cap.kind.value if cap.kind else "unknown"
             )
 
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)

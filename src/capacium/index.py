@@ -112,7 +112,7 @@ class Index:
                 """, (
                     listing.get("name", ""),
                     listing.get("owner", ""),
-                    listing.get("kind", ""),
+                    validated_kind,
                     listing.get("trust", "discovered"),
                     listing.get("stars", 0),
                     listing.get("forks", 0),

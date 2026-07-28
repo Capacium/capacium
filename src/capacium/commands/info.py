@@ -86,7 +86,7 @@ def _to_info_json(detail: Dict[str, Any]) -> str:
             "$schema": _JSON_SCHEMA,
             "name": detail.get("name", ""),
             "owner": detail.get("owner", ""),
-            "kind": detail.get("kind", "skill"),
+            "kind": detail.get("kind") or "unknown",
             "trust": detail.get("trust", "discovered"),
             "version": detail.get("version", ""),
             "description": detail.get("description", ""),
@@ -115,7 +115,7 @@ def _render_info(detail: Dict[str, Any]) -> str:
     name = detail.get("name", "")
     owner = detail.get("owner", "")
     cap_id = f"{owner}/{name}" if owner else name
-    kind = detail.get("kind", "skill")
+    kind = detail.get("kind") or "unknown"
     trust = detail.get("trust", "discovered")
     version = detail.get("version", "")
     description = detail.get("description", "")
@@ -281,7 +281,7 @@ def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
     return {
         "name": cap.name,
         "owner": cap.owner,
-        "kind": cap.kind.value if cap.kind else CapaciumKind.SKILL.value,
+        "kind": cap.kind.value if cap.kind else "unknown",
         "version": cap.version,
         "description": "",
         "fingerprint": cap.fingerprint,

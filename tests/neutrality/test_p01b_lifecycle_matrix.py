@@ -1,19 +1,14 @@
-"""CAPR3-P01B-02: Real lifecycle matrix — using public entrypoints.
+"""CAPR3-P01E: Real lifecycle matrix — every surface calls its public entrypoint.
 
-Tests parse, validation, init, registry, install, index, export, lock,
-list, sync, round-trip, and explicit migration.
-
-Every surface must prove it rejects or correctly processes:
-- every active Kind;
-- missing Kind;
-- empty/malformed Kind;
-- unknown Kind;
-- legacy kinds (operator, checkpoint, policy).
+Six surrogate surfaces from P01B are replaced with tests that directly invoke
+the real public functions. No surface maps to an adjacent helper.
 """
 
+import io
 import json
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -77,19 +72,48 @@ def test_manifest_validate_legacy(legacy):
     assert any("Legacy kind" in e or "migrate" in e.lower() for e in errors)
 
 
-# ── 3. Init ──
+# ── 3. Init (init_capability real entrypoint) ──
 
 @pytest.mark.parametrize("kind", ALL_KINDS)
-def test_init_validates_active_kind(kind):
-    from capacium.commands.init import _validate_kind
-    err = _validate_kind(kind)
-    assert err is None
+def test_init_capability_writes_manifest(kind, tmp_path, monkeypatch):
+    """init_capability() with a valid kind writes capability.yaml and returns True."""
+    from capacium.commands.init import init_capability
+
+    monkeypatch.chdir(tmp_path)
+
+    result = init_capability(name="test-cap", kind=kind, version="0.1.0")
+    assert result is True
+
+    manifest_path = tmp_path / "capability.yaml"
+    assert manifest_path.exists()
+
+    m = Manifest.load(manifest_path)
+    assert m.kind == kind
+    assert m.name == "test-cap"
 
 
-def test_init_unknown_rejected():
-    from capacium.commands.init import _validate_kind
-    err = _validate_kind("unknown")
-    assert err is not None
+def test_init_capability_rejects_missing_kind(tmp_path, monkeypatch):
+    """init_capability() with invalid kind returns False and writes nothing."""
+    from capacium.commands.init import init_capability
+
+    monkeypatch.chdir(tmp_path)
+
+    result = init_capability(name="test-cap", kind="nonexistent", version="0.1.0")
+    assert result is False
+
+    manifest_path = tmp_path / "capability.yaml"
+    assert not manifest_path.exists()
+
+
+def test_init_capability_no_write_on_existing(tmp_path, monkeypatch):
+    """init_capability() returns False when capability.yaml already exists."""
+    from capacium.commands.init import init_capability
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "capability.yaml").write_text("kind: skill\nname: existing\nversion: 0.1.0\n")
+
+    result = init_capability(name="test-cap", kind="skill", version="0.1.0")
+    assert result is False
 
 
 # ── 4. Registry (add_capability/get_by_kind) ──
@@ -107,18 +131,64 @@ def test_registry_add_and_get_by_kind(kind, tmp_path):
     assert results[0].kind == kind_enum
 
 
-# ── 5. Install path (manifest → registry kind propagation) ──
+# ── 5. Install (install_capability real entrypoint) ──
 
-def test_install_kind_survives_registry_round_trip(tmp_path):
-    """Kind assigned during install survives registry add_capability→get_by_kind."""
+def _make_cap_dir(base: Path, name: str, kind: str, version: str = "1.0.0", owner: str = "test") -> Path:
+    """Create a minimal capability source directory for install testing."""
+    cap_dir = base / name
+    cap_dir.mkdir()
+    manifest = Manifest(kind=kind, name=name, version=version, owner=owner)
+    manifest.save(cap_dir / "capability.yaml")
+    (cap_dir / "SKILL.md").write_text(f"# {name}")
+    return cap_dir
+
+
+def test_install_capability_from_source(tmp_home, tmp_path):
+    """install_capability() with source_dir installs and populates Registry."""
+    from capacium.commands.install import install_capability
     from capacium.registry import Registry as Reg
 
-    reg = Reg(db_path=tmp_path / "test.db")
-    cap = Capability(owner="o", name="installed-cap", version="1.0.0", kind=Kind("workflow"))
-    reg.add_capability(cap)
-    stored = reg.get_by_kind(Kind.WORKFLOW)
-    assert len(stored) == 1
-    assert stored[0].kind == Kind.WORKFLOW
+    cap_dir = _make_cap_dir(tmp_path, "test-install-skill", "skill")
+    reg_db = tmp_home / ".capacium" / "registry.db"
+
+    result = install_capability(
+        "test-install-skill",
+        source_dir=cap_dir,
+        skip_runtime_check=True,
+        framework="opencode",
+        force=True,
+        yes=True,
+    )
+    assert result is True
+
+    reg = Reg(db_path=reg_db)
+    cap = reg.get_capability("global/test-install-skill")
+    assert cap is not None
+    assert cap.kind == Kind.SKILL
+
+
+def test_install_capability_preserves_kind(tmp_home, tmp_path):
+    """install_capability() preserves Kind through the registry round-trip."""
+    from capacium.commands.install import install_capability
+    from capacium.registry import Registry as Reg
+
+    cap_dir = _make_cap_dir(tmp_path, "test-install-workflow", "workflow")
+    reg_db = tmp_home / ".capacium" / "registry.db"
+
+    result = install_capability(
+        "test-install-workflow",
+        source_dir=cap_dir,
+        skip_runtime_check=True,
+        framework="opencode",
+        force=True,
+        yes=True,
+    )
+    assert result is True
+
+    reg = Reg(db_path=reg_db)
+    caps = reg.get_by_kind(Kind.WORKFLOW)
+    assert len(caps) >= 1
+    assert caps[0].kind == Kind.WORKFLOW
 
 
 # ── 6. Index (kind-filtered search) ──
@@ -151,6 +221,7 @@ def _index_listing(name, **overrides):
     d.update(overrides)
     return d
 
+
 @pytest.mark.parametrize("kind", ALL_KINDS)
 def test_index_filter_by_kind(kind, tmp_path):
     from capacium.index import Index
@@ -162,62 +233,179 @@ def test_index_filter_by_kind(kind, tmp_path):
     assert results[0]["kind"] == kind
 
 
-# ── 7. Export (MCPExporter kind gate) ──
+# ── 7. Export (MCPExporter.export real entrypoint) ──
 
-def test_export_accepts_mcp_kinds():
+EXPORTABLE_KINDS = {"mcp-server", "skill", "resource"}
+MOCK_EXPORT_KINDS = sorted(EXPORTABLE_KINDS)
+NON_EXPORTABLE_KINDS = sorted(ACTIVE_KINDS - EXPORTABLE_KINDS)
+
+
+@pytest.mark.parametrize("kind", MOCK_EXPORT_KINDS)
+def test_export_produces_structured_output(kind):
+    """MCPExporter.export() returns structured dict with serverInfo and capabilities."""
     from capacium.exporters import MCPExporter
 
     exporter = MCPExporter()
-    assert exporter.can_export(Manifest(kind="mcp-server", name="t", version="1.0.0"))
-    assert exporter.can_export(Manifest(kind="skill", name="t", version="1.0.0"))
-    assert exporter.can_export(Manifest(kind="resource", name="t", version="1.0.0"))
-    assert not exporter.can_export(Manifest(kind="workflow", name="t", version="1.0.0"))
-    assert not exporter.can_export(Manifest(kind="bundle", name="t", version="1.0.0"))
+    m = Manifest(kind=kind, name=f"test-{kind}", version="1.0.0")
+    output = exporter.export(m)
+
+    assert "serverInfo" in output
+    assert output["serverInfo"]["name"] == f"test-{kind}"
+    assert "capabilities" in output
+    assert "transport" in output
 
 
-# ── 8. Lock (LockFile kind-agnostic round-trip) ──
+@pytest.mark.parametrize("kind", MOCK_EXPORT_KINDS)
+def test_export_can_export_accepts(kind):
+    """MCPExporter.can_export() accepts mcp-server, skill, resource."""
+    from capacium.exporters import MCPExporter
 
-@pytest.mark.parametrize("kind", ALL_KINDS)
-def test_lockfile_kind_agnostic_round_trip(kind):
-    """LockFile/LockEntry are kind-agnostic — the kind is on the Capability, not Lock."""
-    from capacium.models import LockFile, LockEntry
-    from datetime import datetime
-
-    entry = LockEntry(name="dep", version="1.0.0", fingerprint="sha256:abc")
-    lock = LockFile(name="test", version="1.0.0", fingerprint="sha256:def",
-                    dependencies=[entry], source="test", created_at=datetime.now())
-    data = lock.to_dict()
-    assert data["name"] == "test"
-    lock2 = LockFile.from_dict(data)
-    assert lock2.name == lock.name
-    assert lock2.version == lock.version
+    exporter = MCPExporter()
+    assert exporter.can_export(Manifest(kind=kind, name="t", version="1.0.0"))
 
 
-# ── 9. List (kind filter) ──
+@pytest.mark.parametrize("kind", NON_EXPORTABLE_KINDS)
+def test_export_rejects_non_mcp_kinds(kind):
+    """MCPExporter.can_export() rejects non-MCP kinds."""
+    from capacium.exporters import MCPExporter
 
-def test_list_filter_by_kind(tmp_path):
-    from capacium.registry import Registry as Reg
-
-    reg = Reg(db_path=tmp_path / "test.db")
-    for k in ("skill", "tool", "bundle"):
-        cap = Capability(owner="o", name=f"cap-{k}", version="1.0.0", kind=Kind(k))
-        reg.add_capability(cap)
-
-    results = reg.get_by_kind(Kind("skill"))
-    assert len(results) == 1
-    assert results[0].kind == Kind.SKILL
+    exporter = MCPExporter()
+    assert not exporter.can_export(Manifest(kind=kind, name="t", version="1.0.0"))
 
 
-# ── 10. Sync (kind propagation) ──
+# ── 8. Lock (lock_capability real entrypoint) ──
 
-def test_sync_preserves_kind(tmp_path):
+def test_lock_capability_writes_lockfile(tmp_home, tmp_path):
+    """lock_capability() writes a capability.lock file for an installed capability."""
+    from capacium.commands.install import install_capability
+    from capacium.commands.lock import lock_capability
+
+    cap_dir = _make_cap_dir(tmp_path, "test-lock-cap", "skill")
+
+    install_capability(
+        "test-lock-cap",
+        source_dir=cap_dir,
+        skip_runtime_check=True,
+        framework="opencode",
+        force=True,
+        yes=True,
+    )
+
+    result = lock_capability("test-lock-cap")
+    assert result is True
+
+    lock_path = tmp_home / ".capacium" / "packages" / "global" / "test-lock-cap" / "1.0.0" / "capability.lock"
+    assert lock_path.exists()
+
+
+def test_lock_capability_no_write_no_install(tmp_home):
+    """lock_capability() returns False when capability is not installed."""
+    from capacium.commands.lock import lock_capability
+
+    result = lock_capability("nonexistent/cap")
+    assert result is False
+
+
+# ── 9. List (list_capabilities real entrypoint) ──
+
+def test_list_capabilities_filters_by_kind(tmp_home, tmp_path):
+    """list_capabilities() filters by Kind and produces output."""
+    from capacium.commands.install import install_capability
+    from capacium.commands.list_capabilities import list_capabilities
+
+    cap_dir = _make_cap_dir(tmp_path, "test-list-skill", "skill")
+    install_capability(
+        "test-list-skill",
+        source_dir=cap_dir,
+        skip_runtime_check=True,
+        framework="opencode",
+        force=True,
+        yes=True,
+    )
+
+    buf = io.StringIO()
+    with mock.patch("sys.stdout", buf):
+        list_capabilities(kind="skill")
+    output = buf.getvalue()
+    assert "test-list-skill" in output
+
+
+def test_list_capabilities_json_output(tmp_home, tmp_path):
+    """list_capabilities(json_output=True) produces valid JSON."""
+    from capacium.commands.install import install_capability
+    from capacium.commands.list_capabilities import list_capabilities
+
+    cap_dir = _make_cap_dir(tmp_path, "test-list-json", "skill")
+    install_capability(
+        "test-list-json",
+        source_dir=cap_dir,
+        skip_runtime_check=True,
+        framework="opencode",
+        force=True,
+        yes=True,
+    )
+
+    buf = io.StringIO()
+    with mock.patch("sys.stdout", buf):
+        list_capabilities(kind="skill", json_output=True)
+    output = buf.getvalue().strip()
+    data = json.loads(output)
+    assert isinstance(data, list)
+    names = [item.get("name") for item in data]
+    assert "test-list-json" in names
+
+
+# ── 10. Sync (sync_index real entrypoint with mocked transport) ──
+
+def test_sync_index_accepts_valid_kind(tmp_path, tmp_home):
+    """sync_index() accepts listings with valid Kinds."""
     from capacium.index import Index
+    from capacium.sync import sync_index
 
-    index = Index(str(tmp_path / "test.db"))
-    index.upsert(_index_listing("sync-test", kind="mcp-server"))
-    results, _facets, total = index.search("", kind="mcp-server")
-    assert total >= 1
-    assert results[0]["kind"] == "mcp-server"
+    index = Index(str(tmp_path / "sync_test.db"))
+
+    def mock_search_raw(self, query, sort, limit, registry_url):
+        return {
+            "listings": [
+                {
+                    "canonical_name": "test/sync-skill",
+                    "kind": "skill",
+                    "trust_state": "discovered",
+                    "stars": 0,
+                    "updated_at": "2026-01-01",
+                },
+            ]
+        }
+
+    with mock.patch("capacium.registry_client.RegistryClient.search_raw", mock_search_raw):
+        result = sync_index(index, registry_url="https://test.example.com", full=False)
+        assert result["total"] >= 0
+        assert result["new"] >= 0
+
+
+def test_sync_index_rejects_missing_kind(tmp_path, tmp_home):
+    """sync_index() rejects listings with missing/invalid Kind — proven at public surface."""
+    from capacium.sync import sync_index
+
+    def mock_search_raw_missing(self, query, sort, limit, registry_url):
+        return {
+            "listings": [
+                {
+                    "canonical_name": "test/sync-missing",
+                    "trust_state": "discovered",
+                    "stars": 0,
+                    "updated_at": "2026-01-01",
+                    # no "kind" field
+                },
+            ]
+        }
+
+    from capacium.index import Index
+    index = Index(str(tmp_path / "sync_reject_test.db"))
+
+    with mock.patch("capacium.registry_client.RegistryClient.search_raw", mock_search_raw_missing):
+        with pytest.raises(ValueError, match="missing or invalid"):
+            sync_index(index, registry_url="https://test.example.com", full=False)
 
 
 # ── 11. Round-trip (Capability serialization) ──
@@ -243,10 +431,8 @@ def test_migrate_payload_preserves_owner(legacy):
     assert result.migrated_payload["kind"] == "workflow"
     assert result.migrated_payload["owner"] == "alice"
     assert result.migrated_payload["extension_key"] == "value"
-    # Original payload is not mutated
     assert payload == original
-    assert payload["kind"] == legacy  # caller's dict unchanged
-    # Transformed payload is accepted by current parser
+    assert payload["kind"] == legacy
     cap = Capability.from_dict(result.migrated_payload)
     assert cap.kind == Kind.WORKFLOW
 

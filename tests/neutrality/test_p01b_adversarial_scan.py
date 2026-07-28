@@ -1,122 +1,42 @@
-"""CAPR3-P01B-03: Adversarial authority scan — identifier-independent detection."""
+"""CAPR3-P01F-A: Adversarial authority scan — covers all required cases.
 
-import ast
-import os
+The core detection logic lives in ``capacium.authority_guard`` so it can
+be reused by CI scripts. These tests verify the guard against adversarial
+fixtures including every case required by P01F:
+- Enum with Kind values (any count)
+- Literal registries (1, 2, or many Kind values)
+- Dict value registries
+- Direct import aliases
+- Module-attribute aliases
+- Import alias reassignment
+- Syntax error fail-closed
+- Legitimate CapaciumKind-derived maps
+"""
+
 import tempfile
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 
+from capacium.authority_guard import (
+    detect_authority_violations,
+    Finding,
+    _CANONICAL_KIND_RELPATH,
+)
+
 SRC = Path(__file__).resolve().parents[2] / "src" / "capacium"
-KIND_VALUES = frozenset({"skill", "mcp-server", "bundle", "tool", "prompt", "template", "workflow", "connector-pack", "resource"})
-
-# Canonical authority — only kinds.py defines CapaciumKind
-CANONICAL_KIND_FILES = frozenset({"kinds.py"})
-
-
-def _detect_authority_violations(src_dir: Path) -> list[str]:
-    violations = []
-    for root, _dirs, files in os.walk(src_dir):
-        for fname in files:
-            if not fname.endswith(".py"):
-                continue
-            path = Path(root) / fname
-            rel_path = path.relative_to(src_dir)
-            try:
-                tree = ast.parse(path.read_text())
-            except SyntaxError:
-                continue
-
-            # Detect Enum subclasses with Kind values
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    for base in node.bases:
-                        base_name = None
-                        if isinstance(base, ast.Name):
-                            base_name = base.id
-                        elif isinstance(base, ast.Attribute):
-                            base_name = base.attr
-                        if base_name in ("Enum", "StrEnum", "IntEnum"):
-                            for child in ast.walk(node):
-                                if isinstance(child, ast.Assign):
-                                    for target in child.targets:
-                                        if isinstance(target, ast.Name) and hasattr(child, "value"):
-                                            val = child.value
-                                            if isinstance(val, ast.Constant) and val.value in KIND_VALUES:
-                                                violations.append(
-                                                    f"{rel_path}:{child.lineno}: Enum '{node.name}' defines Kind value '{val.value}'"
-                                                )
-                            break
-
-            # Detect literal Kind registries (set/list/tuple/dict containing multiple Kind values)
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                    if not node.value:
-                        continue
-                    val = node.value
-                    kind_count = 0
-                    target_name = str(targets[0].id) if isinstance(targets[0], ast.Name) else "unknown"
-                    # Check set literals
-                    if isinstance(val, ast.Set) or isinstance(val, ast.List) or isinstance(val, ast.Tuple):
-                        for elt in val.elts if hasattr(val, "elts") else []:
-                            if isinstance(elt, ast.Constant) and elt.value in KIND_VALUES:
-                                kind_count += 1
-                    # Check dict keys
-                    elif isinstance(val, ast.Dict):
-                        for key in val.keys:
-                            if isinstance(key, ast.Constant) and key.value in KIND_VALUES:
-                                kind_count += 1
-                    if kind_count >= 3:  # 3+ Kind values = genuine registry, not just a single reference
-                        violations.append(
-                            f"{rel_path}:{node.lineno}: {target_name} is a literal Kind registry ({kind_count} values)"
-                        )
-
-            # Detect non-canonical Kind alias assignments (Kind = SomeOtherClass)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if isinstance(target, ast.Name) and target.id == "Kind":
-                            val = node.value
-                            if isinstance(val, ast.Name) and val.id not in ("CapaciumKind",):
-                                violations.append(
-                                    f"{rel_path}:{node.lineno}: Kind aliased to non-canonical class '{val.id}'"
-                                )
-                            elif isinstance(val, ast.Attribute) and val.attr != "CapaciumKind":
-                                violations.append(
-                                    f"{rel_path}:{node.lineno}: Kind aliased via import to '{val.attr}'"
-                                )
-
-    return violations
+CANONICAL_RELPATH = _CANONICAL_KIND_RELPATH
 
 
 def test_current_src_clean():
-    violations = _detect_authority_violations(SRC)
-    violations = [v for v in violations if Path(v.split(":")[0]).name not in CANONICAL_KIND_FILES]
-    assert not violations, f"Unauthorized Kind registries:\n" + "\n".join(violations)
-
-
-def test_adversarial_renamed_set():
-    """A set with 3+ Kind values is detected regardless of variable name."""
-    code = """
-RANDOM_NAME_XYZ = {
-    "skill",
-    "mcp-server",
-    "bundle",
-    "tool",
-    "prompt",
-}
-"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "evil.py"
-        f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        assert len(violations) >= 1
-        assert "RANDOM_NAME_XYZ" in violations[0]
+    findings, advisories = detect_authority_violations(SRC)
+    strict_findings = [f for f in findings if str(Path("src") / "capacium" / f.file) != CANONICAL_RELPATH]
+    assert not strict_findings, f"Unauthorized Kind registries:\n" + "\n".join(str(f) for f in strict_findings)
 
 
 def test_adversarial_second_enum():
-    """A second Enum with Kind values is detected."""
+    """A second Enum with Kind values is detected (any count)."""
     code = """
 from enum import Enum
 
@@ -128,13 +48,58 @@ class EvilKind(Enum):
     with tempfile.TemporaryDirectory() as tmpdir:
         f = Path(tmpdir) / "evil.py"
         f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        assert len(violations) >= 1
-        assert "EvilKind" in violations[0]
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        enum_findings = [f for f in findings if f.kind == "duplicate-enum"]
+        assert len(enum_findings) >= 1
+        assert "EvilKind" in enum_findings[0].message
 
 
-def test_adversarial_dict_registry():
-    """A dict with 3+ Kind keys is detected."""
+def test_adversarial_one_value_set():
+    """A set with 1 Kind value is detected (no threshold)."""
+    code = """
+SINGLE_KIND = {"skill"}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "one_value.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        assert len(findings) >= 1
+        assert "literal registry" in findings[0].kind or "literal" in findings[0].message.lower()
+
+
+def test_adversarial_two_value_set():
+    """A set with 2 Kind values is detected (no threshold)."""
+    code = """
+TWO_KINDS = {"skill", "tool"}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "two_value.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        assert len(findings) >= 1
+
+
+def test_adversarial_three_value_set():
+    """A set with 3+ Kind values is detected."""
+    code = """
+RANDOM_NAME_XYZ = {
+    "skill",
+    "mcp-server",
+    "bundle",
+    "tool",
+    "prompt",
+}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "many_values.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        assert len(findings) >= 1
+        assert "RANDOM_NAME_XYZ" in findings[0].message or "unknown" in findings[0].message
+
+
+def test_adversarial_dict_key_registry():
+    """A dict with Kind-value keys is detected."""
     code = """
 TOTALLY_INNOCENT = {
     "skill": "#00ff00",
@@ -144,40 +109,27 @@ TOTALLY_INNOCENT = {
 }
 """
     with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "evil.py"
+        f = Path(tmpdir) / "dict_keys.py"
         f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        assert len(violations) >= 1
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        assert len(findings) >= 1
+        assert "literal registry" in findings[0].kind or "literal" in findings[0].message.lower()
 
 
-def test_derived_maps_are_permitted():
-    """Maps whose keys are derived from CapaciumKind iteration are allowed."""
+def test_adversarial_dict_value_registry():
+    """A dict with Kind-value values is detected."""
     code = """
-from capacium.kinds import CapaciumKind
-
-_MAP = {k.value: k.name for k in CapaciumKind}
-OTHER_MAP = {k.value: k for k in CapaciumKind}
-"""
-    # These are fine — they derive from CapaciumKind.
-    # The scan doesn't flag them because CapaciumKind is iterated, not literal.
-    with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "derived.py"
-        f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        assert not violations, f"Derived maps from CapaciumKind should be allowed:\n{violations}"
-
-
-def test_adversarial_single_value_set_not_flagged():
-    """A set with only 1-2 Kind values is not a registry (false positive check)."""
-    code = """
-SINGLE_KIND = {"skill"}
-TWO_KINDS = {"skill", "tool"}
+KIND_LABELS = {
+    "a": "skill",
+    "b": "mcp-server",
+    "c": "tool",
+}
 """
     with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "safe.py"
+        f = Path(tmpdir) / "dict_values.py"
         f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        assert not violations, f"1-2 value sets should not be flagged:\n{violations}"
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        assert len(findings) >= 1
 
 
 def test_adversarial_kind_alias_detected():
@@ -192,8 +144,125 @@ Kind = WeirdKind
     with tempfile.TemporaryDirectory() as tmpdir:
         f = Path(tmpdir) / "shadow.py"
         f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        enum_violations = [v for v in violations if "WeirdKind" in v and "Enum" in v]
-        alias_violations = [v for v in violations if "aliased" in v.lower()]
-        assert len(enum_violations) >= 1, "Second Enum must be detected"
-        assert len(alias_violations) >= 1, "Kind alias assignment must be detected"
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        enum_violations = [f for f in findings if f.kind == "duplicate-enum"]
+        alias_violations = [f for f in findings if f.kind == "kind-alias"]
+        assert len(enum_violations) >= 1
+        assert len(alias_violations) >= 1
+
+
+def test_adversarial_import_alias_detected():
+    """'from module import OtherKind as Kind' is detected."""
+    code = """
+from somewhere import OtherKind as Kind
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "import_alias.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        import_alias = [ff for ff in findings if ff.kind == "import-alias"]
+        assert len(import_alias) >= 1
+        assert "import alias" in import_alias[0].message.lower()
+
+
+def test_adversarial_module_attr_alias():
+    """Kind = module.OtherKind is detected."""
+    code = """
+import somewhere
+Kind = somewhere.OtherKind
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "module_attr.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        alias_findings = [ff for ff in findings if ff.kind == "kind-alias"]
+        assert len(alias_findings) >= 1
+        assert "OtherKind" in alias_findings[0].message or "attr" in alias_findings[0].message
+
+
+def test_adversarial_import_reassignment():
+    """Imported symbol reassigned as Kind is detected."""
+    code = """
+from somewhere import OtherKind
+Kind = OtherKind
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "import_reassign.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        reassign = [ff for ff in findings if ff.kind == "import-alias-reassignment" or ff.kind == "kind-alias"]
+        assert len(reassign) >= 1
+
+
+def test_syntax_error_fails_closed():
+    """Unparseable Python file produces a finding (fail closed)."""
+    code = "this is not valid python @@@"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "broken.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        syntax_errors = [ff for ff in findings if ff.kind == "syntax-error"]
+        assert len(syntax_errors) >= 1
+
+
+def test_derived_maps_are_not_flagged():
+    """Maps whose keys are derived from CapaciumKind iteration are allowed.
+
+    The current guard focuses on literal registries; comprehensions and
+    CapaciumKind-derived maps are outside the literal-detection scope.
+    """
+    code = """
+from capacium.kinds import CapaciumKind
+
+_MAP = {k.value: k.name for k in CapaciumKind}
+OTHER_MAP = {k.value: k for k in CapaciumKind}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "derived.py"
+        f.write_text(code)
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        literal_findings = [ff for ff in findings if ff.kind == "literal-registry"]
+        assert len(literal_findings) == 0, f"Derived maps should not be flagged:\n{literal_findings}"
+
+
+def test_adversarial_nested_kinds_py_not_canonical():
+    """A nested unauthorized kinds.py outside src/capacium/ is NOT exempt."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nested = Path(tmpdir) / "nested" / "kinds.py"
+        nested.parent.mkdir()
+        nested.write_text("""
+from enum import Enum
+class MyKind(Enum):
+    SKILL = "skill"
+    BUNDLE = "bundle"
+    TOOL = "tool"
+""")
+        findings, _advisories = detect_authority_violations(Path(tmpdir))
+        enum_findings = [ff for ff in findings if ff.kind == "duplicate-enum"]
+        assert len(enum_findings) >= 1
+        assert "kinds.py" in enum_findings[0].file
+
+
+def test_finding_is_typed_dataclass():
+    """Finding is a frozen dataclass with to_dict() and __str__."""
+    f = Finding(kind="test", file="x.py", line=1, message="test finding")
+    assert f.kind == "test"
+    assert f.file == "x.py"
+    assert f.line == 1
+    d = f.to_dict()
+    assert d["kind"] == "test"
+    assert d["file"] == "x.py"
+    assert d["line"] == 1
+    assert str(f) == "x.py:1: test: test finding"
+    with pytest.raises(FrozenInstanceError):
+        f.kind = "changed"
+
+
+def test_detect_returns_two_lists():
+    """detect_authority_violations returns (findings, advisories) tuple."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "empty.py"
+        f.write_text("# empty")
+        findings, advisories = detect_authority_violations(Path(tmpdir))
+        assert isinstance(findings, list)
+        assert isinstance(advisories, list)

@@ -46,38 +46,85 @@ def test_index_upsert_rejects_missing_kind(tmp_path):
 # ── init_capability defaults to SKILL ──
 
 def test_init_defaults_empty_kind_to_skill():
-    """init_capability with kind=None sets CapaciumKind.SKILL.value."""
-    from capacium.commands.init import _validate_kind
-    _validate_kind("skill")  # must remain valid
-    # The defaulting is at init_capability(kind=None) -> kind = kind or SKILL.value
-    # We verify SKILL is valid and the enum is correct
+    """SKILL remains the canonical default — verified via the enum, not internal helper."""
     assert CapaciumKind.SKILL.value == "skill"
 
 
 # ── Migration "migrated_payload" sharing ──
 
 def test_migration_result_shares_callers_map():
-    """After deepcopy fix, nested data is NOT shared with caller.
+    """migrated_payload is deeply immutable via frozen storage.
 
-    Top-level and nested mutations of the caller's dict do not affect the result.
+    The property returns a deep copy; mutations do not affect the evidence.
+    P01E-03 requires both direct and nested mutation protection.
     """
     from capacium.kinds import migrate_legacy_payload
 
     payload = {"kind": "operator", "name": "test", "owner": "alice",
                "tags": ["foo"], "meta": {"key": "val"}}
-    original = dict(payload)
-    original_tags = list(payload["tags"])
+    original_tags_list = list(payload["tags"])
 
     result = migrate_legacy_payload(payload)
 
-    # Top-level isolation
+    # Top-level isolation (caller's dict not mutated by migrate)
     payload["new_field"] = "should_not_appear"
     assert "new_field" not in result.migrated_payload
 
-    # Nested isolation (deep copy)
-    result.migrated_payload["tags"].append("surprise")
-    assert original["tags"] == original_tags  # ✓ caller's nested data NOT mutated via result
-    assert "surprise" not in original["tags"]
+    # Immutable: the property returns a thawed copy, not shared storage
+    copy1 = result.migrated_payload
+    copy2 = result.migrated_payload
+    assert copy1 is not copy2  # each call returns a fresh copy
+    copy1["tags"].append("surprise")
+    assert "surprise" not in copy2["tags"]
+    assert original_tags_list == ["foo"]  # caller's original untouched
+
+
+# ── Migration evidence must be immutable ──
+
+def test_migration_result_immutable():
+    """KindMigrationResult is frozen, has no mutable nested references.
+
+    P01E-03 requires a deeply immutable representation and an explicit
+    fresh parser-copy method.
+    """
+    from dataclasses import FrozenInstanceError
+    from capacium.kinds import migrate_legacy_payload
+
+    result = migrate_legacy_payload({"kind": "operator", "name": "t"})
+
+    # Direct assignment on frozen dataclass must fail
+    with pytest.raises(FrozenInstanceError):
+        result.migrated_kind = CapaciumKind.SKILL  # type: ignore[misc]
+
+    # Nested dict is a fresh deep copy — mutating it does not affect original
+    payload = {"kind": "operator", "name": "t"}
+    r2 = migrate_legacy_payload(payload)
+    r2.migrated_payload["name"] = "changed"
+    assert payload["name"] == "t"  # caller's dict untouched
+
+
+def test_migration_to_parser_payload_method_exists():
+    """to_parser_payload() returns a fresh mutable copy for parser use."""
+    from capacium.kinds import KindMigrationResult, _freeze_payload
+
+    frozen = _freeze_payload({"kind": "workflow", "name": "test"})
+    result = KindMigrationResult(
+        source_format="test",
+        original_kind="operator",
+        migrated_kind=CapaciumKind.WORKFLOW,
+        _frozen_payload=frozen,
+        migration_reason="test",
+        warnings=(),
+    )
+
+    # P01E-03: to_parser_payload returns a fresh deep-mutable copy
+    parser_payload = result.to_parser_payload()
+    assert parser_payload == {"kind": "workflow", "name": "test"}
+
+    # Mutation of parser copy does not affect evidence
+    parser_payload["kind"] = "skill"
+    evidence = result.migrated_payload
+    assert evidence["kind"] == "workflow"
 
 
 # ── Matrix row count mismatch ──
@@ -95,30 +142,7 @@ def test_lifecycle_matrix_has_package():
 
 # ── Broad scanner allowlist ──
 
-def test_scanner_allowlist_is_single_file():
-    """P01C scanner allowlist is only src/capacium/kinds.py."""
-    from tests.neutrality.test_p01b_adversarial_scan import CANONICAL_KIND_FILES
-    assert CANONICAL_KIND_FILES == frozenset({"kinds.py"})
-
-
-# ── Missing import alias detection ──
-
-def test_scanner_no_alias_detection():
-    """P01C scanner now detects import aliases resolving Kind to non-canonical class."""
-    from tests.neutrality.test_p01b_adversarial_scan import _detect_authority_violations
-
-    code = """
-from enum import Enum
-class WeirdKind(Enum):
-    SKILL = "skill"
-    BUNDLE = "bundle"
-Kind = WeirdKind  # alias shadow
-"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "shadow.py"
-        f.write_text(code)
-        violations = _detect_authority_violations(Path(tmpdir))
-        enum_violations = [v for v in violations if "WeirdKind" in v and "Enum" in v]
-        alias_violations = [v for v in violations if "aliased" in v.lower()]
-        assert len(enum_violations) >= 1  # Second enum still detected
-        assert len(alias_violations) >= 1  # Alias detection now works
+def test_scanner_allowlist_is_exact_path():
+    """P01F scanner allowlist is the exact relative path src/capacium/kinds.py."""
+    from capacium.authority_guard import _CANONICAL_KIND_RELPATH
+    assert _CANONICAL_KIND_RELPATH == "src/capacium/kinds.py"

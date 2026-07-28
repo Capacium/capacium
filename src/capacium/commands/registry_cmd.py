@@ -87,7 +87,7 @@ def registry_publish(path: Path, registry_url: Optional[str] = None) -> bool:
         "name": manifest.name,
         "owner": manifest.owner or "global",
         "version": manifest.version,
-        "kind": manifest.kind or "skill",
+        "kind": manifest.kind if manifest.kind else "",
         "description": manifest.description,
         "frameworks": manifest.frameworks,
         "dependencies": manifest.dependencies,

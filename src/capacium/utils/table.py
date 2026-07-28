@@ -65,8 +65,9 @@ def _badge(text: str, color: str) -> str:
 
 
 def _kind_badge(kind_str: str) -> str:
-    kind = (kind_str or "skill").lower()
-    return _badge(kind, _KIND_COLORS.get(kind, _DIM))
+    kind = (kind_str or "unknown").lower()
+    badge_color = _KIND_COLORS.get(kind, _DIM)
+    return _badge(kind, badge_color)
 
 
 def _trust_badge(trust_str: str) -> str:
@@ -82,7 +83,7 @@ def _normalize_listing(r: Dict[str, Any]) -> Dict[str, Any]:
         r["owner"], r["name"] = canonical.split("/", 1)
     r.setdefault("owner", r.get("owner", ""))
     r.setdefault("name", r.get("name", canonical))
-    r.setdefault("kind", r.get("kind", "skill"))
+    r.setdefault("kind", r.get("kind") or "")
     r.setdefault("stars", r.get("github_stars", r.get("stars")))
     r.setdefault("license", r.get("github_license", r.get("license")))
     r.setdefault("trust", r.get("trust", r.get("trust_state", "discovered")))
@@ -128,7 +129,7 @@ def format_table(listings: List[Dict[str, Any]], cols: int = 80) -> str:
 
     for item in items:
         cap_name = _trunc(f"{item['owner']}/{item['name']}", name_width)
-        kind = item.get("kind", "skill")
+        kind = item.get("kind") or "unknown"
         stars_val = item.get("stars")
         stars_str = str(stars_val) if stars_val is not None else "-"
         lic_str = _trunc(item.get("license") or "", license_width) if license_width else ""

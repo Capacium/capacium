@@ -95,7 +95,7 @@ def _build_search_table(results: List[Dict[str, Any]], compact: bool = False) ->
         for r in results:
             badge = TrustBadge.render(r.get("trust", "discovered"))
             name = f"{r.get('owner', '')}/{r.get('name', '')}"
-            kind = KindPill.short(r.get("kind", "skill"))
+            kind = KindPill.short(r.get("kind") or "unknown")
             trust = r.get("trust", "discovered").title()
             rows.append([badge, name, kind, trust])
         return TableLayout(headers, rows).render()
@@ -105,7 +105,7 @@ def _build_search_table(results: List[Dict[str, Any]], compact: bool = False) ->
     for r in results:
         badge = TrustBadge.render(r.get("trust", "discovered"))
         name = f"{r.get('owner', '')}/{r.get('name', '')}"
-        kind = KindPill.short(r.get("kind", "skill"))
+        kind = KindPill.short(r.get("kind") or "unknown")
         stars = _stars_label(r.get("stars"))
         trust = r.get("trust", "discovered").title()
         categories = r.get("categories", [])
@@ -124,7 +124,7 @@ def _build_search_cards(results: List[Dict[str, Any]]) -> str:
         items.append({
             "id": r.get("id", ""),
             "name": f"{r.get('owner', '')}/{r.get('name', '')}" if r.get("owner") else r.get("name", ""),
-            "kind": r.get("kind", "skill"),
+            "kind": r.get("kind") or "unknown",
             "trust": r.get("trust", "discovered"),
             "stars": r.get("stars"),
             "description": r.get("description"),
@@ -150,7 +150,7 @@ def _search_results_json(results: List[Dict[str, Any]], total: int, query: str,
                 "id": r.get("id", ""),
                 "name": r.get("name", ""),
                 "owner": r.get("owner", ""),
-                "kind": r.get("kind", "skill"),
+                "kind": r.get("kind") or "unknown",
                 "trust": r.get("trust", "discovered"),
                 "stars": r.get("stars"),
                 "forks": r.get("forks"),
@@ -178,7 +178,7 @@ def _cap_info_json(detail: Dict[str, Any]) -> str:
             "id": detail.get("id", ""),
             "name": detail.get("name", ""),
             "owner": detail.get("owner", ""),
-            "kind": detail.get("kind", "skill"),
+            "kind": detail.get("kind") or "unknown",
             "trust": detail.get("trust", "discovered"),
             "version": detail.get("version", ""),
             "description": detail.get("description", ""),
@@ -203,7 +203,7 @@ def _render_cap_info(detail: Dict[str, Any]) -> str:
     owner = detail.get("owner", "")
     cap_id = f"{owner}/{name}" if owner else name
     trust = detail.get("trust", "discovered")
-    kind = detail.get("kind", "skill")
+    kind = detail.get("kind") or "unknown"
     version = detail.get("version", "")
     description = detail.get("description", "")
     fingerprint = detail.get("fingerprint", "")
@@ -338,7 +338,7 @@ def _remote_format(raw: Dict[str, Any], json_output: bool) -> None:
             d.setdefault("name", d.get("name", canonical))
             d.setdefault("stars", d.get("stars", d.get("github_stars")))
             d.setdefault("version", d.get("version", ""))
-            d.setdefault("kind", d.get("kind", "skill"))
+            d.setdefault("kind", d.get("kind") or "")
             d.setdefault("trust", d.get("trust", d.get("trust_state", "discovered")))
             d.setdefault("description", d.get("description", d.get("github_description", "")))
             d.setdefault("tags", d.get("tags", []))
