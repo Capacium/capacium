@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/trust/evidence-verification-result/v1alpha1",
+  "title": "Capacium Evidence Verification Result",
+  "description": "Normative wire schema for Capacium EvidenceVerificationResult. Cryptographic verification facts only — no authorization, entitlement, or policy decisions.",
+  "type": "object",
+  "required": ["schema_version", "status", "verified_at", "evidence_digest", "algorithm", "verifier"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["v1alpha1"],
+      "description": "Schema version identifier"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["valid", "invalid", "key_expired", "key_revoked", "unknown_key", "malformed", "unsupported_algorithm", "inconclusive", "unavailable"],
+      "description": "Cryptographic verification status — not authorization"
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp of verification"
+    },
+    "evidence_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 digest of evidence in sha256:hex format"
+    },
+    "algorithm": {
+      "type": "string",
+      "description": "Signature algorithm (e.g. EdDSA, ES256)"
+    },
+    "verifier": {
+      "type": "string",
+      "description": "Provider identifier of the verifying implementation"
+    },
+    "evidence_type": {
+      "type": "string",
+      "description": "Evidence format (e.g. JWS, R4_LEGACY_V1ALPHA1)"
+    },
+    "key_id": {
+      "type": "string",
+      "description": "Identifier of the verification key"
+    },
+    "issuer": {
+      "type": "string",
+      "description": "Claimed issuer from evidence header — consumer-defined"
+    },
+    "failure_reason": {
+      "type": "string",
+      "description": "Typed machine-readable failure code (e.g. SIGNATURE_MISMATCH, KEY_EXPIRED)"
+    },
+    "evidence_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "digest": {"type": "string"},
+          "uri": {"type": "string"}
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Provider-specific opaque metadata — Core does not interpret"
+    }
+  }
+}

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from nacl.exceptions import BadSignatureError
 from nacl.signing import SigningKey, VerifyKey
 
-from .trust import (
+from src.capacium.trust import (
     EvidenceVerificationResult,
     TrustProvider,
     VerificationStatus,
@@ -47,7 +47,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.MALFORMED,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 failure_reason="MALFORMED_UTF8",
@@ -58,7 +58,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.MALFORMED,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 failure_reason=f"MALFORMED_JWS_PARTS={parts}",
@@ -70,7 +70,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.MALFORMED,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 failure_reason="MALFORMED_JWS_SPLIT",
@@ -84,7 +84,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.MALFORMED,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 failure_reason="MALFORMED_SIGNATURE_BASE64",
@@ -96,7 +96,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.MALFORMED,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 failure_reason="MALFORMED_HEADER_JSON",
