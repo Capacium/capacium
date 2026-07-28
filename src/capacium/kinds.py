@@ -7,6 +7,7 @@ with a typed message; they are never silently coerced.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, FrozenSet, Tuple
@@ -152,8 +153,9 @@ def migrate_legacy_payload(
 ) -> KindMigrationResult:
     """Migrate a legacy payload containing a spec-only Kind.
 
-    Returns a frozen typed result containing the transformed payload.
-    Does not mutate the caller's payload dictionary.
+    Returns a frozen typed result containing the deeply-isolated,
+    transformed payload. Does not mutate the caller's payload dictionary
+    or any of its nested collections.
     """
     if not isinstance(payload, dict):
         raise ValueError("payload must be a dict")
@@ -166,7 +168,7 @@ def migrate_legacy_payload(
             f"'{cleaned}' is not a recognized legacy kind."
         )
     note = legacy_migration_note(cleaned)
-    transformed = dict(payload)
+    transformed = copy.deepcopy(payload)
     transformed["kind"] = CapaciumKind.WORKFLOW.value
     warnings = (
         f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "

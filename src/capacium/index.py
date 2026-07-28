@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .kinds import validate_kind
+
 from .kinds import CapaciumKind
 
 
@@ -90,6 +92,7 @@ class Index:
             conn.commit()
 
     def upsert(self, listing: Dict[str, Any]) -> None:
+        validated_kind = validate_kind(listing.get("kind", "")).value
         with self._conn() as conn:
             listing_id = listing["id"]
             row = conn.execute(
@@ -109,7 +112,7 @@ class Index:
                 """, (
                     listing.get("name", ""),
                     listing.get("owner", ""),
-                    listing.get("kind", "skill"),
+                    listing.get("kind", ""),
                     listing.get("trust", "discovered"),
                     listing.get("stars", 0),
                     listing.get("forks", 0),
@@ -141,7 +144,7 @@ class Index:
                     listing_id,
                     listing.get("name", ""),
                     listing.get("owner", ""),
-                    listing.get("kind", "skill"),
+                    validated_kind,
                     listing.get("trust", "discovered"),
                     listing.get("stars", 0),
                     listing.get("forks", 0),
@@ -167,7 +170,7 @@ class Index:
                 listing.get("description", ""),
                 self._json_str(listing.get("tags", [])),
                 self._json_str(listing.get("categories", [])),
-                listing.get("kind", "skill"),
+                validated_kind,
                 listing.get("trust", "discovered"),
             ))
             conn.commit()

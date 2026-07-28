@@ -1,5 +1,6 @@
 import tarfile
 from pathlib import Path
+from ..kinds import validate_kind
 from ..manifest import Manifest
 
 
@@ -17,6 +18,11 @@ def package_capability(manifest_path: Path, output_dir: Path) -> bool:
         return False
     if not manifest.kind:
         print("Error: manifest missing required field 'kind'")
+        return False
+    try:
+        validate_kind(manifest.kind)
+    except ValueError as e:
+        print(f"Error: invalid kind '{manifest.kind}' — {e}")
         return False
     if not manifest.version:
         print("Error: manifest missing required field 'version'")

@@ -259,3 +259,52 @@ def test_migrate_payload_rejects_current_kind():
 def test_migrate_payload_rejects_missing_kind():
     with pytest.raises(ValueError, match="missing required 'kind'"):
         migrate_legacy_payload({"name": "t"})
+
+
+# ── 13. Package (manifest kind validation before archive creation) ──
+
+@pytest.mark.parametrize("kind", ALL_KINDS)
+def test_package_validates_kind(kind, tmp_path):
+    from capacium.commands.package import package_capability
+
+    pkg_dir = tmp_path / f"test-pkg-{kind}"
+    pkg_dir.mkdir()
+    manifest_path = pkg_dir / "capability.yaml"
+    m = Manifest(kind=kind, name=f"test-pkg-{kind}", version="1.0.0", owner="o")
+    m.save(manifest_path)
+    (pkg_dir / "SKILL.md").write_text("# Test")
+
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    result = package_capability(manifest_path, output_dir)
+    assert result is True
+
+
+def test_package_rejects_missing_kind(tmp_path):
+    from capacium.commands.package import package_capability
+
+    pkg_dir = tmp_path / "test-pkg-missing"
+    pkg_dir.mkdir()
+    manifest_path = pkg_dir / "capability.yaml"
+    manifest_path.write_text("name: test-pkg-missing\nversion: 1.0.0\nowner: o\n")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    result = package_capability(manifest_path, output_dir)
+    assert result is False
+
+
+def test_package_unknown_kind_fails(tmp_path):
+    from capacium.commands.package import package_capability
+
+    pkg_dir = tmp_path / "test-pkg-unknown"
+    pkg_dir.mkdir()
+    manifest_path = pkg_dir / "capability.yaml"
+    m = Manifest(kind="nonexistent-kind", name="test", version="1.0.0", owner="o")
+    m.save(manifest_path)
+    (pkg_dir / "SKILL.md").write_text("# Test")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    result = package_capability(manifest_path, output_dir)
+    assert result is False

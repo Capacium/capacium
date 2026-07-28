@@ -1,8 +1,9 @@
 {
-  "_document": "CAPR3-P01B-04: Machine-readable lifecycle matrix — surface × kind → test evidence",
-  "_version": "1.0.0",
+  "_document": "CAPR3-P01C: Self-verifying 13-surface lifecycle matrix",
+  "_version": "2.0.0",
   "_generated_at": "2026-07-28",
   "_branch": "feature/cap-neutrality-p01",
+  "_commit": "P01C",
   "surfaces": [
     {
       "surface": "parse",
@@ -85,8 +86,8 @@
     },
     {
       "surface": "install",
-      "entrypoint": "Registry.add_capability() + get_by_kind() (Kind survives registry round-trip)",
-      "module": "capacium.registry",
+      "entrypoint": "Capability construction: Kind(manifest.kind) validates",
+      "module": "capacium.commands.install",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
         {"kind": "workflow",         "result": "accepted", "test": "test_install_kind_survives_registry_round_trip"}
@@ -94,7 +95,7 @@
     },
     {
       "surface": "index",
-      "entrypoint": "Index.upsert() + search(kind=)",
+      "entrypoint": "Index.upsert() validates Kind at top of function",
       "module": "capacium.index",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
@@ -150,11 +151,30 @@
     },
     {
       "surface": "sync",
-      "entrypoint": "Index.upsert() + search(kind=) (kind propagation)",
-      "module": "capacium.index",
+      "entrypoint": "_validate_sync_kind() in sync_index listing",
+      "module": "capacium.sync",
       "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
       "rows": [
         {"kind": "mcp-server",       "result": "accepted", "test": "test_sync_preserves_kind"}
+      ]
+    },
+    {
+      "surface": "package",
+      "entrypoint": "package_capability() validates kind before archive creation",
+      "module": "capacium.commands.package",
+      "test_file": "tests/neutrality/test_p01b_lifecycle_matrix.py",
+      "rows": [
+        {"kind": "skill",            "result": "accepted", "test": "test_package_validates_kind[skill]"},
+        {"kind": "mcp-server",       "result": "accepted", "test": "test_package_validates_kind[mcp-server]"},
+        {"kind": "bundle",           "result": "accepted", "test": "test_package_validates_kind[bundle]"},
+        {"kind": "tool",             "result": "accepted", "test": "test_package_validates_kind[tool]"},
+        {"kind": "prompt",           "result": "accepted", "test": "test_package_validates_kind[prompt]"},
+        {"kind": "template",         "result": "accepted", "test": "test_package_validates_kind[template]"},
+        {"kind": "workflow",         "result": "accepted", "test": "test_package_validates_kind[workflow]"},
+        {"kind": "resource",         "result": "accepted", "test": "test_package_validates_kind[resource]"},
+        {"kind": "connector-pack",   "result": "accepted", "test": "test_package_validates_kind[connector-pack]"},
+        {"kind": "missing",          "result": "rejected", "test": "test_package_rejects_missing_kind"},
+        {"kind": "unknown",          "result": "rejected", "test": "test_package_unknown_kind_fails"}
       ]
     },
     {
@@ -189,25 +209,18 @@
     }
   ],
   "surface_map": {
-    "total_surfaces": 12,
-    "surfaces": ["parse", "validation", "init", "registry", "install", "index", "export", "lock", "list", "sync", "serialization", "migration"],
-    "total_rows": 97,
-    "parameterized_tests": 86,
-    "non_parameterized_tests": 11,
-    "helper_only_assertions": 0
-  },
-  "excluded_surfaces": {
-    "package": {
-      "reason": "packaging reads kind from manifest file; Kind is validated by Manifest.parse at load time. Covered by validation surface.",
-      "evidence": "package_capability() in capacium.commands.package; Manifest.validate() rejects invalid kinds before packaging"
-    }
+    "total_surfaces": 13,
+    "surfaces": ["parse", "validation", "init", "registry", "install", "index", "export", "lock", "list", "sync", "package", "serialization", "migration"],
+    "total_rows": 108,
+    "parameterized_tests": 95,
+    "non_parameterized_tests": 13
   },
   "kind_states_tested": {
     "active_kinds": ["skill", "mcp-server", "bundle", "tool", "prompt", "template", "workflow", "resource", "connector-pack"],
-    "missing": true,
+    "missing_blank": true,
     "empty": true,
     "unknown": true,
     "legacy": ["operator", "checkpoint", "policy"],
-    "silent_fallback_to_skill": "rejected — missing/empty/legacy/unknown all raise ValueError in parse, no default"
+    "silent_fallback_to_skill": "REJECTED — no active ingestion path defaults to skill"
   }
 }

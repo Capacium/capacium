@@ -549,7 +549,9 @@ def install_capability(
         owner=owner,
         name=cap_name,
         version=version,
-        kind=Kind(manifest.kind) if manifest.kind else Kind.SKILL,
+        if not manifest.kind or not str(manifest.kind).strip():
+            raise ValueError(f"Manifest kind is required for installation: {cap_name}")
+        kind=Kind(manifest.kind),
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),

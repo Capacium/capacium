@@ -10,8 +10,8 @@ import pytest
 SRC = Path(__file__).resolve().parents[2] / "src" / "capacium"
 KIND_VALUES = frozenset({"skill", "mcp-server", "bundle", "tool", "prompt", "template", "workflow", "connector-pack", "resource"})
 
-# Canonical import paths that are allowed to define Kind authority
-CANONICAL_KIND_FILES = frozenset({"kinds.py", "models.py", "ui.py", "utils/table.py", "taxonomy.py", "framework_detector.py", "index.py"})
+# Canonical authority — only kinds.py defines CapaciumKind
+CANONICAL_KIND_FILES = frozenset({"kinds.py"})
 
 
 def _detect_authority_violations(src_dir: Path) -> list[str]:
@@ -71,6 +71,21 @@ def _detect_authority_violations(src_dir: Path) -> list[str]:
                         violations.append(
                             f"{rel_path}:{node.lineno}: {target_name} is a literal Kind registry ({kind_count} values)"
                         )
+
+            # Detect non-canonical Kind alias assignments (Kind = SomeOtherClass)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == "Kind":
+                            val = node.value
+                            if isinstance(val, ast.Name) and val.id not in ("CapaciumKind",):
+                                violations.append(
+                                    f"{rel_path}:{node.lineno}: Kind aliased to non-canonical class '{val.id}'"
+                                )
+                            elif isinstance(val, ast.Attribute) and val.attr != "CapaciumKind":
+                                violations.append(
+                                    f"{rel_path}:{node.lineno}: Kind aliased via import to '{val.attr}'"
+                                )
 
     return violations
 
@@ -136,7 +151,7 @@ TOTALLY_INNOCENT = {
 
 
 def test_derived_maps_are_permitted():
-    """Maps whose keys are derived from CapaciumKind iteration are allowed (empty scan)."""
+    """Maps whose keys are derived from CapaciumKind iteration are allowed."""
     code = """
 from capacium.kinds import CapaciumKind
 
@@ -145,4 +160,40 @@ OTHER_MAP = {k.value: k for k in CapaciumKind}
 """
     # These are fine — they derive from CapaciumKind.
     # The scan doesn't flag them because CapaciumKind is iterated, not literal.
-    pass  # This test is a declaration, not a violation check
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "derived.py"
+        f.write_text(code)
+        violations = _detect_authority_violations(Path(tmpdir))
+        assert not violations, f"Derived maps from CapaciumKind should be allowed:\n{violations}"
+
+
+def test_adversarial_single_value_set_not_flagged():
+    """A set with only 1-2 Kind values is not a registry (false positive check)."""
+    code = """
+SINGLE_KIND = {"skill"}
+TWO_KINDS = {"skill", "tool"}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "safe.py"
+        f.write_text(code)
+        violations = _detect_authority_violations(Path(tmpdir))
+        assert not violations, f"1-2 value sets should not be flagged:\n{violations}"
+
+
+def test_adversarial_kind_alias_detected():
+    """Kind = WeirdKind alias assignment is detected."""
+    code = """
+from enum import Enum
+class WeirdKind(Enum):
+    SKILL = "skill"
+    BUNDLE = "bundle"
+Kind = WeirdKind
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "shadow.py"
+        f.write_text(code)
+        violations = _detect_authority_violations(Path(tmpdir))
+        enum_violations = [v for v in violations if "WeirdKind" in v and "Enum" in v]
+        alias_violations = [v for v in violations if "aliased" in v.lower()]
+        assert len(enum_violations) >= 1, "Second Enum must be detected"
+        assert len(alias_violations) >= 1, "Kind alias assignment must be detected"
