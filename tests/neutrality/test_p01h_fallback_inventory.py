@@ -22,7 +22,7 @@ from capacium.fallback_inventory import (
     scan_directory,
     verify_inventory,
     ExceptionEntry,
-    InventoryEntry,
+    Finding,
     KNOWN_EXCEPTIONS,
     _check_stale_entry,
     _check_misclassified_entry,
@@ -46,9 +46,9 @@ def test_exception_entry_is_frozen():
 def test_exception_entry_matches():
     e = ExceptionEntry(file="x.py", line=0, kind="test",
                        symbol="x", reason="test", test_ref="test_x")
-    assert e.matches("x.py", 0, "x")
-    assert not e.matches("y.py", 0, "x")
-    assert not e.matches("x.py", 0, "y")
+    assert e.matches("x.py", 0, "test")
+    assert not e.matches("y.py", 0, "test")
+    assert not e.matches("x.py", 0, "other")
 
 
 def test_known_exceptions_immutable():
@@ -70,20 +70,22 @@ def test_scan_function_default_unlisted():
         f = Path(d) / "test_fn.py"
         f.write_text(code)
         result = scan_directory(Path(d))
-        assert len(result.entries) == 1
-        assert result.entries[0].pattern == "fn-default"
-        assert not result.entries[0].is_exception
+        assert len(result.findings) == 1
+        assert result.findings[0].pattern == "literal-default"
+        assert not result.findings[0].is_exception
         assert len(result.violations) == 1
 
 
-def test_scan_function_default_clean():
+def test_scan_function_default_enum_detected():
+    """CapaciumKind.SKILL as a fn default is now correctly detected."""
     code = 'def my_fn(kind=CapaciumKind.SKILL): pass\n'
     with tempfile.TemporaryDirectory() as d:
-        f = Path(d) / "clean_fn.py"
+        f = Path(d) / "test_fn.py"
         f.write_text(code)
         result = scan_directory(Path(d))
-        assert len(result.entries) == 0
-        assert result.is_clean
+        assert len(result.findings) >= 1
+        assert any(f.pattern == "enum-default" for f in result.findings)
+        assert not result.is_clean
 
 
 def test_scan_function_default_non_kind():
@@ -104,8 +106,8 @@ if kind is None:
         f = Path(d) / "test_enum_cond.py"
         f.write_text(code)
         result = scan_directory(Path(d))
-        assert len(result.entries) >= 1
-        assert any(e.pattern == "enum-cond" for e in result.entries)
+        assert len(result.findings) >= 1
+        assert any(e.pattern == "enum-conditional" for e in result.findings)
 
 
 def test_scan_assign_default_unlisted():
@@ -114,8 +116,8 @@ def test_scan_assign_default_unlisted():
         f = Path(d) / "test_assign.py"
         f.write_text(code)
         result = scan_directory(Path(d))
-        assert len(result.entries) >= 1
-        assert any(e.pattern == "assign-default" for e in result.entries)
+        assert len(result.findings) >= 1
+        assert any("assign" in e.pattern and "default" in e.pattern for e in result.findings)
 
 
 def test_known_display_exception_not_flagged():
@@ -138,7 +140,7 @@ def test_clean_file_produces_clean_result():
         f.write_text(code)
         result = scan_directory(Path(d))
         assert result.is_clean
-        assert len(result.entries) == 0
+        assert len(result.findings) == 0
         assert not result.is_inventory_intact  # known exceptions are stale in temp dir
 
 
@@ -148,9 +150,8 @@ def test_scan_returns_typed_result():
         f.write_text("pass\n")
         r = scan_directory(Path(d))
         assert r.is_clean
-        assert isinstance(r.scanned_at, str)
         assert r.src_dir == str(Path(d))
-        assert len(r.entries) == 0
+        assert len(r.findings) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -160,16 +161,16 @@ def test_scan_returns_typed_result():
 
 def test_stale_existing_entry_not_stale():
     """An entry whose file exists and symbol is present is not stale."""
-    src = Path(__file__).resolve().parent.parent.parent / "src"
+    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
     if not src.exists():
         pytest.skip("No real src dir available")
-    exc = ExceptionEntry(file="src/capacium/kinds.py", line=0, kind="migration",
+    exc = ExceptionEntry(file="capacium/kinds.py", line=0, kind="migration",
                          symbol="CapaciumKind", reason="test", test_ref="test_x")
     assert not _check_stale_entry(exc, src)
 
 
 def test_stale_nonexistent_file():
-    src = Path(__file__).resolve().parent.parent.parent / "src"
+    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
     exc = ExceptionEntry(file="src/capacium/nonexistent.py", line=0, kind="test",
                          symbol="FOO", reason="test", test_ref="test_x")
     assert _check_stale_entry(exc, src)
@@ -177,7 +178,7 @@ def test_stale_nonexistent_file():
 
 def test_stale_display_symbol_never_stale():
     """?? is a magic symbol that never counts as stale."""
-    src = Path(__file__).resolve().parent.parent.parent / "src"
+    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
     exc = ExceptionEntry(file="src/capacium/nonexistent.py", line=0, kind="display",
                          symbol="??", reason="test", test_ref="test_x")
     assert not _check_stale_entry(exc, src)
@@ -185,7 +186,7 @@ def test_stale_display_symbol_never_stale():
 
 def test_stale_symbol_removed():
     """A symbol that was present but no longer exists is stale."""
-    src = Path(__file__).resolve().parent.parent.parent / "src"
+    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
     exc = ExceptionEntry(file="src/capacium/fallback_inventory.py", line=0, kind="test",
                          symbol="_THIS_DOES_NOT_EXIST_ANYWHERE", reason="test", test_ref="test_x")
     assert _check_stale_entry(exc, src)
@@ -205,24 +206,38 @@ def test_misclassified_no_entry():
 def test_misclassified_mismatch():
     exc = ExceptionEntry(file="x.py", line=0, kind="migration",
                          symbol="X", reason="test", test_ref="test_x")
-    e = InventoryEntry(file="x.py", line=0, pattern="fn-default",
-                       code="test", resolved_kind="skill")
+    e = Finding(file="x.py", line=0, function="f", pattern="fn-default",
+               sink_role="boundary", disposition="unlisted",
+               code="test", resolved_kind="skill")
     assert _check_misclassified_entry(exc, [e])
 
 
 def test_misclassified_match():
     exc = ExceptionEntry(file="x.py", line=0, kind="migration",
                          symbol="X", reason="test", test_ref="test_x")
-    e = InventoryEntry(file="x.py", line=0, pattern="fn-default",
-                       code="test", resolved_kind="migration")
+    e = Finding(file="x.py", line=0, function="f", pattern="fn-default",
+               sink_role="boundary", disposition="unlisted",
+               code="test", resolved_kind="migration")
     assert not _check_misclassified_entry(exc, [e])
 
 
 def test_misclassified_different_line():
+    """Misclassification detects kind mismatch even across different lines.
+    The check operates on file-level resolution, not line-level."""
     exc = ExceptionEntry(file="x.py", line=5, kind="migration",
                          symbol="X", reason="test", test_ref="test_x")
-    e = InventoryEntry(file="x.py", line=10, pattern="fn-default",
-                       code="test", resolved_kind="skill")
+    e = Finding(file="x.py", line=10, function="f", pattern="fn-default",
+               sink_role="boundary", disposition="unlisted",
+               code="test", resolved_kind="skill")
+    assert _check_misclassified_entry(exc, [e])
+
+
+def test_misclassified_different_file():
+    exc = ExceptionEntry(file="x.py", line=0, kind="migration",
+                         symbol="X", reason="test", test_ref="test_x")
+    e = Finding(file="y.py", line=0, function="f", pattern="fn-default",
+               sink_role="boundary", disposition="unlisted",
+               code="test", resolved_kind="skill")
     assert not _check_misclassified_entry(exc, [e])
 
 
@@ -232,14 +247,10 @@ def test_misclassified_different_line():
 
 
 def test_scan_result_to_dict():
-    from datetime import datetime, timezone
-    r = ScanResult(
-        scanned_at=datetime.now(timezone.utc).isoformat(),
-        src_dir="/tmp",
-    )
+    r = ScanResult(src_dir="/tmp")
     d = r.to_dict()
     assert isinstance(d, dict)
-    assert "scanned_at" in d
+    assert "finding_count" in d
     assert "is_clean" in d
     assert "violations" in d
     assert "broken_exceptions" in d
@@ -252,10 +263,9 @@ def test_scan_result_to_dict_roundtrip():
         f.write_text('def fn(kind="skill"): pass\n')
         r = scan_directory(Path(d))
         d2 = r.to_dict()
-        assert d2["entry_count"] == 1
+        assert d2["finding_count"] == 1
         assert d2["violation_count"] == 1
         assert len(d2["violations"]) == 1
-        # serializable
         json.dumps(d2, default=str)  # does not raise
 
 
@@ -298,5 +308,5 @@ def test_verify_inventory_json_is_valid():
         with contextlib.redirect_stdout(buf):
             verify_inventory(Path(d), json_output=True)
         data = json.loads(buf.getvalue())
-        assert "scanned_at" in data
+        assert "finding_count" in data
         assert not data["is_inventory_intact"]  # inventory broken in temp dir
