@@ -21,6 +21,9 @@ PROHIBITED_TERMS = [
     (r'\bPERMITTED_WITH_WARNING\b', 'authorization decision constant (MANIFESTO §4)'),
     (r'\bEntitlementDecision\b', 'entitlement/approval logic (MANIFESTO §§3-4)'),
     (r'(?:\b|_)entitlement\b', 'entitlement semantics in Core (MANIFESTO §3)'),
+    (r'\bVALID_PRICING_MODELS\b', 'pricing taxonomy in Core (MANIFESTO §4) — must be owner-controlled'),
+    (r'\bprice_usd\b', 'price enforcement in Core (MANIFESTO §4)'),
+    (r'\bVALID_TRIGGER_EVENTS\b', 'trigger event taxonomy in Core — must be owner-controlled'),
 ]
 
 PROHIBITED_IMPORTS = [

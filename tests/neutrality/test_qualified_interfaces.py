@@ -1,4 +1,4 @@
-"""CAPN-P02 Lane C — Qualified interface tests with typed compatibility."""
+"""CAPN-R2-P03 — Provider-neutral qualified interface tests."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ def test_round_trip_dict():
 
     iface = QualifiedInterface(
         interface_id="test.xyz/interfaces/runner/v1",
-        provider_id="test.xyz",
-        operation_id="run",
         interface_version="1.0.0",
         schema_version="v1alpha1",
         status=InterfaceStatus.REQUIRED,
@@ -23,79 +21,81 @@ def test_compatibility_match():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
     a = QualifiedInterface(
-        "test.xyz/interfaces/x/v1", "test.xyz", "op", "1.0.0", "v1",
+        "test.xyz/interfaces/x/v1", "1.0.0", "v1",
         InterfaceStatus.OPTIONAL, digest="abc123",
     )
     b = QualifiedInterface(
-        "test.xyz/interfaces/x/v1", "test.xyz", "op", "1.0.0", "v1",
+        "test.xyz/interfaces/x/v1", "1.0.0", "v1",
         InterfaceStatus.OPTIONAL, digest="abc123",
     )
     assert a.compatibility(b) == CompatibilityResult.MATCH
     assert a.is_compatible_with(b)
 
 
-def test_incompatible_different_provider():
+def test_interface_is_provider_neutral():
+    """Two providers implementing the same interface must be compatible."""
+    from src.capacium.interfaces import (
+        QualifiedInterface, InterfaceStatus, CompatibilityResult, InterfaceBinding,
+    )
+
+    iface_a = QualifiedInterface(
+        "capacium.xyz/interfaces/runner/v1", "1.0.0", "v1",
+        InterfaceStatus.REQUIRED,
+    )
+    iface_b = QualifiedInterface(
+        "capacium.xyz/interfaces/runner/v1", "1.0.0", "v1",
+        InterfaceStatus.REQUIRED,
+    )
+
+    assert iface_a.compatibility(iface_b) == CompatibilityResult.MATCH
+
+    binding_a = InterfaceBinding("capacium.xyz/interfaces/runner/v1", "skillweave", "execute")
+    binding_b = InterfaceBinding("capacium.xyz/interfaces/runner/v1", "elementeer", "execute")
+
+    assert iface_a.is_compatible_with(iface_b)
+    # Two different providers bind to the same interface — incompatibility
+    # must be in provider binding space, not interface identity space
+    assert binding_a.provider_id != binding_b.provider_id
+
+
+def test_incompatible_different_interface_id():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
-    a = QualifiedInterface(
-        "a.xyz/interfaces/x/v1", "a.xyz", "op", "1.0.0", "v1",
-        InterfaceStatus.REQUIRED,
-    )
-    b = QualifiedInterface(
-        "a.xyz/interfaces/x/v1", "b.xyz", "op", "1.0.0", "v1",
-        InterfaceStatus.REQUIRED,
-    )
-    assert a.compatibility(b) == CompatibilityResult.PROVIDER_MISMATCH
+    a = QualifiedInterface("a.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+    b = QualifiedInterface("b.xyz/y", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+    assert a.compatibility(b) == CompatibilityResult.INTERFACE_MISMATCH
     assert not a.is_compatible_with(b)
 
 
 def test_incompatible_different_interface_version():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
-    a = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.REQUIRED
-    )
-    b = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "2.0.0", "v1", InterfaceStatus.REQUIRED
-    )
+    a = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+    b = QualifiedInterface("p.xyz/x", "2.0.0", "v1", InterfaceStatus.REQUIRED)
     assert a.compatibility(b) == CompatibilityResult.INTERFACE_VERSION_MISMATCH
 
 
 def test_incompatible_schema_version():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
-    a = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.REQUIRED
-    )
-    b = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v2", InterfaceStatus.REQUIRED
-    )
+    a = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+    b = QualifiedInterface("p.xyz/x", "1.0.0", "v2", InterfaceStatus.REQUIRED)
     assert a.compatibility(b) == CompatibilityResult.SCHEMA_VERSION_MISMATCH
 
 
 def test_incompatible_digest():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
-    a = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.REQUIRED,
-        digest="aaa",
-    )
-    b = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.REQUIRED,
-        digest="bbb",
-    )
+    a = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED, digest="aaa")
+    b = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED, digest="bbb")
     assert a.compatibility(b) == CompatibilityResult.DIGEST_MISMATCH
 
 
 def test_incompatible_status():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus, CompatibilityResult
 
-    a = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.REQUIRED
-    )
-    b = QualifiedInterface(
-        "p.xyz/x", "p.xyz", "op", "1.0.0", "v1", InterfaceStatus.OPTIONAL
-    )
+    a = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+    b = QualifiedInterface("p.xyz/x", "1.0.0", "v1", InterfaceStatus.OPTIONAL)
     assert a.compatibility(b) == CompatibilityResult.REQUIRED_VS_OPTIONAL
 
 
@@ -104,8 +104,6 @@ def test_owner_payload_preserved():
 
     iface = QualifiedInterface(
         interface_id="test.xyz/interfaces/runner/v1",
-        provider_id="test.xyz",
-        operation_id="run",
         interface_version="1.0.0",
         schema_version="v1alpha1",
         status=InterfaceStatus.REQUIRED,
@@ -119,16 +117,62 @@ def test_owner_payload_preserved():
     }
 
 
+def test_two_providers_same_interface_compatible():
+    """Prove one interface can bind to two unrelated providers."""
+    from src.capacium.interfaces import (
+        QualifiedInterface, InterfaceStatus, CompatibilityResult, InterfaceBinding,
+    )
+
+    iface = QualifiedInterface("capacium.xyz/if/agent/v1", "1.0.0", "v1", InterfaceStatus.REQUIRED)
+
+    sw_binding = InterfaceBinding("capacium.xyz/if/agent/v1", "skillweave", "run_agent")
+    elem_binding = InterfaceBinding("capacium.xyz/if/agent/v1", "elementeer", "run_agent")
+    cap_binding = InterfaceBinding("capacium.xyz/if/agent/v1", "capacium-cli", "cap run")
+
+    assert iface.compatibility(iface) == CompatibilityResult.MATCH
+    bindings = {sw_binding.provider_id, elem_binding.provider_id, cap_binding.provider_id}
+    assert len(bindings) == 3, "Three independent providers must bind to the same interface"
+
+
 def test_core_does_not_interpret_owner_payload():
     from src.capacium.interfaces import QualifiedInterface, InterfaceStatus
 
     iface = QualifiedInterface(
         interface_id="test.xyz/interfaces/x/v1",
-        provider_id="test.xyz",
-        operation_id="op",
         interface_version="1.0.0",
         schema_version="v1",
         status=InterfaceStatus.REQUIRED,
         owner_payload={"action": "executeLocal"},
     )
     assert "owner_payload" in iface.to_dict()
+
+
+def test_interface_binding_round_trip():
+    from src.capacium.interfaces import InterfaceBinding
+
+    b = InterfaceBinding("if/v1", "provider-x", "op-1")
+    d = b.to_dict()
+    assert d["provider_id"] == "provider-x"
+    rt = InterfaceBinding.from_dict(d)
+    assert rt == b
+
+
+def test_check_required_interfaces_all_match():
+    from src.capacium.interfaces import (
+        QualifiedInterface, InterfaceStatus, CompatibilityResult, check_required_interfaces,
+    )
+
+    required = [QualifiedInterface("if/v1", "1.0.0", "v1", InterfaceStatus.REQUIRED)]
+    available = [QualifiedInterface("if/v1", "1.0.0", "v1", InterfaceStatus.OPTIONAL)]
+    results = check_required_interfaces(required, available)
+    assert results["if/v1"] == CompatibilityResult.REQUIRED_VS_OPTIONAL
+
+
+def test_check_required_interfaces_missing():
+    from src.capacium.interfaces import (
+        QualifiedInterface, InterfaceStatus, CompatibilityResult, check_required_interfaces,
+    )
+
+    required = [QualifiedInterface("if/v1", "1.0.0", "v1", InterfaceStatus.REQUIRED)]
+    results = check_required_interfaces(required, [])
+    assert results["if/v1"] == CompatibilityResult.INTERFACE_MISMATCH

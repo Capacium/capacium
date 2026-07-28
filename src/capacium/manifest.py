@@ -112,40 +112,19 @@ class Manifest:
                 if self.size_hint and self.size_hint not in _VALID_SIZES:
                     errors.append(f"Invalid size_hint: {self.size_hint}")
             # Resources don't need entry points or MCP config
-        # Validate triggers
-        _VALID_TRIGGER_EVENTS = {
-            "file-changed", "schedule", "webhook", "manual", "on-install", "on-update",
-        }
+        # Validate legacy triggers — structural validation only, no event taxonomy
         if self.triggers:
             for i, trigger in enumerate(self.triggers):
+                if not isinstance(trigger, dict):
+                    errors.append(f"triggers[{i}]: must be a mapping")
+                    continue
                 if "event" not in trigger:
-                    errors.append(f"triggers[{i}]: missing required 'event' field")
+                    errors.append(f"triggers[{i}]: missing 'event' field")
                 if "action" not in trigger:
-                    errors.append(f"triggers[{i}]: missing required 'action' field")
-                event = trigger.get("event")
-                if event and event not in _VALID_TRIGGER_EVENTS:
-                    errors.append(
-                        f"triggers[{i}]: invalid event '{event}'; "
-                        f"must be one of {sorted(_VALID_TRIGGER_EVENTS)}"
-                    )
-        # Validate pricing
-        _VALID_PRICING_MODELS = {"free", "freemium", "paid", "usage-based", "donation"}
-        if self.pricing is not None:
-            if "model" not in self.pricing:
-                errors.append("pricing: missing required 'model' field")
-            else:
-                model = self.pricing["model"]
-                if model not in _VALID_PRICING_MODELS:
-                    errors.append(
-                        f"pricing: invalid model '{model}'; "
-                        f"must be one of {sorted(_VALID_PRICING_MODELS)}"
-                    )
-                if model == "paid":
-                    price = self.pricing.get("price_usd")
-                    if price is None:
-                        errors.append("pricing: 'paid' model requires 'price_usd' field")
-                    elif not isinstance(price, (int, float)) or price <= 0:
-                        errors.append("pricing: 'price_usd' must be a number greater than 0")
+                    errors.append(f"triggers[{i}]: missing 'action' field")
+
+        # Capn-R2-P04R: Pricing is owner-controlled metadata — preserve
+        # the data block but do not enforce product semantics.
         return errors
 
     def get_mcp_metadata(self) -> Dict[str, Any]:
