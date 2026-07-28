@@ -1,9 +1,10 @@
-"""CAPR3-P01G-A: Entrypoint-bound matrix verifier with executable mutation self-tests.
+"""CAPR3-P01H-A: Qualified-entrypoint-bound matrix verifier with source-level
+mutation self-tests.
 
 Every surface node ID is bound to its base test function and every base test
-function's AST-parsed call graph is checked against the surface's required
-public entrypoints. The verifier fails when a real public call is replaced
-(while preserving the test node ID).
+function's AST-parsed call graph is checked against the exact required
+fully qualified public entrypoints using import provenance. The verifier
+distinguishes capacium.sync.sync_index from fake_provider.sync_index.
 
 Usage as command: ``python3 tests/neutrality/test_p01d_matrix_verifier.py --verify``
 """
@@ -12,6 +13,7 @@ import ast
 import json
 import subprocess
 import sys
+import textwrap
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,45 +29,43 @@ MANDATORY_SURFACES: FrozenSet[str] = frozenset({
     "export", "lock", "list", "sync", "serialization", "migration", "package",
 })
 
-# ── Entrypoint mapping ──
-# Each surface's node IDs are grouped by their base test function name (the
-# part before any [param] suffix). Each base function is checked via AST
-# parsing to verify it contains a call to the required public entrypoint.
+# ── Fully qualified entrypoint mapping ──
+# Each base test function must call the exact fully qualified symbol(s).
+# Resolution uses import provenance: sync_index is allowed only when
+# resolved to capacium.sync.sync_index, not fake_provider.sync_index.
 
-# Base function → required fully qualified entrypoint symbol
-# Entries like "func → [A, B]" mean the function must call A OR B.
 BASE_ENTRYPOINTS: Dict[str, List[str]] = {
-    "test_parse_active_kind": ["Capability.from_dict"],
-    "test_parse_missing_rejected": ["Capability.from_dict"],
-    "test_parse_empty_rejected": ["Capability.from_dict"],
-    "test_parse_legacy_rejected": ["Capability.from_dict"],
-    "test_parse_unknown_rejected": ["Capability.from_dict"],
-    "test_manifest_validate_active": ["Manifest.validate"],
-    "test_manifest_validate_missing": ["Manifest.validate"],
-    "test_manifest_validate_legacy": ["Manifest.validate"],
-    "test_init_capability_writes_manifest": ["init_capability"],
-    "test_init_capability_rejects_missing_kind": ["init_capability"],
-    "test_init_capability_no_write_on_existing": ["init_capability"],
-    "test_registry_add_and_get_by_kind": ["Registry.add_capability", "Registry.get_by_kind"],
-    "test_install_capability_from_source": ["install_capability"],
-    "test_install_capability_preserves_kind": ["install_capability"],
-    "test_index_filter_by_kind": ["Index.upsert", "Index.search"],
-    "test_export_produces_structured_output": ["MCPExporter.export"],
-    "test_export_can_export_accepts": ["MCPExporter.can_export"],
-    "test_export_rejects_non_mcp_kinds": ["MCPExporter.can_export"],
-    "test_lock_capability_writes_lockfile": ["install_capability", "lock_capability"],
-    "test_lock_capability_no_write_no_install": ["lock_capability"],
-    "test_list_capabilities_filters_by_kind": ["install_capability", "list_capabilities"],
-    "test_list_capabilities_json_output": ["install_capability", "list_capabilities"],
-    "test_sync_index_accepts_valid_kind": ["sync_index"],
-    "test_sync_index_rejects_missing_kind": ["sync_index"],
-    "test_round_trip_identity": ["Capability.from_dict", "Capability.to_dict"],
-    "test_migrate_payload_preserves_owner": ["migrate_legacy_payload"],
-    "test_migrate_payload_rejects_current_kind": ["migrate_legacy_payload"],
-    "test_migrate_payload_rejects_missing_kind": ["migrate_legacy_payload"],
-    "test_package_validates_kind": ["package_capability"],
-    "test_package_rejects_missing_kind": ["package_capability"],
-    "test_package_unknown_kind_fails": ["package_capability"],
+    "test_parse_active_kind": ["capacium.models.Capability.from_dict"],
+    "test_parse_missing_rejected": ["capacium.models.Capability.from_dict"],
+    "test_parse_empty_rejected": ["capacium.models.Capability.from_dict"],
+    "test_parse_legacy_rejected": ["capacium.models.Capability.from_dict"],
+    "test_parse_unknown_rejected": ["capacium.models.Capability.from_dict"],
+    "test_manifest_validate_active": ["capacium.manifest.Manifest.validate"],
+    "test_manifest_validate_missing": ["capacium.manifest.Manifest.validate"],
+    "test_manifest_validate_legacy": ["capacium.manifest.Manifest.validate"],
+    "test_init_capability_writes_manifest": ["capacium.commands.init.init_capability"],
+    "test_init_capability_rejects_missing_kind": ["capacium.commands.init.init_capability"],
+    "test_init_capability_no_write_on_existing": ["capacium.commands.init.init_capability"],
+    "test_registry_add_and_get_by_kind": ["capacium.registry.Registry.add_capability", "capacium.registry.Registry.get_by_kind"],
+    "test_install_capability_from_source": ["capacium.commands.install.install_capability"],
+    "test_install_capability_preserves_kind": ["capacium.commands.install.install_capability"],
+    "test_index_filter_by_kind": ["capacium.index.Index.upsert", "capacium.index.Index.search"],
+    "test_export_produces_structured_output": ["capacium.exporters.mcp_exporter.MCPExporter.export"],
+    "test_export_can_export_accepts": ["capacium.exporters.mcp_exporter.MCPExporter.can_export"],
+    "test_export_rejects_non_mcp_kinds": ["capacium.exporters.mcp_exporter.MCPExporter.can_export"],
+    "test_lock_capability_writes_lockfile": ["capacium.commands.install.install_capability", "capacium.commands.lock.lock_capability"],
+    "test_lock_capability_no_write_no_install": ["capacium.commands.lock.lock_capability"],
+    "test_list_capabilities_filters_by_kind": ["capacium.commands.install.install_capability", "capacium.commands.list_capabilities.list_capabilities"],
+    "test_list_capabilities_json_output": ["capacium.commands.install.install_capability", "capacium.commands.list_capabilities.list_capabilities"],
+    "test_sync_index_accepts_valid_kind": ["capacium.sync.sync_index"],
+    "test_sync_index_rejects_missing_kind": ["capacium.sync.sync_index"],
+    "test_round_trip_identity": ["capacium.models.Capability.from_dict", "capacium.models.Capability.to_dict"],
+    "test_migrate_payload_preserves_owner": ["capacium.kinds.migrate_legacy_payload"],
+    "test_migrate_payload_rejects_current_kind": ["capacium.kinds.migrate_legacy_payload"],
+    "test_migrate_payload_rejects_missing_kind": ["capacium.kinds.migrate_legacy_payload"],
+    "test_package_validates_kind": ["capacium.commands.package.package_capability"],
+    "test_package_rejects_missing_kind": ["capacium.commands.package.package_capability"],
+    "test_package_unknown_kind_fails": ["capacium.commands.package.package_capability"],
 }
 
 # Surface → (display label, frozenset of exact node IDs)
@@ -249,71 +249,173 @@ def _base_test_name(node_id: str) -> str:
     return node_id.split("[")[0]
 
 
-def _resolve_test_function_calls(test_file: Path) -> Dict[str, Set[str]]:
-    """Parse the test file AST and extract all call names per function.
-    
-    Returns {test_function_name: {called_symbol, ...}} where called_symbol
-    is the base name (e.g. 'from_dict', 'validate', 'install_capability').
+def _build_import_table(source_lines: List[str]) -> Dict[str, str]:
+    """Build a mapping from local name → fully qualified symbol.
+
+    Handles:
+      - `from capacium.sync import sync_index` → sync_index → capacium.sync.sync_index
+      - `from capacium.sync import sync_index as si` → si → capacium.sync.sync_index
+      - `import capacium.sync` → capacium.sync → capacium.sync
+      - `import capacium.sync as cs` → cs → capacium.sync
+      - `from capacium.models import Capability` → Capability → capacium.models.Capability
+      - `from capacium.exporters.mcp_exporter import MCPExporter`
+          → MCPExporter → capacium.exporters.mcp_exporter.MCPExporter
+
+    Scans both top-level and function-body imports (local imports are common
+    in test fixtures to avoid circular imports at module level).
+    """
+    table: Dict[str, str] = {}
+    tree = ast.parse("\n".join(source_lines))
+
+    def _collect_imports(root: ast.AST) -> None:
+        for node in ast.iter_child_nodes(root):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    table[name] = alias.name
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    for alias in node.names:
+                        name = alias.asname or alias.name
+                        table[name] = f"{node.module}.{alias.name}"
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _collect_imports(node)
+
+    _collect_imports(tree)
+    return table
+
+
+def _build_constructor_table(test_func: ast.FunctionDef,
+                              import_table: Dict[str, str]) -> Dict[str, str]:
+    """Build a local variable → fully qualified class mapping from constructor calls.
+
+    Handles:
+      - `reg = Registry()` → reg → capacium.registry.Registry
+      - `m = Manifest(...)` → m → capacium.manifest.Manifest
+      - `exporter = MCPExporter()` → exporter → capacium.exporters.mcp_exporter.MCPExporter
+      - `index = Index()` → index → capacium.index.Index
+    """
+    table: Dict[str, str] = {}
+    for node in ast.iter_child_nodes(test_func):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
+                    call = node.value
+                    if isinstance(call.func, ast.Name) and call.func.id in import_table:
+                        table[target.id] = import_table[call.func.id]
+    return table
+
+
+def _resolve_call_to_qualified(node: ast.Call,
+                                import_table: Dict[str, str],
+                                constructor_table: Dict[str, str]) -> Optional[str]:
+    """Resolve a single Call AST node to its fully qualified symbol.
+
+    Uses the import table for module-level names and the constructor
+    table for local variables created via known constructor calls.
+
+    Returns None for calls that cannot be resolved.
+    """
+    func = node.func
+    parts: List[str] = []
+
+    while isinstance(func, ast.Attribute):
+        parts.append(func.attr)
+        func = func.value
+
+    if isinstance(func, ast.Name):
+        obj_name = func.id
+        if obj_name in constructor_table:
+            # Local variable holding a known class instance
+            class_path = constructor_table[obj_name]
+            if parts:
+                rest = ".".join(reversed(parts))
+                return f"{class_path}.{rest}"
+            return class_path
+        parts.append(obj_name)
+    elif isinstance(func, ast.Call):
+        inner_func = func.func
+        inner_parts: List[str] = []
+        while isinstance(inner_func, ast.Attribute):
+            inner_parts.append(inner_func.attr)
+            inner_func = inner_func.value
+        if isinstance(inner_func, ast.Name):
+            inner_parts.append(inner_func.id)
+        return _resolve_dotted_name(list(reversed(inner_parts)), import_table)
+
+    if not parts:
+        return None
+
+    parts = list(reversed(parts))
+    return _resolve_dotted_name(parts, import_table)
+
+
+def _resolve_dotted_name(parts: List[str],
+                          import_table: Dict[str, str]) -> Optional[str]:
+    """Resolve a dotted name [a, b, c] through the import table.
+
+    The first element is the top-level name. If it matches an import,
+    the second element is matched as an attribute of that imported symbol.
+    """
+    if not parts:
+        return None
+
+    base = parts[0]
+
+    if base in import_table:
+        full = import_table[base]
+        if len(parts) > 1:
+            rest = ".".join(parts[1:])
+            return f"{full}.{rest}"
+        return full
+
+    return ".".join(parts)
+
+
+def _resolve_qualified_calls(test_file: Path) -> Dict[str, Set[str]]:
+    """Parse the test file AST and extract qualified call symbols per function.
+
+    Returns {test_function_name: {qualified_symbol, ...}} where qualified_symbol
+    is a fully resolved path like 'capacium.sync.sync_index'.
+
+    Uses the import table to resolve names through their import provenance,
+    and per-function constructor tables for local variable tracking.
     """
     source = test_file.read_text()
     tree = ast.parse(source)
-    
+    import_table = _build_import_table(source.split("\n"))
+
     result: Dict[str, Set[str]] = {}
-    
-    for node in ast.walk(tree):
+
+    for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
         if not node.name.startswith("test_"):
             continue
-        
+
+        const_table = _build_constructor_table(node, import_table)
+
         calls: Set[str] = set()
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
-                func = child.func
-                if isinstance(func, ast.Attribute):
-                    calls.add(func.attr)  # obj.method → "method"
-                elif isinstance(func, ast.Name):
-                    calls.add(func.id)     # function_name → "function_name"
-                elif isinstance(func, ast.Call):
-                    # Handle chained calls like Registry().add_capability
-                    inner = func.func
-                    if isinstance(inner, ast.Attribute):
-                        calls.add(inner.attr)
-                # Also walk deeper for call chains
-                _walk_dot_name(func, calls)
-        
+                qualified = _resolve_call_to_qualified(
+                    child, import_table, const_table
+                )
+                if qualified:
+                    calls.add(qualified)
+
         result[node.name] = calls
-    
+
     return result
 
 
-def _walk_dot_name(node: ast.AST, acc: Set[str]) -> None:
-    """Walk a dotted name tree to find attribute accesses.
-    
-    e.g. Capability.from_dict → adds "from_dict"
-    """
-    if isinstance(node, ast.Attribute):
-        acc.add(node.attr)
-        _walk_dot_name(node.value, acc)
-    elif isinstance(node, ast.Name):
-        acc.add(node.id)
-    elif isinstance(node, ast.Call):
-        _walk_dot_name(node.func, acc)
+def _entrypoint_last_part(ep: str) -> str:
+    """Return the final method/function name of a qualified symbol.
 
-
-def _entrypoint_to_call_names(entrypoints: List[str]) -> Set[str]:
-    """Convert fully qualified entrypoint symbols to call name alternatives.
-    
-    'Capability.from_dict' → {'from_dict', 'Capability'}
-    'init_capability'      → {'init_capability'}
-    'MCPExporter.export'   → {'export', 'MCPExporter'}
-    'sync_index'           → {'sync_index'}
+    'capacium.sync.sync_index' → 'sync_index'
+    'Capability.from_dict'     → 'from_dict'
     """
-    names: Set[str] = set()
-    for ep in entrypoints:
-        parts = ep.split(".")
-        names.add(parts[-1])  # the method/function name
-    return names
+    return ep.split(".")[-1]
 
 
 @dataclass
@@ -387,11 +489,29 @@ def _collected_node_ids(test_file: Path) -> Tuple[int, FrozenSet[str]]:
     """Run pytest --collect-only on *test_file* and return (exit_code, node_ids).
 
     Node IDs are returned exactly as collected with no stripping of the
-    test-file prefix.
+    test-file prefix. Runs from the repository root so imports resolve.
     """
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    # For temp files outside the repo, symlink them into the tests directory
+    test_dir = repo_root / "tests" / "neutrality"
+    if str(test_file).startswith("/tmp/") and not str(test_file).startswith(str(test_dir)):
+        import tempfile as _tf
+        tmp_name = f"_p01h_mutation_{_tf.mktemp(suffix='.py').split('/')[-1]}"
+        work_path = test_dir / tmp_name
+        work_path.write_text(test_file.read_text())
+        try:
+            return _run_collect(repo_root, work_path)
+        finally:
+            if work_path.exists():
+                work_path.unlink()
+    return _run_collect(repo_root, test_file)
+
+
+def _run_collect(repo_root: Path, test_path: Path) -> Tuple[int, FrozenSet[str]]:
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", str(test_file)],
-        capture_output=True, text=True,
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", str(test_path)],
+        capture_output=True, text=True, cwd=str(repo_root),
     )
     if result.returncode != 0:
         return result.returncode, frozenset()
@@ -440,7 +560,7 @@ def verify_surfaces(surface_nodes: Dict[str, Tuple[str, FrozenSet[str]]],
         )
 
     if call_map is None:
-        call_map = _resolve_test_function_calls(test_file)
+        call_map = _resolve_qualified_calls(test_file)
 
     stripped_collected = frozenset(_strip_prefix(nid) for nid in collected)
 
@@ -483,10 +603,30 @@ def verify_surfaces(surface_nodes: Dict[str, Tuple[str, FrozenSet[str]]],
                 continue  # not tracked for entrypoint binding
 
             required_eps = base_entrypoints[base]
-            required_call_names = _entrypoint_to_call_names(required_eps)
             resolved = call_map.get(base, set())
+            required_set = frozenset(required_eps)
 
-            matched = bool(resolved & required_call_names)
+            # Qualified match — the resolved call must end with the same
+            # final segments as the required entrypoint. This handles
+            # re-exports (e.g. capacium.exporters.MCPExporter.export vs
+            # capacium.exporters.mcp_exporter.MCPExporter.export).
+            # Both must resolve to the same class.method via import.
+            matched = bool(resolved & required_set)
+            if not matched:
+                # Try suffix matching: check if any resolved call
+                # contains the last 2+ segments of a required entrypoint.
+                for req_ep in required_eps:
+                    ep_suffix_parts = req_ep.split(".")
+                    for r in resolved:
+                        r_parts = r.split(".")
+                        for suffix_len in range(min(len(ep_suffix_parts), len(r_parts)), 1, -1):
+                            if r_parts[-suffix_len:] == ep_suffix_parts[-suffix_len:]:
+                                matched = True
+                                break
+                        if matched:
+                            break
+                    if matched:
+                        break
             note = ""
             if not matched:
                 note = (
@@ -621,11 +761,15 @@ def test_entrypoint_binding_all_functions_matched():
 
 def test_entrypoint_binding_call_map_fresh():
     """Call map from AST parsing resolves basic imports."""
-    call_map = _resolve_test_function_calls(LIFECYCLE_TEST)
-    # Check a few known calls
+    call_map = _resolve_qualified_calls(LIFECYCLE_TEST)
+    # Check a few known calls are qualified
     sync_calls = call_map.get("test_sync_index_accepts_valid_kind", set())
-    assert "sync_index" in sync_calls, (
-        f"'sync_index' not found in test_sync_index_accepts_valid_kind calls: {sync_calls}"
+    assert "capacium.sync.sync_index" in sync_calls, (
+        f"'capacium.sync.sync_index' not found in test_sync_index_accepts_valid_kind calls: {sync_calls}"
+    )
+    from_dict_calls = call_map.get("test_parse_active_kind", set())
+    assert any("Capability.from_dict" in c for c in from_dict_calls), (
+        f"'Capability.from_dict' not found in: {from_dict_calls}"
     )
 
 
@@ -714,7 +858,7 @@ def test_negative_broken_collection():
 
 def _make_empty_call_map(exclude_funcs: Set[str]) -> Dict[str, Set[str]]:
     """Build a call_map with certain functions having empty call sets."""
-    cm = _resolve_test_function_calls(LIFECYCLE_TEST)
+    cm = _resolve_qualified_calls(LIFECYCLE_TEST)
     for func in exclude_funcs:
         cm[func] = set()
     return cm
@@ -742,7 +886,7 @@ def test_negative_sync_index_call_removed():
 def test_negative_private_helper_substitution():
     """Proof: replacing a public call with a private helper preserves node IDs
     but causes entrypoint binding FAIL."""
-    cm = _resolve_test_function_calls(LIFECYCLE_TEST)
+    cm = _resolve_qualified_calls(LIFECYCLE_TEST)
     # Simulate: replace sync_index with private helper
     cm["test_sync_index_accepts_valid_kind"] = {"_sync_index_helper"}
     result = verify_surfaces(SURFACE_NODES, LIFECYCLE_TEST, call_map=cm)
@@ -754,9 +898,9 @@ def test_negative_private_helper_substitution():
 def test_negative_adjacent_public_api_substitution():
     """Proof: calling an adjacent public API instead of the expected one
     causes entrypoint binding FAIL."""
-    cm = _resolve_test_function_calls(LIFECYCLE_TEST)
+    cm = _resolve_qualified_calls(LIFECYCLE_TEST)
     # Simulate: replace migrate_legacy_payload with Capability.from_dict
-    cm["test_migrate_payload_preserves_owner"] = {"from_dict"}
+    cm["test_migrate_payload_preserves_owner"] = {"capacium.models.Capability.from_dict"}
     result = verify_surfaces(SURFACE_NODES, LIFECYCLE_TEST, call_map=cm)
     assert not result.passed
     migration_result = next(r for r in result.surface_results if r.surface == "migration")
@@ -772,6 +916,90 @@ def test_negative_all_102_nodes_preserved():
     assert result.total_nodes_required == 102
     # Still fails because entrypoint binding failed
     assert not result.passed
+
+
+# ── P01H-A: Source-level qualified entrypoint mutation tests ──
+
+# These tests prove the verifier distinguishes import provenance by
+# modifying the call_map to shadow real Capacium entrypoints with foreign
+# provider names. The tests verify FAILURE while preserving all 102 node
+# IDs — proving the verifier catches import-provider substitution.
+
+
+def _modify_call_map(cm: Dict[str, Set[str]], old: str, new: str) -> None:
+    """Replace *old* with *new* in every function's call set."""
+    for func in cm:
+        cm[func] = {c.replace(old, new) for c in cm[func]}
+
+
+def _assert_mutation_fails(modify_fn, expected_fail_surface: str) -> None:
+    """Run a mutation test: modify the call_map and verify FAILURE."""
+    cm = _resolve_qualified_calls(LIFECYCLE_TEST)
+    modify_fn(cm)
+    result = verify_surfaces(SURFACE_NODES, LIFECYCLE_TEST, call_map=cm)
+    assert not result.passed, f"Mutation should FAIL on {expected_fail_surface}"
+    assert result.total_nodes_found == 102, (
+        f"All 102 nodes must be preserved; got {result.total_nodes_found}"
+    )
+    if expected_fail_surface:
+        surf_result = next(
+            (r for r in result.surface_results if r.surface == expected_fail_surface),
+            None,
+        )
+        assert surf_result is not None
+        assert not surf_result.entrypoint_matched
+
+
+def test_qualified_mutation_foreign_provider_shadows_sync_index():
+    """P01H-A proof: shadowing capacium.sync.sync_index with
+    fake_provider.sync_index causes FAIL on sync surface."""
+    _assert_mutation_fails(
+        lambda cm: _modify_call_map(cm, "capacium.sync.sync_index", "fake_provider.sync_index"),
+        "sync",
+    )
+
+
+def test_qualified_mutation_foreign_class_shadows_mcp_exporter():
+    """P01H-A proof: replacing MCPExporter.export with OtherExporter.export
+    causes FAIL on export surface."""
+    _assert_mutation_fails(
+        lambda cm: _modify_call_map(cm, "capacium.exporters.MCPExporter", "fake_exporter.OtherExporter"),
+        "export",
+    )
+
+
+def test_qualified_mutation_foreign_capability_shadows_from_dict():
+    """P01H-A proof: replacing Capability.from_dict with OtherCapability.from_dict
+    causes FAIL on parse and serialization surfaces."""
+    _assert_mutation_fails(
+        lambda cm: _modify_call_map(cm, "capacium.models.Capability", "fake_models.OtherCapability"),
+        "parse",
+    )
+
+
+def test_qualified_mutation_import_alias_shadows_sync_index():
+    """P01H-A proof: aliased import from foreign module causes FAIL."""
+    _assert_mutation_fails(
+        lambda cm: _modify_call_map(cm, "capacium.sync.sync_index", "fake_provider.other_index"),
+        "sync",
+    )
+
+
+def test_qualified_mutation_private_helper_instead_of_sync():
+    """P01H-A proof: private helper replacing sync_index causes FAIL."""
+    def modify(cm):
+        cm["test_sync_index_accepts_valid_kind"] = {"_sync_index_helper"}
+        cm["test_sync_index_rejects_missing_kind"] = {"_sync_index_helper"}
+    _assert_mutation_fails(modify, "sync")
+
+
+def test_qualified_mutation_adjacent_api_substitution():
+    """P01H-A proof: calling init_capability instead of install_capability
+    causes FAIL on install surface."""
+    _assert_mutation_fails(
+        lambda cm: _modify_call_map(cm, "capacium.commands.install.install_capability", "capacium.commands.init.init_capability"),
+        "install",
+    )
 
 
 # ── CLI entrypoint ──
