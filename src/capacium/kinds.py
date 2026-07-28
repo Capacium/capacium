@@ -124,43 +124,53 @@ def _freeze_payload(value: Dict[str, Any]) -> str:
 def _validate_payload_for_json(value: object, path: str = "") -> None:
     """Recursively validate that *value* is JSON-serializable without default=.
 
-    Raises ValueError with a typed message indicating what is not supported.
+    Every failure raises :class:`MigrationPayloadError` so callers can catch
+    one typed exception for all payload rejections. A generic ``ValueError``
+    is indistinguishable from unrelated failures raised deeper in the call
+    stack, which is why the whole surface is typed.
+
+    ``MigrationPayloadError`` subclasses ``ValueError``, so existing
+    ``except ValueError`` callers keep working.
     """
     if isinstance(value, dict):
         for k, v in value.items():
             if not isinstance(k, str):
-                raise ValueError(
+                raise MigrationPayloadError(
                     f"Migration payload error: non-string key {type(k).__name__} "
                     f"at path '{path}' — JSON requires string keys"
                 )
             _validate_payload_for_json(v, f"{path}.{k}")
-    elif isinstance(value, (list, tuple)):
-        if isinstance(value, tuple):
-            raise ValueError(
-                f"Migration payload error: unsupported tuple at path '{path}' — "
-                f"tuples are not JSON-compatible"
-            )
+    elif isinstance(value, tuple):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported tuple at path '{path}' — "
+            f"tuples are not JSON-compatible"
+        )
+    elif isinstance(value, list):
         for i, item in enumerate(value):
             _validate_payload_for_json(item, f"{path}[{i}]")
-    elif isinstance(value, set):
-        raise ValueError(
-            f"Migration payload error: unsupported set at path '{path}' — "
-            f"sets are not JSON-compatible"
+    elif isinstance(value, (set, frozenset)):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported {type(value).__name__} at "
+            f"path '{path}' — sets are not JSON-compatible"
         )
-    elif isinstance(value, (int, float, str, bool, type(None))):
-        pass
-    elif isinstance(value, bytes):
-        raise ValueError(
-            f"Migration payload error: unsupported bytes at path '{path}' — "
-            f"bytes are not JSON-compatible"
+    elif isinstance(value, (bytes, bytearray)):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported {type(value).__name__} at "
+            f"path '{path}' — bytes are not JSON-compatible"
         )
-    else:
-        # Reject anything not natively JSON-serializable
-        if not isinstance(value, (int, float, str, bool, type(None), dict, list)):
-            raise ValueError(
-                f"Migration payload error: unsupported type {type(value).__name__} "
-                f"at path '{path}' — only JSON-compatible types allowed"
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise MigrationPayloadError(
+                f"Migration payload error: non-finite float at path '{path}' "
+                f"(NaN/Infinity not supported)"
             )
+    elif isinstance(value, (int, str, bool, type(None))):
+        pass
+    else:
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported type {type(value).__name__} "
+            f"at path '{path}' — only JSON-compatible types allowed"
+        )
 
 
 def _reject_non_finite_floats(value: object, path: str = "root") -> None:
