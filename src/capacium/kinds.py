@@ -173,6 +173,11 @@ def _thaw_payload(frozen: str) -> Dict[str, Any]:
     return json.loads(frozen)
 
 
+class MigrationPayloadError(ValueError):
+    """Raised when a migration payload is missing, mis-typed, or structurally
+    invalid (e.g. accessing payload on a scalar-only migration)."""
+
+
 class _NoPayload:
     """Sentinel indicating a scalar migration with no payload."""
 
@@ -195,8 +200,8 @@ class KindMigrationResult:
     unambiguous deep immutability. Call ``to_parser_payload()`` for a
     fresh mutable dict suitable for parser consumption.
 
-    For scalar-only migrations (no payload dict), use KindMigrationResult
-    without a payload — ``to_parser_payload()`` raises NoPayloadError.
+    For scalar-only migrations (no payload dict), to_parser_payload()
+    raises MigrationPayloadError.
     """
 
     source_format: str
@@ -207,48 +212,52 @@ class KindMigrationResult:
     migration_reason: str = ""
     warnings: Tuple[str, ...] = ()
 
+    @property
+    def has_payload(self) -> bool:
+        return bool(self._frozen_payload)
 
-class NoPayloadError(ValueError):
-    """Raised when accessing migrated_payload or to_parser_payload() on a
-    scalar-only migration result that has no payload data."""
+    @property
+    def migrated_payload(self) -> Dict[str, Any]:
+        if not self._frozen_payload:
+            raise MigrationPayloadError(
+                "This KindMigrationResult has no payload — it is a scalar-only "
+                "migration. Use .source_format, .original_kind, .migrated_kind, "
+                ".migration_reason, and .warnings instead."
+            )
+        return _thaw_payload(self._frozen_payload)
+
+    def to_parser_payload(self) -> Dict[str, Any]:
+        """Return a fresh deep-mutable copy for parser consumption.
+
+        Mutations of this copy do not affect the migration evidence.
+        Raises MigrationPayloadError if this is a scalar-only migration.
+        """
+        if not self._frozen_payload:
+            raise MigrationPayloadError(
+                "This KindMigrationResult has no payload — it is a scalar-only "
+                "migration."
+            )
+        return _thaw_payload(self._frozen_payload)
+
+    def to_dict(self) -> Dict[str, object]:
+        """Return a JSON-compatible dict for machine-readable evidence.
+
+        The migrated_payload is excluded by default since it may be large.
+        Use dump(include_payload=True) to include it.
+        """
+        return {
+            "source_format": self.source_format,
+            "original_kind": self.original_kind,
+            "migrated_kind": self.migrated_kind.value,
+            "payload_codec_version": self._payload_codec_version,
+            "has_payload": self.has_payload,
+            "migration_reason": self.migration_reason,
+            "warnings": list(self.warnings),
+        }
 
 
-def _has_payload(self: KindMigrationResult) -> bool:
-    return bool(self._frozen_payload)
-
-
-KindMigrationResult.has_payload = property(_has_payload)
-
-
-@property
-def _migrated_payload(self: KindMigrationResult) -> Dict[str, Any]:
-    if not self._frozen_payload:
-        raise NoPayloadError(
-            "This KindMigrationResult has no payload — it is a scalar-only "
-            "migration. Use .source_format, .original_kind, .migrated_kind, "
-            ".migration_reason, and .warnings instead."
-        )
-    return _thaw_payload(self._frozen_payload)
-
-
-KindMigrationResult.migrated_payload = _migrated_payload
-
-
-def _to_parser_payload(self: KindMigrationResult) -> Dict[str, Any]:
-    """Return a fresh deep-mutable copy for parser consumption.
-
-    Mutations of this copy do not affect the migration evidence.
-    Raises NoPayloadError if this is a scalar-only migration.
-    """
-    if not self._frozen_payload:
-        raise NoPayloadError(
-            "This KindMigrationResult has no payload — it is a scalar-only "
-            "migration."
-        )
-    return _thaw_payload(self._frozen_payload)
-
-
-KindMigrationResult.to_parser_payload = _to_parser_payload
+# Retain backward-compatible alias
+NoPayloadError = MigrationPayloadError
 
 
 def migrate_legacy_kind(
