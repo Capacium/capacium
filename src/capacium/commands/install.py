@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
@@ -14,7 +14,7 @@ from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
 from ..manifest import Manifest
 from ..models import Capability, ConflictResult, ConflictState, Kind
-from ..kinds import CapaciumKind
+from ..kinds import KIND_EXAMPLES, CapaciumKind
 from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
@@ -1228,26 +1228,129 @@ def _fetch_remote_tags(repo_url: str) -> List[str]:
         return []
 
 
+class KindDeclarationRequired(ValueError):
+    """Raised when an ingested source declares no canonical Capacium Kind.
+
+    Capacium never guesses a Kind. A source that does not declare one cannot
+    be packaged, and this is raised before any storage, adapter, or registry
+    side effect occurs.
+    """
+
+
+def _resolve_declared_kind(
+    raw_kind: object,
+    *,
+    origin: str,
+    source_format: str,
+) -> Tuple[str, Optional[object]]:
+    """Resolve an explicitly declared Kind to its canonical value.
+
+    Returns ``(canonical_kind_value, migration_evidence)``. The evidence is a
+    :class:`~capacium.kinds.KindMigrationResult` when *raw_kind* was a legacy
+    spec-only Kind, and ``None`` for an already-canonical Kind.
+
+    A legacy Kind is only ever accepted through the canonical versioned
+    migration adapter, which records the source format as evidence. There is
+    no other legacy path and no inference of any sort.
+
+    Raises :class:`KindDeclarationRequired` when no Kind is declared, and
+    ``ValueError`` when a declared Kind is not recognised.
+    """
+    from ..kinds import is_legacy_spec_kind, migrate_legacy_kind, validate_kind
+
+    if raw_kind is None or not str(raw_kind).strip():
+        raise KindDeclarationRequired(
+            f"{origin} declares no 'kind'. Capacium does not infer a Kind from "
+            f"repository or file names.\n"
+            f"  Fix: add a capability.yaml to the source with an explicit "
+            f"'kind:' field, or install from a registry entry that declares "
+            f"one.\n"
+            f"  Valid kinds: {', '.join(sorted(KIND_EXAMPLES))}"
+        )
+
+    cleaned = str(raw_kind).strip()
+    if is_legacy_spec_kind(cleaned):
+        migration = migrate_legacy_kind(cleaned, format_version=source_format)
+        return migration.migrated_kind.value, migration
+    return validate_kind(cleaned).value, None
+
+
+def _migrate_recognized_source_format(repo_dir: Path, origin: str):
+    """Resolve a Kind from a recognized non-Capacium source format.
+
+    Detection is structural — what the source actually contains — never
+    lexical. A root ``SKILL.md`` is the Agent Skills format declaring a skill;
+    a ``skills/<name>/SKILL.md`` layout declares a bundle of members. Both are
+    declarations written in another vocabulary, so both are migrated through
+    the canonical versioned adapter and carry their source format as evidence.
+
+    Raises :class:`KindDeclarationRequired` when nothing recognizable is
+    present, before any side effect.
+    """
+    from ..kinds import migrate_source_format_kind, recognized_source_formats
+    from ..manifest import infer_multi_skill_members
+
+    if (repo_dir / "SKILL.md").is_file():
+        return migrate_source_format_kind("agent-skill-md-v1")
+    if infer_multi_skill_members(repo_dir):
+        return migrate_source_format_kind("agent-skills-bundle-v1")
+
+    raise KindDeclarationRequired(
+        f"Source {origin} ships no capability manifest, no registry entry "
+        f"declares its kind, and it matches no recognized source format. "
+        f"Capacium does not infer a Kind from repository names.\n"
+        f"  Fix: add a capability.yaml with an explicit 'kind:' field to the "
+        f"source repository, then reinstall.\n"
+        f"  Valid kinds: {', '.join(sorted(KIND_EXAMPLES))}\n"
+        f"  Recognized source formats: "
+        f"{', '.join(recognized_source_formats())}"
+    )
+
+
 def _auto_generate_manifest(
     repo_dir: Path,
     repo_url: str,
     registry_meta: Optional[dict] = None,
     resolved_version: Optional[str] = None,
 ) -> None:
+    """Write a capability.yaml for a source that ships none.
+
+    The Kind must be explicitly declared by the registry metadata. Kind is
+    never inferred from repository names, topics, or directory layout: a name
+    containing ``mcp``, ``bundle``, ``tool``, ``template``, or ``workflow`` is
+    a naming coincidence, not a declaration, and treating it as one silently
+    mis-packaged capabilities.
+
+    Raises :class:`KindDeclarationRequired` before writing anything when no
+    Kind is declared.
+    """
     dest = repo_dir / "capability.yaml"
     if dest.exists():
         return
 
+    migration = None
     if registry_meta:
         name = registry_meta.get("name", repo_dir.name)
         owner = registry_meta.get("owner", "unknown")
-        kind = registry_meta.get("kind") or ""
+        kind, migration = _resolve_declared_kind(
+            registry_meta.get("kind"),
+            origin=f"Registry entry for {owner}/{name}",
+            source_format="registry-metadata-v1",
+        )
         version = resolved_version or registry_meta.get("version", "1.0.0")
         description = registry_meta.get("description", f"Auto-detected capability {name}")
         if version in ("", "latest", "stable"):
             version = "1.0.0"
         tags_list = registry_meta.get("tags", [])
     else:
+        # No Capacium manifest and no registry metadata. The only accepted
+        # path is a recognized non-Capacium source format, migrated explicitly
+        # with evidence. Resolved first, so an unrecognized source fails closed
+        # before any tag fetch, manifest write, storage, adapter, or registry
+        # side effect — and never by guessing from the repository name.
+        migration = _migrate_recognized_source_format(repo_dir, repo_url)
+        kind = migration.migrated_kind.value
+
         name = repo_dir.name
         owner = "unknown"
         m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", repo_url)
@@ -1269,36 +1372,29 @@ def _auto_generate_manifest(
                 return tuple(parts)
             version = max(tags, key=_vk)
 
-        # VERSIONED_MIGRATION(v1): auto-generate manifest for pre-neutrality
-        # installs. Contract v1 infers a Kind from repository naming signals
-        # for sources that predate the Kind neutrality format.
-        kind = CapaciumKind.SKILL.value
-        topics_lower = name.lower()
-        if "mcp" in topics_lower or "mcp-server" in topics_lower:
-            kind = CapaciumKind.MCP.value
-        elif "bundle" in topics_lower or "pack" in topics_lower:
-            kind = CapaciumKind.BUNDLE.value
-        elif "tool" in topics_lower:
-            kind = CapaciumKind.TOOL.value
-        elif "template" in topics_lower:
-            kind = CapaciumKind.TEMPLATE.value
-        elif "workflow" in topics_lower:
-            kind = CapaciumKind.WORKFLOW.value
-
         description = f"Auto-detected capability {name}"
 
     if not version or version in ("", "latest", "stable"):
         version = "1.0.0"
 
-    # V13/STAB-001: multi-skill repositories become bundles with member
-    # skills instead of a single undiscoverable root skill.
+    # V13/STAB-001: multi-skill layouts are attached as bundle members.
+    # The declared Kind stays authoritative — a multi-skill layout is
+    # structural evidence, not licence to silently re-Kind an explicit
+    # declaration, which is how a declared 'skill' used to become a 'bundle'
+    # without the declaring party ever being told.
+    from ..manifest import infer_multi_skill_members
+    discovered = infer_multi_skill_members(repo_dir)
     members = []
-    if kind in (CapaciumKind.SKILL.value, CapaciumKind.BUNDLE.value):
-        from ..manifest import infer_multi_skill_members
-        members = infer_multi_skill_members(repo_dir)
-        if members:
-            kind = CapaciumKind.BUNDLE.value
+    if discovered:
+        if kind == CapaciumKind.BUNDLE.value:
+            members = discovered
             description = f"Multi-skill bundle {name} ({len(members)} skills)"
+        else:
+            print(
+                f"  Note: {name} has a multi-skill layout ({len(discovered)} "
+                f"members) but declares kind: {kind}. Declare kind: bundle in "
+                f"the source to package those members."
+            )
 
     yaml_data = {
         "kind": kind,
@@ -1312,6 +1408,20 @@ def _auto_generate_manifest(
         yaml_data["capabilities"] = members
     if tags_list:
         yaml_data["tags"] = tags_list
+    if migration is not None:
+        # Point-of-record evidence that this Kind came through the canonical
+        # versioned migration adapter, not from inference.
+        yaml_data["x_kind_migration"] = {
+            "source_format": migration.source_format,
+            "original_kind": migration.original_kind,
+            "migrated_kind": migration.migrated_kind.value,
+            "migration_reason": migration.migration_reason,
+        }
+        print(
+            f"  Kind '{migration.migrated_kind.value}' migrated from "
+            f"{migration.source_format} (declared by "
+            f"{migration.original_kind})"
+        )
 
     try:
         import yaml
@@ -1839,7 +1949,11 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_fr
             continue
         if adapter.capability_exists(cap_name):
             print(f"  Removing old installation from {fw_name} config...")
-            adapter.remove_capability(cap_name, owner=existing_owner, kind=CapaciumKind.MCP.value)
+            # Call the MCP removal branch directly. Routing through
+            # remove_capability(kind=CapaciumKind.MCP.value) pushed a hardcoded
+            # Kind into a dispatch sink purely to select this branch; these
+            # frameworks are MCP config surfaces, so say so explicitly.
+            adapter.remove_mcp_server(cap_name, existing_owner)
 
 
 def _check_bundle_member_conflict(

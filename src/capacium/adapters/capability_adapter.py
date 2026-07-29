@@ -232,7 +232,7 @@ class MCPAdapter(CapabilityAdapter):
         ir = CapabilityIR(
             canonical=descriptor.get("name", ""),
             name=descriptor.get("name", ""),
-            kind=CapabilityIR.validate_kind(CapaciumKind.MCP.value),
+            kind=CapaciumKind.MCP.value,
             description=descriptor.get("description", ""),
             version=descriptor.get("version", ""),
             mcp_transport=descriptor.get("transport"),
@@ -407,7 +407,7 @@ class ClaudeDesktopAdapterAdapt(CapabilityAdapter):
             cfg = servers[name]
             return CapabilityIR(
                 canonical=name, name=name,
-                kind=CapabilityIR.validate_kind(CapaciumKind.MCP.value),
+                kind=CapaciumKind.MCP.value,
                 description=cfg.get("description", ""),
                 mcp_command=cfg.get("command"),
                 mcp_args=cfg.get("args", []),

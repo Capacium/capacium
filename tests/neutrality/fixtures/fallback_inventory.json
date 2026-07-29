@@ -4,8 +4,21 @@
     "broken_exceptions": [],
     "broken_record_count": 0,
     "broken_records": [],
-    "finding_count": 0,
-    "findings": [],
+    "finding_count": 1,
+    "findings": [
+      {
+        "code": "default_kind = CapaciumKind.SKILL",
+        "disposition": "unlisted",
+        "file": "commands/init.py",
+        "function": "init_skill",
+        "is_exception": true,
+        "line": 237,
+        "pattern": "assign-enum-default",
+        "resolved_kind": "skill",
+        "sink_role": "dispatch-boundary",
+        "test_proof": "test_p01k_init_wizard_kind_is_interactive_only"
+      }
+    ],
     "is_clean": true,
     "is_inventory_intact": true,
     "violation_count": 0,

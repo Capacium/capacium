@@ -1,6 +1,8 @@
 import subprocess
 from unittest.mock import patch
 
+import pytest
+
 
 class TestResolveSource:
     def test_local_path_returns_dir(self, tmp_path):
@@ -44,6 +46,10 @@ class TestResolveSource:
             repo_dir = tmp_path / "_tmp" / "repo"
             repo_dir.mkdir(parents=True)
             (repo_dir / "readme.md").write_text("hello")
+            # CAPR3-P01K-A2: a clone must declare what it is. This suite tests
+            # clone/checkout mechanics, so the fixture is a real Agent Skills
+            # source rather than a bare directory with no declared Kind.
+            (repo_dir / "SKILL.md").write_text("# fixture skill\n")
 
             with patch("capacium.commands.install.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -63,6 +69,10 @@ class TestResolveSource:
             repo_dir = tmp_path / "_tmp" / "repo"
             repo_dir.mkdir(parents=True)
             (repo_dir / "readme.md").write_text("hello")
+            # CAPR3-P01K-A2: a clone must declare what it is. This suite tests
+            # clone/checkout mechanics, so the fixture is a real Agent Skills
+            # source rather than a bare directory with no declared Kind.
+            (repo_dir / "SKILL.md").write_text("# fixture skill\n")
 
             commit = "a" * 40
 
@@ -98,6 +108,10 @@ class TestResolveSource:
             repo_dir = tmp_path / "_tmp" / "repo"
             repo_dir.mkdir(parents=True)
             (repo_dir / "readme.md").write_text("hello")
+            # CAPR3-P01K-A2: a clone must declare what it is. This suite tests
+            # clone/checkout mechanics, so the fixture is a real Agent Skills
+            # source rather than a bare directory with no declared Kind.
+            (repo_dir / "SKILL.md").write_text("# fixture skill\n")
 
             commit = "b" * 40
 
@@ -179,10 +193,12 @@ class TestVersionFilterCliIntegration:
 
 
 class TestAutoGenerateManifest:
-    def test_generates_when_missing(self, tmp_path):
+    def test_generates_for_a_recognized_source_format(self, tmp_path):
+        """A source that declares a skill via SKILL.md gets a manifest."""
         d = tmp_path / "repo"
         d.mkdir()
         (d / "readme.md").write_text("hello")
+        (d / "SKILL.md").write_text("# a skill\n")
         from capacium.commands.install import _auto_generate_manifest
         _auto_generate_manifest(d, "https://github.com/typelicious/SkillWeave.git")
         manifest = d / "capability.yaml"
@@ -190,6 +206,24 @@ class TestAutoGenerateManifest:
         content = manifest.read_text()
         assert "typelicious" in content
         assert "SkillWeave" in content
+        assert "kind: skill" in content
+
+    def test_refuses_a_source_that_declares_nothing(self, tmp_path):
+        """CAPR3-P01K-A2: no manifest, no recognized format, no Kind.
+
+        The Kind used to be guessed from the repository name — 'SkillWeave'
+        contains no bait substring, but 'my-tool' or 'x-bundle' would have
+        silently produced tool/bundle. Nothing is inferred now.
+        """
+        d = tmp_path / "repo"
+        d.mkdir()
+        (d / "readme.md").write_text("hello")
+        from capacium.commands.install import (
+            KindDeclarationRequired, _auto_generate_manifest,
+        )
+        with pytest.raises(KindDeclarationRequired):
+            _auto_generate_manifest(d, "https://github.com/typelicious/SkillWeave.git")
+        assert not (d / "capability.yaml").exists()
 
     def test_skips_when_already_exists(self, tmp_path):
         d = tmp_path / "repo"

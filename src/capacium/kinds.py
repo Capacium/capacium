@@ -300,6 +300,79 @@ def migrate_legacy_kind(
     )
 
 
+@dataclass(frozen=True)
+class SourceFormatKind:
+    """A non-Capacium source format whose artifact type implies a Kind.
+
+    Some ecosystems declare what an artifact *is* through their own format
+    rather than through a Capacium ``kind:`` field. Ingesting one is a
+    migration between formats, not an inference: the declaration is real, it
+    is simply written in another vocabulary.
+
+    Every such migration is versioned and carries its source format as
+    evidence, so a Kind can always be traced back to the declaration that
+    produced it. This is the only sanctioned path from a non-Capacium source
+    to a canonical Kind.
+    """
+
+    source_format: str
+    declared_by: str
+    kind: CapaciumKind
+    migration_note: str
+
+
+SOURCE_FORMAT_KINDS: FrozenSet[SourceFormatKind] = frozenset({
+    SourceFormatKind(
+        source_format="agent-skill-md-v1",
+        declared_by="<SKILL.md at repository root>",
+        kind=CapaciumKind.SKILL,
+        migration_note="Agent Skills source format declares a skill artifact",
+    ),
+    SourceFormatKind(
+        source_format="agent-skills-bundle-v1",
+        declared_by="<skills/*/SKILL.md members>",
+        kind=CapaciumKind.BUNDLE,
+        migration_note=(
+            "Agent Skills multi-skill layout declares a bundle of skill members"
+        ),
+    ),
+})
+
+_SOURCE_FORMATS: Dict[str, SourceFormatKind] = {
+    spec.source_format: spec for spec in SOURCE_FORMAT_KINDS
+}
+
+
+def recognized_source_formats() -> Tuple[str, ...]:
+    """Return every source format that can be migrated to a canonical Kind."""
+    return tuple(sorted(_SOURCE_FORMATS))
+
+
+def migrate_source_format_kind(source_format: str) -> KindMigrationResult:
+    """Migrate a recognized non-Capacium source format to a canonical Kind.
+
+    Returns a typed migration result carrying the source format as evidence.
+    Raises ValueError for an unrecognized format — there is no fallback and no
+    inference.
+    """
+    spec = _SOURCE_FORMATS.get(source_format)
+    if spec is None:
+        raise ValueError(
+            f"'{source_format}' is not a recognized source format. "
+            f"Recognized: {', '.join(recognized_source_formats())}"
+        )
+    return KindMigrationResult(
+        source_format=spec.source_format,
+        original_kind=spec.declared_by,
+        migrated_kind=spec.kind,
+        migration_reason=spec.migration_note,
+        warnings=(
+            f"Kind '{spec.kind.value}' migrated from source format "
+            f"'{spec.source_format}' declared by {spec.declared_by}",
+        ),
+    )
+
+
 def migrate_legacy_payload(
     payload: Dict[str, Any],
     source_format: str = "spec-v1-legacy",

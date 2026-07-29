@@ -284,7 +284,10 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         except ValueError:
             continue
         if adapter.capability_exists(cap_name):
-            adapter.remove_capability(cap_name, kind=CapaciumKind.MCP.value)
+            # Direct MCP removal: this loop targets MCP config surfaces, so the
+            # branch is named rather than selected by a hardcoded Kind literal
+            # passed into remove_capability().
+            adapter.remove_mcp_server(cap_name)
 
 
 def _remove_sub_capabilities(

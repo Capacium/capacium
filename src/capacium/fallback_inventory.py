@@ -125,6 +125,17 @@ KNOWN_EXCEPTIONS: FrozenSet[ExceptionEntry] = frozenset({
         reason="Versioned legacy Kind migration adapter",
         test_ref="test_migrate_legacy_kind",
     ),
+    ExceptionEntry(
+        file="commands/init.py", line=0, kind="skill",
+        symbol="CapaciumKind.SKILL.value",
+        reason=(
+            "Interactive wizard prompt seed only — init_skill() prints every "
+            "active Kind, the operator's answer overrides the seed, and the "
+            "result is rejected by Manifest.validate() before any file is "
+            "written. Never reaches dispatch unvalidated."
+        ),
+        test_ref="test_p01k_init_wizard_kind_is_interactive_only",
+    ),
 })
 
 # ── Typed finding record ──────────────────────────────────────────────────────
@@ -210,12 +221,26 @@ def _is_kind_literal(node: ast.AST) -> bool:
 
 
 def _is_kind_enum_attr(node: ast.AST) -> Optional[Tuple[str, str]]:
-    """Return (enum_class, member_name) if node is CapaciumKind.SKILL etc."""
-    if isinstance(node, ast.Attribute):
-        if (isinstance(node.value, ast.Name)
-                and node.value.id in _KIND_ENUM_CLASSES
-                and node.attr in _KIND_ENUM_NAMES):
-            return (node.value.id, node.attr)
+    """Return (enum_class, member_name) for a Kind enum reference.
+
+    Recognises both the member form and the value-accessor form:
+
+        CapaciumKind.SKILL          -> ("CapaciumKind", "SKILL")
+        CapaciumKind.SKILL.value    -> ("CapaciumKind", "SKILL")
+
+    The ``.value`` form was previously invisible, which let hardcoded Kind
+    defaults written as ``kind = CapaciumKind.SKILL.value`` pass every scanner
+    pattern and leave the canonical scan reporting CLEAN.
+    """
+    if not isinstance(node, ast.Attribute):
+        return None
+    if (isinstance(node.value, ast.Name)
+            and node.value.id in _KIND_ENUM_CLASSES
+            and node.attr in _KIND_ENUM_NAMES):
+        return (node.value.id, node.attr)
+    # Value-accessor form: unwrap ``.value`` and re-test the inner node.
+    if node.attr == "value":
+        return _is_kind_enum_attr(node.value)
     return None
 
 
@@ -560,6 +585,26 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
                             code=ast.unparse(n).strip() if hasattr(ast, 'unparse') else "sink(kind or 'x')",
                             resolved_kind=val.value,
                         ))
+        # Enum Kind constants passed straight into a sink, in either the
+        # member or the value-accessor form.
+        for arg in list(n.args) + [kw.value for kw in n.keywords
+                                   if kw.arg == "kind"]:
+            candidates = (arg.values if isinstance(arg, ast.BoolOp)
+                          else [arg])
+            for cand in candidates:
+                em = _is_kind_enum_attr(cand)
+                if em:
+                    func = _get_enclosing_func(tree, n)
+                    ret.append(Finding(
+                        file=rel_path, line=n.lineno, function=func,
+                        pattern="sink-enum-default",
+                        sink_role="dispatch-sink",
+                        disposition="unlisted",
+                        code=(ast.unparse(n).strip() if hasattr(ast, "unparse")
+                              else f'.{n.func.attr}(kind={em[0]}.{em[1]})'),
+                        resolved_kind=_enum_member_to_kind(em[1]),
+                    ))
+
         # Check keyword args: remove(kind="skill")
         for kw in n.keywords:
             if kw.arg == "kind":
