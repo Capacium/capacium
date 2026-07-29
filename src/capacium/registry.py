@@ -158,7 +158,8 @@ class Registry:
                 name_val = row[2]
                 version_val = row[3]
                 framework_val = row[4]
-                install_path_val = row[5]
+
+                found_frameworks = set()
                 if framework_val:
                     found_frameworks.add(framework_val)
 

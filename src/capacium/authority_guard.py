@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import ast
 import os
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Tuple
+from typing import Dict, List, Tuple
 
 _SRC = Path(__file__).resolve().parent.parent.parent  # repo root (../capacium/../../capacium = src/../../ = repo root)
 _KIND_VALUES: frozenset[str] = frozenset({
@@ -251,7 +250,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                         file=str(rel_path),
                                         line=node.lineno,
                                         message=f"import alias: Kind is an alias for {node.module}.{alias.name}",
-                                        suggestion=f"remove this import redirection; Kind must be CapaciumKind from capacium.kinds",
+                                        suggestion="remove this import redirection; Kind must be CapaciumKind from capacium.kinds",
                                     ))
 
             # ── Requirement 3: Enum subclasses with Kind values (any count) ──
@@ -282,7 +281,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                 file=str(rel_path),
                                 line=node.lineno,
                                 message=f"Enum '{node.name}' defines unauthorized Kind values",
-                                suggestion=f"define Kind values in src/capacium/kinds.py only, or derive from CapaciumKind",
+                                suggestion="define Kind values in src/capacium/kinds.py only, or derive from CapaciumKind",
                             ))
 
             # ── Requirement 4: literal Kind registries, comprehensions, concatenations ──
@@ -304,7 +303,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                     file=str(rel_path),
                                     line=node.lineno,
                                     message=f"literal Kind registry ({kind_count} value(s)): {target_name}",
-                                    suggestion=f"derive from CapaciumKind instead of hardcoding Kind values",
+                                    suggestion="derive from CapaciumKind instead of hardcoding Kind values",
                                 ))
                         elif isinstance(val, ast.Dict):
                             key_kind_count = sum(1 for k in val.keys if k is not None and _is_kind_value(k))
@@ -324,7 +323,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                     file=str(rel_path),
                                     line=node.lineno,
                                     message=f"literal Kind registry ({kc} key/value(s) in dict): {target_name}",
-                                    suggestion=f"derive from CapaciumKind instead of hardcoding Kind values",
+                                    suggestion="derive from CapaciumKind instead of hardcoding Kind values",
                                 ))
 
                     # 4b: comprehensions — check output expressions AND iterables
@@ -347,7 +346,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                         file=str(rel_path),
                                         line=node.lineno,
                                         message=f"literal Kind concatenation '{combined}': {target_name}",
-                                        suggestion=f"derive from CapaciumKind instead",
+                                        suggestion="derive from CapaciumKind instead",
                                     ))
 
             # ── Requirement 5: Kind alias assignments (top-level module assignments only) ──
@@ -365,7 +364,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                             file=str(rel_path),
                                             line=node.lineno,
                                             message=f"Kind aliased to non-canonical class '{val.id}'",
-                                            suggestion=f"use 'from capacium.kinds import CapaciumKind as Kind' or keep explicit",
+                                            suggestion="use 'from capacium.kinds import CapaciumKind as Kind' or keep explicit",
                                         ))
                                 elif isinstance(val, ast.Attribute):
                                     findings.append(Finding(
@@ -373,15 +372,15 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                         file=str(rel_path),
                                         line=node.lineno,
                                         message=f"Kind aliased via attribute to '{val.attr}'",
-                                        suggestion=f"use 'from capacium.kinds import CapaciumKind as Kind' or keep explicit",
+                                        suggestion="use 'from capacium.kinds import CapaciumKind as Kind' or keep explicit",
                                     ))
                                 elif isinstance(val, ast.Subscript):
                                     findings.append(Finding(
                                         kind="kind-alias",
                                         file=str(rel_path),
                                         line=node.lineno,
-                                        message=f"Kind assigned from subscript expression",
-                                        suggestion=f"Kind must be CapaciumKind, not a computed value",
+                                        message="Kind assigned from subscript expression",
+                                        suggestion="Kind must be CapaciumKind, not a computed value",
                                     ))
 
                 # ── Import alias re-assignment: module_alias subsequently assigned as Kind ──
@@ -398,7 +397,7 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
                                             file=str(rel_path),
                                             line=node2.lineno,
                                             message=f"Kind assigned from imported symbol '{val2.id}' ({imported_path})",
-                                            suggestion=f"Kind must be CapaciumKind from capacium.kinds",
+                                            suggestion="Kind must be CapaciumKind from capacium.kinds",
                                         ))
 
             # ── Requirement 6: nested unauthorized kinds.py files ──

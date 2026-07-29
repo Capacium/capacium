@@ -6,7 +6,6 @@ the real public functions. No surface maps to an adjacent helper.
 
 import io
 import json
-import tempfile
 from pathlib import Path
 from unittest import mock
 

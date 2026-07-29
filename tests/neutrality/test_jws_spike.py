@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 
-import pytest
 from nacl.signing import SigningKey
 
 from src.capacium.trust import (
@@ -171,7 +169,7 @@ class TestR4LegacyWrapper:
 
     def test_r4_adapter_rejects_wrong_key(self):
         from nacl.signing import SigningKey
-        from contrib.r4_legacy_adapter import verify_r4_evidence, _add_padding
+        from contrib.r4_legacy_adapter import verify_r4_evidence
         import base64
 
         sk_a = SigningKey.generate()
@@ -228,25 +226,16 @@ class TestTwoImplementations:
 
     def test_two_different_implementations_same_vectors(self):
         """Cryptography-based Ed25519 vs PyNaCl-based — same vectors produce VALID."""
-        from src.capacium.trust import EvidenceVerificationResult, VerificationStatus
-        import base64 as _b64
-
         sk_a = SigningKey.generate()
-        kid = "two-frames"
         payload = b'{"cross": "crypto"}'
 
         signed = sk_a.sign(payload)
-        legacy_compact = (
-            _b64.urlsafe_b64encode(signed).rstrip(b"=").decode()
-        )
 
-        import hashlib
         from nacl.exceptions import BadSignatureError
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey,
         )
 
-        priv_bytes = bytes(sk_a)[:32]
         pyca_pub = Ed25519PublicKey.from_public_bytes(bytes(sk_a.verify_key))
         pyca_raw_pub = pyca_pub.public_bytes_raw()
 

@@ -1,12 +1,10 @@
 """CAPR3-P01C-00: Frozen known failures before P01C corrections."""
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from capacium.kinds import CapaciumKind
-from capacium.models import Capability, Kind
 
 
 # ── sync_index coerces missing Kind to "skill" ──
@@ -105,7 +103,7 @@ def test_migration_result_immutable():
 
 def test_migration_to_parser_payload_method_exists():
     """to_parser_payload() returns a fresh mutable copy for parser use."""
-    from capacium.kinds import KindMigrationResult, _freeze_payload, NoPayloadError
+    from capacium.kinds import KindMigrationResult, _freeze_payload
 
     frozen = _freeze_payload({"kind": "workflow", "name": "test"})
     result = KindMigrationResult(

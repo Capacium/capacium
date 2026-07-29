@@ -218,7 +218,7 @@ def test_remove_sub_capabilities_validates_kind_before_adapter_removal():
         patch("capacium.commands.remove.get_adapter") as mock_get_adapter,
         patch("capacium.commands.remove.StorageManager") as mock_storage_cls,
         patch("capacium.commands.remove._snapshot_cap_surfaces"),
-        patch("capacium.commands.remove._remove_sub_capabilities") as mock_recurse,
+        patch("capacium.commands.remove._remove_sub_capabilities"),
         patch("capacium.commands.remove.shutil.rmtree"),
     ):
         mock_adapter = MagicMock()
@@ -257,7 +257,7 @@ def test_remove_sub_capabilities_invalid_kind_raises_before_removal():
     with (
         patch("capacium.commands.remove.get_adapter") as mock_get_adapter,
         patch("capacium.commands.remove._snapshot_cap_surfaces"),
-        patch("capacium.commands.remove._remove_sub_capabilities") as mock_recurse,
+        patch("capacium.commands.remove._remove_sub_capabilities"),
     ):
         mock_adapter = MagicMock()
         mock_get_adapter.return_value = mock_adapter

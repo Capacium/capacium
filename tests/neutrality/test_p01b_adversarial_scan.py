@@ -32,7 +32,7 @@ CANONICAL_RELPATH = _CANONICAL_KIND_RELPATH
 def test_current_src_clean():
     findings, advisories = detect_authority_violations(SRC)
     strict_findings = [f for f in findings if str(Path("src") / "capacium" / f.file) != CANONICAL_RELPATH]
-    assert not strict_findings, f"Unauthorized Kind registries:\n" + "\n".join(str(f) for f in strict_findings)
+    assert not strict_findings, "Unauthorized Kind registries:\n" + "\n".join(str(f) for f in strict_findings)
 
 
 def test_adversarial_second_enum():
@@ -390,8 +390,8 @@ def test_adversarial_dict_comp_iterable():
 
 def test_adversarial_two_value_dict_probe():
     """CAP-P01G-02 executable probe: two-value Kind dict must produce finding and non-zero CLI."""
-    import subprocess, sys
-    from capacium.authority_guard import guard_command
+    import subprocess
+    import sys
     code = 'KINDS = {"skill": 1, "bundle": 2}\n'
     with tempfile.TemporaryDirectory() as tmpdir:
         f = Path(tmpdir) / "probe_dict.py"
@@ -402,5 +402,5 @@ def test_adversarial_two_value_dict_probe():
         )
         print(f"STDOUT: {result.stdout}")
         print(f"STDERR: {result.stderr}")
-        assert result.returncode != 0, f"Expected non-zero exit for two-value dict"
+        assert result.returncode != 0, "Expected non-zero exit for two-value dict"
         assert "literal-registry" in result.stdout

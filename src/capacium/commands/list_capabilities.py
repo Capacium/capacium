@@ -2,7 +2,6 @@ import json
 from typing import Optional
 from ..registry import Registry
 from ..models import Kind
-from ..kinds import CapaciumKind
 
 STATUS_SYMBOLS = {
     "verified": "\u2713",

@@ -96,7 +96,7 @@ def test_migrate_valid_kind_rejected():
 
 @pytest.mark.parametrize("kind_value", ALL_KINDS)
 def test_init_validates_active_kind(kind_value):
-    from capacium.commands.init import _validate_kind, _VALID_KINDS
+    from capacium.commands.init import _validate_kind
     err = _validate_kind(kind_value)
     assert err is None, f"Kind '{kind_value}' should be valid"
 

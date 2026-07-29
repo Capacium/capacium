@@ -17,7 +17,6 @@ from nacl.signing import SigningKey, VerifyKey
 
 from src.capacium.trust import (
     EvidenceVerificationResult,
-    TrustProvider,
     VerificationStatus,
 )
 

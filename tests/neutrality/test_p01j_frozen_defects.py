@@ -9,7 +9,6 @@ from coming back.
 No test in this module may be skipped or xfailed.
 """
 
-import sys
 import tempfile
 from pathlib import Path
 

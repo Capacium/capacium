@@ -8,8 +8,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from .index import Index
 from .kinds import validate_kind
-
+from .registry_client import RegistryClient, RegistryClientError
+from .utils.config import get_registry_url
 
 _SYNC_KIND_ERROR = "sync_index: remote listing missing or invalid 'kind' field — rejecting"
 
@@ -24,8 +26,6 @@ def _validate_sync_kind(raw_kind: Any) -> str:
             f"sync_index: unknown kind '{raw_kind}' — rejecting remote listing"
         )
     return validated.value
-from .registry_client import RegistryClient, RegistryClientError
-from .utils.config import get_registry_url
 
 
 def sync_index(index: Index, registry_url: str, full: bool = False) -> Dict[str, Any]:

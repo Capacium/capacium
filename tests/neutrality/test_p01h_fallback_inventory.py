@@ -10,7 +10,6 @@ Tests:
 - JSON output and ScanResult.to_dict()
 """
 
-import sys
 import tempfile
 import json
 from pathlib import Path
@@ -265,7 +264,8 @@ def test_verify_inventory_json_output():
 
 
 def test_verify_inventory_json_is_valid():
-    import io, contextlib
+    import io
+    import contextlib
     with tempfile.TemporaryDirectory() as d:
         f = Path(d) / "x.py"
         f.write_text("pass\n")

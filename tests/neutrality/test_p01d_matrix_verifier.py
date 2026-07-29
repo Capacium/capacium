@@ -13,8 +13,6 @@ import ast
 import json
 import subprocess
 import sys
-import textwrap
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple

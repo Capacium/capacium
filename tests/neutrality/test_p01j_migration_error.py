@@ -7,7 +7,6 @@ Verifies:
 - NoPayloadError remains as backward-compatible alias
 """
 
-import math
 
 import pytest
 

@@ -1,5 +1,7 @@
+import json
 from datetime import datetime
 from pathlib import Path
+
 from capacium.registry import Registry
 from capacium.models import Capability, Kind
 
@@ -97,3 +99,38 @@ class TestRegistry:
         assert reg.update_capability(cap)
         retrieved = reg.get_capability("test/updatable")
         assert retrieved.fingerprint == "new"
+
+    def test_backfill_frameworks_initializes_each_capability(self, tmp_home, monkeypatch):
+        reg = Registry()
+        cap = Capability(
+            owner="test",
+            name="legacy-framework",
+            version="1.0.0",
+            kind=Kind.SKILL,
+            fingerprint="legacy",
+            install_path=Path("/tmp/legacy-framework"),
+            installed_at=datetime.now(),
+            framework="opencode",
+        )
+        reg.add_capability(cap)
+
+        with reg._get_connection() as conn:
+            conn.execute(
+                "UPDATE capabilities SET frameworks = '' WHERE owner = ? AND name = ?",
+                ("test", "legacy-framework"),
+            )
+            conn.commit()
+
+        monkeypatch.setattr(
+            "capacium.framework_detector.framework_skills_dirs",
+            lambda: {},
+        )
+        reg._backfill_frameworks()
+
+        with reg._get_connection() as conn:
+            row = conn.execute(
+                "SELECT frameworks FROM capabilities WHERE owner = ? AND name = ?",
+                ("test", "legacy-framework"),
+            ).fetchone()
+
+        assert json.loads(row["frameworks"]) == ["opencode"]

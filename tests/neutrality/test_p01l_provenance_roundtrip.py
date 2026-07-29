@@ -17,7 +17,6 @@ No test in this module may be skipped or xfailed.
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 

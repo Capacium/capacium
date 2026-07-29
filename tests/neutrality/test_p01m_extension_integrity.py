@@ -20,12 +20,8 @@ No test in this module may be skipped or xfailed.
 
 from __future__ import annotations
 
-import json
-import math
-from pathlib import Path
 
 import pytest
-import yaml
 
 from capacium.manifest import (
     EXTENSION_PREFIX,

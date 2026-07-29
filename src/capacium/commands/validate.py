@@ -17,6 +17,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..kinds import (
+    ACTIVE_KINDS,
+    CapaciumKind,
+    _LEGACY_SPEC_KIND_VALUES as LEGACY_SPEC_KIND_VALUES,
+)
+
 try:
     import yaml
     _HAS_YAML = True
@@ -35,8 +41,6 @@ except ImportError:
 
 SCHEMA_URL = "https://capacium.xyz/spec/v1.0/schema.json"
 SCHEMA_CACHE_PATH = Path.home() / ".capacium" / "cache" / "spec-v1.0-schema.json"
-
-from ..kinds import ACTIVE_KINDS, CapaciumKind, _LEGACY_SPEC_KIND_VALUES as LEGACY_SPEC_KIND_VALUES
 
 _ACTIVE_KINDS = ACTIVE_KINDS
 _LEGACY_KINDS = LEGACY_SPEC_KIND_VALUES

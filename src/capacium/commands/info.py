@@ -13,7 +13,6 @@ import tty
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..kinds import CapaciumKind
 
 from ..index import Index
 from ..registry_client import RegistryClient, RegistryClientError, RegistryDetail

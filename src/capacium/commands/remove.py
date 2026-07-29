@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from ..kinds import CapaciumKind, validate_kind
+from ..kinds import validate_kind
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager

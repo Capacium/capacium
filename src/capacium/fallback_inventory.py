@@ -21,7 +21,6 @@ import re
 import sys
 import tokenize
 from dataclasses import dataclass, field as _field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 

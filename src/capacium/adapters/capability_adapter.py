@@ -197,7 +197,7 @@ class CapabilityAdapter(ABC):
 
 class MCPAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
-        kind = _kind_for_output(ir)
+        _kind_for_output(ir)
         result: Dict[str, Any] = {
             "name": ir.canonical,
             "description": ir.description,
@@ -245,7 +245,7 @@ class MCPAdapter(CapabilityAdapter):
 
 class A2AAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
-        kind = _kind_for_output(ir)
+        _kind_for_output(ir)
         card: Dict[str, Any] = {
             "name": ir.canonical,
             "description": ir.description,
@@ -298,7 +298,7 @@ class A2AAdapter(CapabilityAdapter):
 
 class AWSAgentCoreAdapter(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
-        kind = _kind_for_output(ir)
+        _kind_for_output(ir)
         registry_entry: Dict[str, Any] = {
             "agentName": ir.canonical,
             "description": ir.description,
@@ -382,7 +382,7 @@ class OpenCodeAdapter(CapabilityAdapter):
 
 class ClaudeDesktopAdapterAdapt(CapabilityAdapter):
     def adapt(self, ir: CapabilityIR) -> Dict[str, Any]:
-        kind = _kind_for_output(ir)
+        _kind_for_output(ir)
         entry: Dict[str, Any] = {
             "mcpServers": {
                 ir.canonical.replace("/", "-").replace("::", "-"): {
