@@ -1299,6 +1299,28 @@ def _resolve_declared_kind(
     return validate_kind(cleaned).value, None
 
 
+def _declared_exchange_kind(registry_meta: Optional[dict]) -> Optional[str]:
+    """Return the Kind an Exchange record actually declares, or None.
+
+    "The record exists" and "the record declares a Kind" are different
+    questions. Mapping truthiness answers the first, and using it for the
+    second made an Exchange entry with ``kind: ""`` look like an explicit
+    declaration of nothing — which then masked a perfectly good source-format
+    declaration in the repository itself.
+
+    Returns the stripped Kind string when one is genuinely declared, and None
+    when the record is absent, has no ``kind`` key, or carries an empty or
+    whitespace-only value.
+    """
+    if not isinstance(registry_meta, dict):
+        return None
+    raw = registry_meta.get("kind")
+    if raw is None:
+        return None
+    cleaned = str(raw).strip()
+    return cleaned or None
+
+
 def _migrate_recognized_source_format(repo_dir: Path, origin: str):
     """Resolve a Kind from a recognized non-Capacium source format.
 
@@ -1353,25 +1375,42 @@ def _auto_generate_manifest(
         return
 
     migration = None
-    if registry_meta:
-        name = registry_meta.get("name", repo_dir.name)
-        owner = registry_meta.get("owner", "unknown")
-        kind, migration = _resolve_declared_kind(
-            registry_meta.get("kind"),
-            origin=f"Registry entry for {owner}/{name}",
-            source_format="registry-metadata-v1",
-        )
+    declared = _declared_exchange_kind(registry_meta)
+
+    if registry_meta is not None:
+        name = registry_meta.get("name") or repo_dir.name
+        owner = registry_meta.get("owner") or "unknown"
         version = resolved_version or registry_meta.get("version", "1.0.0")
-        description = registry_meta.get("description", f"Auto-detected capability {name}")
+        description = registry_meta.get("description") or (
+            f"Auto-detected capability {name}"
+        )
         if version in ("", "latest", "stable"):
             version = "1.0.0"
-        tags_list = registry_meta.get("tags", [])
+        tags_list = registry_meta.get("tags") or []
+
+        if declared is not None:
+            # Rule 2: an explicit Exchange Kind outranks structural evidence.
+            # Rule 4: if it is unknown or invalid this raises — no silent
+            # fallback to source-format recognition.
+            kind, migration = _resolve_declared_kind(
+                declared,
+                origin=f"Registry entry for {owner}/{name}",
+                source_format="registry-metadata-v1",
+            )
+        else:
+            # Rule 3: the record exists but declares no Kind. Empty metadata is
+            # not a declaration, so it must not mask a recognized source
+            # format. Exchange name, owner, description, version, tags, and
+            # repository are still authoritative — only the Kind comes from
+            # the source.
+            migration = _migrate_recognized_source_format(repo_dir, repo_url)
+            kind = migration.migrated_kind.value
     else:
-        # No Capacium manifest and no registry metadata. The only accepted
-        # path is a recognized non-Capacium source format, migrated explicitly
-        # with evidence. Resolved first, so an unrecognized source fails closed
-        # before any tag fetch, manifest write, storage, adapter, or registry
-        # side effect — and never by guessing from the repository name.
+        # No Capacium manifest and no registry metadata at all. The only
+        # accepted path is a recognized non-Capacium source format, migrated
+        # explicitly with evidence. Resolved first, so an unrecognized source
+        # fails closed before any tag fetch, manifest write, storage, adapter,
+        # or registry side effect — never by guessing from the repository name.
         migration = _migrate_recognized_source_format(repo_dir, repo_url)
         kind = migration.migrated_kind.value
 

@@ -247,9 +247,16 @@ def test_non_string_evidence_field_is_rejected():
 
 
 def test_validation_does_not_interpret_source_format():
-    """Core checks shape; what a format *means* is product policy."""
+    """Core checks shape; what a format *means* is product policy.
+
+    CAPR3-P01M-02: this previously filled every field with the same filler
+    string, so ``migrated_kind`` contradicted the manifest Kind and the test
+    asserted that contradiction was acceptable. The opaque value under test is
+    ``source_format``; the cross-field reference must still hold.
+    """
     payload = {f: "value" for f in _EVIDENCE_FIELDS}
     payload["source_format"] = "some-vendor-format-nobody-registered-v9"
+    payload["migrated_kind"] = "skill"
     manifest = Manifest.from_dict({
         "kind": "skill", "name": "c", "version": "1.0.0", "owner": "o",
         KIND_MIGRATION_KEY: payload,

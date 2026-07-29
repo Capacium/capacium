@@ -19,6 +19,49 @@ _KIND_MIGRATION_FIELDS = (
     "source_format", "original_kind", "migrated_kind", "migration_reason",
 )
 
+class ManifestExtensionError(ValueError):
+    """Raised when a manifest extension cannot be represented losslessly.
+
+    Typed so callers can distinguish a rejected document from an incidental
+    ``TypeError`` escaping a serializer.
+    """
+
+
+def _first_non_json_path(value: Any, path: str = "") -> Optional[str]:
+    """Return a description of the first non-JSON-compatible node, or None.
+
+    Extension *meaning* stays uninterpreted, but extension *structure* must be
+    JSON-compatible: both promised serialization formats have to be lossless,
+    and a value such as a ``set`` used to validate cleanly and then fail during
+    JSON save with a bare ``TypeError``.
+    """
+    import math
+
+    where = path or "<root>"
+    if value is None or isinstance(value, (str, bool, int)):
+        return None
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return f"{where} is a non-finite float ({value!r})"
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return (f"{where} has a non-string key "
+                        f"{key!r} ({type(key).__name__})")
+            found = _first_non_json_path(item, f"{where}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            found = _first_non_json_path(item, f"{where}[{index}]")
+            if found is not None:
+                return found
+        return None
+    return f"{where} is a {type(value).__name__}"
+
+
 _VALID_OPERATOR_TYPES = {"ai", "human", "hybrid"}
 _RESOURCE_DATA_ASSET_FIELDS = {"resource_type", "resource_format", "size_hint", "access", "compatibility"}
 
@@ -89,6 +132,13 @@ class Manifest:
                     f"extension key '{key}' must use the "
                     f"'{EXTENSION_PREFIX}' prefix"
                 )
+        for key, value in self.extensions.items():
+            bad = _first_non_json_path(value)
+            if bad is not None:
+                errors.append(
+                    f"extension '{key}' is not JSON-compatible: {bad}"
+                )
+
         raw = self.extensions.get(KIND_MIGRATION_KEY)
         if raw is not None:
             if not isinstance(raw, dict):
@@ -108,6 +158,15 @@ class Manifest:
                         errors.append(
                             f"{KIND_MIGRATION_KEY}.{f} must be a string"
                         )
+                # Internal document consistency, not vendor interpretation:
+                # provenance that claims a different Kind than the manifest
+                # carries makes the document self-contradictory.
+                migrated = raw.get("migrated_kind")
+                if isinstance(migrated, str) and migrated and migrated != self.kind:
+                    errors.append(
+                        f"{KIND_MIGRATION_KEY}.migrated_kind '{migrated}' "
+                        f"does not match manifest kind '{self.kind}'"
+                    )
         return errors
 
     def validate(self) -> List[str]:
@@ -227,15 +286,21 @@ class Manifest:
         # Filter out unknown keys to prevent TypeError
         from .interfaces import QualifiedInterface
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in data_copy.items() if k in known_fields}
-        # Capture the ``x_`` extension namespace before the filter discards it.
+        # Non-string keys used to reach ``k.startswith(...)`` and surface as a
+        # bare AttributeError. A document key that is not a string cannot name
+        # a field or an extension, so it is discarded like any unknown key.
+        string_keys = {k: v for k, v in data_copy.items() if isinstance(k, str)}
+        filtered = {k: v for k, v in string_keys.items() if k in known_fields}
+        # ``extensions`` is internal storage for flattened ``x_`` fields, not a
+        # second external container. An externally supplied value is discarded
+        # under the same unknown-field policy, whatever its type.
+        filtered.pop("extensions", None)
         carried = {
-            k: v for k, v in data_copy.items()
+            k: v for k, v in string_keys.items()
             if k.startswith(EXTENSION_PREFIX) and k not in known_fields
         }
         if carried:
-            declared = filtered.get("extensions") or {}
-            filtered["extensions"] = {**carried, **declared}
+            filtered["extensions"] = carried
         result = cls(**filtered)
         # Parse qualified interfaces into typed objects if present
         if "qualified_interfaces" in data_copy and isinstance(data_copy["qualified_interfaces"], list):
@@ -255,15 +320,25 @@ class Manifest:
         return data
 
     def save(self, path: Path) -> None:
+        # Fail before opening the file, so a rejected manifest never truncates
+        # an existing one, and report a typed error instead of letting a raw
+        # serialization TypeError surface from inside the dump.
+        for key, value in self.extensions.items():
+            bad = _first_non_json_path(value)
+            if bad is not None:
+                raise ManifestExtensionError(
+                    f"cannot serialize extension '{key}': {bad}"
+                )
+        payload = self.to_dict()
         with open(path, "w") as f:
             if path.suffix in (".yaml", ".yml"):
                 try:
                     import yaml
-                    yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+                    yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
                     return
                 except ImportError:
                     pass
-            json.dump(self.to_dict(), f, indent=2)
+            json.dump(payload, f, indent=2)
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":

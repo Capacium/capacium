@@ -260,23 +260,60 @@ def _is_kind_enum_attr(node: ast.AST) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _sink_call_name(node: ast.Call) -> Optional[str]:
-    """Return the sink name for a call, or None when it is not a sink.
+def _build_sink_imports(tree: ast.AST) -> Dict[str, str]:
+    """Map local names to canonical sink names, from ``from ... import ...``.
 
-    Recognises both call shapes:
+    Only imports from Capacium modules count, and the mapping is keyed by the
+    *local* name so an aliased import is still resolved:
 
-        adapter.dispatch(...)   qualified   -> "dispatch"
-        dispatch(...)           imported    -> "dispatch"
+        from ..adapters import remove_capability          -> {"remove_capability": "remove_capability"}
+        from ..adapters import remove_capability as rc    -> {"rc": "remove_capability"}
 
-    Only the qualified shape used to be scanned, so
-    ``from ..adapters import remove_capability`` followed by a direct call was
-    enough to hide a hardcoded Kind from every sink pattern.
+    Names bound by a local ``def`` or ``class`` are removed afterwards: a
+    module that defines its own ``dispatch`` is not calling ours, and a local
+    definition shadows an earlier import.
+    """
+    imported: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        # Relative imports (level > 0) are within the package being scanned;
+        # absolute ones must name the canonical package.
+        if node.level == 0 and not (
+            module == "capacium" or module.startswith("capacium.")
+        ):
+            continue
+        for alias in node.names:
+            if alias.name in _SINK_PATTERNS:
+                imported[alias.asname or alias.name] = alias.name
+
+    # A local definition wins over any import of the same name.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            imported.pop(node.name, None)
+    return imported
+
+
+def _sink_call_name(node: ast.Call,
+                    sink_imports: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """Return the canonical sink name for a call, or None.
+
+    Two shapes are recognised:
+
+        adapter.dispatch(...)   qualified — the attribute names the sink
+        dispatch(...)           direct    — resolved through import provenance
+
+    A direct call counts only when the name resolves to a canonical sink
+    imported from a Capacium module. Matching the spelling alone both invented
+    findings for unrelated local helpers named ``dispatch`` and missed genuine
+    sinks imported under an alias.
     """
     func = node.func
     if isinstance(func, ast.Attribute) and func.attr in _SINK_PATTERNS:
         return func.attr
-    if isinstance(func, ast.Name) and func.id in _SINK_PATTERNS:
-        return func.id
+    if isinstance(func, ast.Name) and sink_imports:
+        return sink_imports.get(func.id)
     return None
 
 
@@ -634,6 +671,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
         ``framework_detector.resolve_frameworks(..., kind=\"skill\")``
     """
     ret = []
+    sink_imports = _build_sink_imports(tree)
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
@@ -641,7 +679,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
         # imported form (``from ... import dispatch; dispatch(...)``). Only
         # the qualified form was recognised, so importing the sink was enough
         # to hide a hardcoded Kind from the scanner entirely.
-        sink_name = _sink_call_name(n)
+        sink_name = _sink_call_name(n, sink_imports)
         if sink_name is None:
             continue
         # Check positional args for or-expressions with Kind literal
@@ -766,6 +804,8 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     """
     ret = []
 
+    sink_imports = _build_sink_imports(tree)
+
     def _record(call: ast.Call, boolop: ast.BoolOp, via_kwarg: bool) -> None:
         for value in _noncanonical_string_fallbacks(boolop):
             empty = value.strip() == ""
@@ -784,7 +824,7 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
-        sink_name = _sink_call_name(n)
+        sink_name = _sink_call_name(n, sink_imports)
         if sink_name is None:
             continue
         for arg in n.args:
