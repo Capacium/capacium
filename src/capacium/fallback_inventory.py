@@ -53,6 +53,43 @@ _SINK_PATTERNS: frozenset[str] = frozenset({
     "update_capability", "set_kind",
 })
 
+# ── Direct-import sink owner contract ─────────────────────────────────────────
+#
+# Which modules may legitimately *provide* a sink to a direct import. Relative
+# import syntax is not provenance: `from .thirdparty import dispatch` is a
+# third-party call that happens to live nearby, not a Capacium sink.
+#
+# The eight entries with command/module owners are the sinks that exist as
+# module-level functions today. `capacium.adapters` is the declared surface for
+# adapter operations, which are normally reached by qualified call.
+#
+# Sinks absent from this table have no direct-import provenance at all: names
+# such as `save`, `write`, `put`, and `store` are far too generic for a bare
+# import to prove anything. They are still detected as qualified calls.
+
+_ADAPTER_SURFACE: FrozenSet[str] = frozenset({"capacium.adapters"})
+
+_SINK_OWNERS: Dict[str, FrozenSet[str]] = {
+    "init_capability": frozenset({"capacium.commands.init"}),
+    "install_capability": frozenset({
+        "capacium.commands.install", "capacium.commands.update",
+    }),
+    "package_capability": frozenset({"capacium.commands.package"}),
+    "remove_capability": frozenset({"capacium.commands.remove"}) | _ADAPTER_SURFACE,
+    "resolve_frameworks": frozenset({
+        "capacium.framework_detector", "capacium.commands.install",
+    }),
+    "sync_index": frozenset({"capacium.sync"}),
+    "update_capability": frozenset({"capacium.commands.update"}),
+    "validate_kind": frozenset({
+        "capacium.kinds", "capacium.commands.package",
+        "capacium.commands.remove", "capacium.index", "capacium.sync",
+    }),
+    "dispatch": _ADAPTER_SURFACE,
+    "adapt": _ADAPTER_SURFACE,
+    "add_capability": _ADAPTER_SURFACE,
+}
+
 # Marker name assembled at runtime so this module never matches its own
 # detector when the canonical package tree is scanned.
 _MIGRATION_MARKER: str = "VERSIONED_" + "MIGRATION"
@@ -260,61 +297,197 @@ def _is_kind_enum_attr(node: ast.AST) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _build_sink_imports(tree: ast.AST) -> Dict[str, str]:
-    """Map local names to canonical sink names, from ``from ... import ...``.
+def _resolve_import_module(rel_path: str, level: int,
+                          module: Optional[str]) -> str:
+    """Resolve an ``from ... import ...`` statement to an absolute module name.
 
-    Only imports from Capacium modules count, and the mapping is keyed by the
-    *local* name so an aliased import is still resolved:
+    Relative imports are resolved against the scanned file's own position in
+    the package, so ``from ..adapters import x`` in ``commands/install.py``
+    resolves to ``capacium.adapters``. Relative *syntax* alone proves nothing —
+    only the resolved identity does.
 
-        from ..adapters import remove_capability          -> {"remove_capability": "remove_capability"}
-        from ..adapters import remove_capability as rc    -> {"rc": "remove_capability"}
-
-    Names bound by a local ``def`` or ``class`` are removed afterwards: a
-    module that defines its own ``dispatch`` is not calling ours, and a local
-    definition shadows an earlier import.
+    Returns "" when the import cannot be resolved (for example a relative
+    import that climbs above the package root).
     """
-    imported: Dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        module = node.module or ""
-        # Relative imports (level > 0) are within the package being scanned;
-        # absolute ones must name the canonical package.
-        if node.level == 0 and not (
-            module == "capacium" or module.startswith("capacium.")
-        ):
-            continue
-        for alias in node.names:
-            if alias.name in _SINK_PATTERNS:
-                imported[alias.asname or alias.name] = alias.name
+    if level == 0:
+        return module or ""
 
-    # A local definition wins over any import of the same name.
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            imported.pop(node.name, None)
-    return imported
+    parts = list(Path(rel_path).with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        # An __init__ module *is* its package, so nothing is dropped: a
+        # level-1 import from capacium/commands/__init__.py resolves inside
+        # capacium.commands, not inside capacium.
+        parts.pop()
+        package = ["capacium"] + parts
+    else:
+        # Package containing the scanned module, as an absolute dotted path.
+        package = ["capacium"] + parts[:-1]
+
+    climb = level - 1
+    if climb > len(package) - 1:
+        return ""
+    if climb:
+        package = package[:len(package) - climb]
+    if module:
+        package.append(module)
+    return ".".join(package)
 
 
-def _sink_call_name(node: ast.Call,
-                    sink_imports: Optional[Dict[str, str]] = None) -> Optional[str]:
-    """Return the canonical sink name for a call, or None.
+def _binding_targets(node: ast.AST) -> list:
+    """Return the plain names bound by an assignment target."""
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names = []
+        for element in node.elts:
+            names.extend(_binding_targets(element))
+        return names
+    if isinstance(node, ast.Starred):
+        return _binding_targets(node.value)
+    return []
 
-    Two shapes are recognised:
 
-        adapter.dispatch(...)   qualified — the attribute names the sink
-        dispatch(...)           direct    — resolved through import provenance
+def _argument_names(args: ast.arguments) -> list:
+    collected = list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
+    if args.vararg:
+        collected.append(args.vararg)
+    if args.kwarg:
+        collected.append(args.kwarg)
+    return [a.arg for a in collected]
 
-    A direct call counts only when the name resolves to a canonical sink
-    imported from a Capacium module. Matching the spelling alone both invented
-    findings for unrelated local helpers named ``dispatch`` and missed genuine
-    sinks imported under an alias.
+
+_SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+class _SinkResolver:
+    """Resolve the binding visible at each direct call, per Python scope rules.
+
+    A module-wide table keyed by spelling cannot answer "is this call our
+    sink?". It loses three things that decide the answer:
+
+    * **lexical scope** — a nested ``def`` in one function cannot shadow a
+      module-level import used by a sibling function;
+    * **source position** — a module-level ``def`` placed *after* a
+      module-level call does not retroactively rebind that earlier call;
+    * **binding kind** — assignments and lambdas rebind a name just as
+      thoroughly as ``def`` does.
+
+    This walks the tree once, records the names bound in each scope with the
+    line that bound them, and resolves each call against the innermost scope
+    that binds its name.
     """
-    func = node.func
-    if isinstance(func, ast.Attribute) and func.attr in _SINK_PATTERNS:
-        return func.attr
-    if isinstance(func, ast.Name) and sink_imports:
-        return sink_imports.get(func.id)
-    return None
+
+    def __init__(self, tree: ast.AST, rel_path: str) -> None:
+        self._module = tree
+        self._rel_path = rel_path
+        self._scope_of: Dict[int, ast.AST] = {}
+        self._parent: Dict[int, Optional[ast.AST]] = {id(tree): None}
+        self._bindings: Dict[int, Dict[str, list]] = {id(tree): {}}
+        self._scopes: Dict[int, ast.AST] = {id(tree): tree}
+        for child in ast.iter_child_nodes(tree):
+            self._visit(child, tree)
+
+    # ── construction ────────────────────────────────────────────────
+
+    def _bind(self, scope: ast.AST, name: str, lineno: int,
+              sink: Optional[str]) -> None:
+        table = self._bindings.setdefault(id(scope), {})
+        table.setdefault(name, []).append((lineno, sink))
+
+    def _open_scope(self, node: ast.AST, parent: ast.AST) -> None:
+        self._parent[id(node)] = parent
+        self._scopes[id(node)] = node
+        self._bindings.setdefault(id(node), {})
+
+    def _visit(self, node: ast.AST, scope: ast.AST) -> None:
+        self._scope_of[id(node)] = scope
+        inner = scope
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self._bind(scope, node.name, node.lineno, None)
+            self._open_scope(node, scope)
+            for name in _argument_names(node.args):
+                self._bind(node, name, node.lineno, None)
+            inner = node
+        elif isinstance(node, ast.Lambda):
+            self._open_scope(node, scope)
+            for name in _argument_names(node.args):
+                self._bind(node, name, node.lineno, None)
+            inner = node
+        elif isinstance(node, ast.ClassDef):
+            self._bind(scope, node.name, node.lineno, None)
+            self._open_scope(node, scope)
+            inner = node
+        elif isinstance(node, ast.ImportFrom):
+            resolved = _resolve_import_module(self._rel_path, node.level,
+                                              node.module)
+            for alias in node.names:
+                owners = _SINK_OWNERS.get(alias.name)
+                sink = (alias.name
+                        if owners and resolved in owners
+                        else None)
+                self._bind(scope, alias.asname or alias.name, node.lineno, sink)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".")[0]
+                self._bind(scope, local, node.lineno, None)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in _binding_targets(target):
+                    self._bind(scope, name, node.lineno, None)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            for name in _binding_targets(node.target):
+                self._bind(scope, name, node.lineno, None)
+        elif isinstance(node, ast.NamedExpr):
+            for name in _binding_targets(node.target):
+                self._bind(scope, name, node.lineno, None)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            for name in _binding_targets(node.target):
+                self._bind(scope, name, node.lineno, None)
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                line = getattr(node.context_expr, "lineno", 0)
+                for name in _binding_targets(node.optional_vars):
+                    self._bind(scope, name, line, None)
+        elif isinstance(node, (ast.ExceptHandler,)):
+            if node.name:
+                self._bind(scope, node.name, node.lineno, None)
+
+        for child in ast.iter_child_nodes(node):
+            self._visit(child, inner)
+
+    # ── resolution ──────────────────────────────────────────────────
+
+    def _visible_sink(self, name: str, call: ast.Call) -> Optional[str]:
+        scope = self._scope_of.get(id(call), self._module)
+        while scope is not None:
+            entries = self._bindings.get(id(scope), {}).get(name)
+            if entries:
+                if scope is self._module and (
+                    self._scope_of.get(id(call)) is self._module
+                ):
+                    # A module-level call sees only what was bound above it.
+                    earlier = [e for e in entries if e[0] <= call.lineno]
+                    return earlier[-1][1] if earlier else None
+                # Inside a function the whole module body has already run, and
+                # a name bound anywhere in a function is local throughout it.
+                return entries[-1][1]
+            scope = self._parent.get(id(scope))
+        return None
+
+    def sink_for(self, call: ast.Call) -> Optional[str]:
+        """Return the canonical sink name this call reaches, or None.
+
+        Qualified attribute calls are named by their attribute, unchanged.
+        Direct calls must resolve to a canonical sink imported from a module
+        the owner contract recognises for that sink.
+        """
+        func = call.func
+        if isinstance(func, ast.Attribute) and func.attr in _SINK_PATTERNS:
+            return func.attr
+        if isinstance(func, ast.Name):
+            return self._visible_sink(func.id, call)
+        return None
 
 
 def _enum_member_to_kind(member: str) -> str:
@@ -671,7 +844,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
         ``framework_detector.resolve_frameworks(..., kind=\"skill\")``
     """
     ret = []
-    sink_imports = _build_sink_imports(tree)
+    resolver = _SinkResolver(tree, rel_path)
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
@@ -679,7 +852,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
         # imported form (``from ... import dispatch; dispatch(...)``). Only
         # the qualified form was recognised, so importing the sink was enough
         # to hide a hardcoded Kind from the scanner entirely.
-        sink_name = _sink_call_name(n, sink_imports)
+        sink_name = resolver.sink_for(n)
         if sink_name is None:
             continue
         # Check positional args for or-expressions with Kind literal
@@ -804,7 +977,7 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     """
     ret = []
 
-    sink_imports = _build_sink_imports(tree)
+    resolver = _SinkResolver(tree, rel_path)
 
     def _record(call: ast.Call, boolop: ast.BoolOp, via_kwarg: bool) -> None:
         for value in _noncanonical_string_fallbacks(boolop):
@@ -824,7 +997,7 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
-        sink_name = _sink_call_name(n, sink_imports)
+        sink_name = resolver.sink_for(n)
         if sink_name is None:
             continue
         for arg in n.args:
