@@ -12,7 +12,7 @@ from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
-from ..manifest import Manifest
+from ..manifest import Manifest, ManifestDeclarationError
 from ..models import Capability, ConflictResult, ConflictState, Kind
 from ..kinds import KIND_EXAMPLES, CapaciumKind
 from ..runtimes import (
@@ -92,6 +92,23 @@ def install_capability(
     project: Optional[str] = None,
     prune: bool = False,
 ) -> bool:
+    local_source_manifest = None
+    if source_dir is not None:
+        source_raw = str(source_dir)
+        source_path = Path(source_raw)
+        is_remote_reference = (
+            not source_path.exists()
+            and (
+                _is_git_remote_url(source_raw)
+                or _GITHUB_SHORT_RE.match(source_raw)
+            )
+        )
+        if not is_remote_reference:
+            # Validate a caller-supplied local source before StorageManager or
+            # Registry can create operator-home state. Remote sources retain
+            # their Exchange declaration precedence and clone-time migration.
+            local_source_manifest = Manifest.detect_from_directory(source_path)
+
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
         # (cursor). Without it, those adapters never write into cwd.
@@ -113,16 +130,15 @@ def install_capability(
             return False
         cap_spec = autodetected_name
 
-    if source_dir is not None and (not cap_spec or cap_spec.strip() == ""):
-        source_raw = str(source_dir)
-        if not (_is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw)):
-            source_manifest = Manifest.detect_from_directory(source_dir)
-            if source_manifest.name:
-                cap_spec = (
-                    f"{source_manifest.owner}/{source_manifest.name}"
-                    if source_manifest.owner
-                    else source_manifest.name
-                )
+    if local_source_manifest is not None and (
+        not cap_spec or cap_spec.strip() == ""
+    ):
+        if local_source_manifest.name:
+            cap_spec = (
+                f"{local_source_manifest.owner}/{local_source_manifest.name}"
+                if local_source_manifest.owner
+                else local_source_manifest.name
+            )
 
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
@@ -275,7 +291,13 @@ def install_capability(
         source_dir, source_url = resolved
     elif source_dir is not None:
         source_raw = str(source_dir)
-        if _is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw):
+        if (
+            not Path(source_raw).exists()
+            and (
+                _is_git_remote_url(source_raw)
+                or _GITHUB_SHORT_RE.match(source_raw)
+            )
+        ):
             resolved = _resolve_source(source_raw, version_spec=version_spec, github_token=github_token)
             if resolved is None:
                 return False
@@ -309,8 +331,15 @@ def install_capability(
         if source_dir is None:
             # Fallback to current directory
             cwd = Path.cwd()
-            manifest = Manifest.detect_from_directory(cwd)
-            if (cwd / "capability.yaml").exists() and manifest.name == cap_name:
+            try:
+                manifest = Manifest.detect_from_directory(cwd)
+            except ManifestDeclarationError:
+                manifest = None
+            if (
+                manifest is not None
+                and (cwd / "capability.yaml").exists()
+                and manifest.name == cap_name
+            ):
                 source_dir = cwd
             else:
                 print(f"  Capability '{cap_id}' not found.")

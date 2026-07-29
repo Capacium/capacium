@@ -27,6 +27,10 @@ class ManifestExtensionError(ValueError):
     """
 
 
+class ManifestDeclarationError(ValueError):
+    """Raised when a local source has no valid artifact declaration."""
+
+
 def _first_non_json_path(value: Any, path: str = "") -> Optional[str]:
     """Return a description of the first non-JSON-compatible node, or None.
 
@@ -374,6 +378,7 @@ class Manifest:
 
     @classmethod
     def detect_from_directory(cls, directory: Path) -> "Manifest":
+        directory = Path(directory)
         candidates = [
             directory / "capability.yaml",
             directory / "capability.yml",
@@ -382,34 +387,51 @@ class Manifest:
         ]
         for path in candidates:
             if path.exists():
-                try:
-                    return cls.load(path)
-                except Exception:
-                    continue
+                manifest = cls.load(path)
+                if not manifest.kind or not manifest.kind.strip():
+                    raise ManifestDeclarationError(
+                        f"Invalid capability manifest '{path}': missing "
+                        "required 'kind' declaration"
+                    )
+                return manifest
 
         from .versioning import VersionManager
+        from .kinds import migrate_source_format_kind
+
         version = VersionManager.detect_version(directory)
 
-        # V13/STAB-001: multi-skill repositories (skills/*/SKILL.md, plugin
-        # layouts) are bundles with member skills — modeling them as a single
-        # root skill produced undiscoverable SKILL.md-less root links.
-        members = infer_multi_skill_members(directory)
-        if members:
-            return cls(
-                kind="bundle",
-                owner="unknown",
-                name=directory.name,
-                version=version,
-                description=f"Multi-skill bundle {directory.name}",
-                capabilities=members,
+        members: List[Dict[str, str]] = []
+        if (directory / "SKILL.md").is_file():
+            migration = migrate_source_format_kind("agent-skill-md-v1")
+            description = f"Agent Skill {directory.name}"
+        else:
+            members = infer_multi_skill_members(directory)
+            if not members:
+                raise ManifestDeclarationError(
+                    f"Source '{directory}' has no capability manifest and "
+                    "matches no recognized source format. Add a "
+                    "capability.yaml with an explicit 'kind:' field."
+                )
+            migration = migrate_source_format_kind(
+                "agent-skills-bundle-v1"
             )
+            description = f"Multi-skill bundle {directory.name}"
 
         return cls(
-            kind="skill",
+            kind=migration.migrated_kind.value,
             owner="unknown",
             name=directory.name,
             version=version,
-            description=f"Capability {directory.name}"
+            description=description,
+            capabilities=members,
+            extensions={
+                KIND_MIGRATION_KEY: {
+                    "source_format": migration.source_format,
+                    "original_kind": migration.original_kind,
+                    "migrated_kind": migration.migrated_kind.value,
+                    "migration_reason": migration.migration_reason,
+                }
+            },
         )
 
 

@@ -1,4 +1,11 @@
-from capacium.manifest import Manifest, parse_cap_id, format_cap_id
+import pytest
+
+from capacium.manifest import (
+    Manifest,
+    ManifestDeclarationError,
+    parse_cap_id,
+    format_cap_id,
+)
 
 
 class TestManifest:
@@ -30,16 +37,14 @@ class TestManifest:
         cap_dir = tmp_path / "legacy-cap"
         cap_dir.mkdir()
         (cap_dir / ".skillpkg.json").write_text('{"name": "legacy-cap", "version": "0.5.0"}')
-        manifest = Manifest.detect_from_directory(cap_dir)
-        assert manifest.name == "legacy-cap"
-        assert manifest.version == "0.5.0"
+        with pytest.raises(ManifestDeclarationError, match="kind"):
+            Manifest.detect_from_directory(cap_dir)
 
     def test_detect_from_directory_fallback(self, tmp_path):
         cap_dir = tmp_path / "fallback-cap"
         cap_dir.mkdir()
-        manifest = Manifest.detect_from_directory(cap_dir)
-        assert manifest.name == "fallback-cap"
-        assert manifest.owner == "unknown"
+        with pytest.raises(ManifestDeclarationError, match="no capability manifest"):
+            Manifest.detect_from_directory(cap_dir)
 
     def test_id_property(self):
         m = Manifest(kind="skill", owner="alice", name="my-cap", version="1.0.0")
