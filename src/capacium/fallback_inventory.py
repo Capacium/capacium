@@ -856,6 +856,9 @@ def _check_misclassified_entry(exc: ExceptionEntry,
     return False
 
 
+_TEST_SYMBOL_CACHE: Dict[str, FrozenSet[str]] = {}
+
+
 def _resolve_project_root(src_dir: Path) -> Optional[Path]:
     """Resolve the project root that owns *src_dir*, independent of CWD.
 
@@ -898,7 +901,15 @@ def _collect_test_symbols(tests_dir: Path) -> FrozenSet[str]:
     Membership is exact-match only.  A ``test_ref`` is never satisfied by a
     substring appearing anywhere in a file's text, which previously let an
     arbitrary mention inside a comment or unrelated identifier count as proof.
+
+    The index is cached per directory: building it walks and AST-parses the
+    whole tests tree, and integrity is checked many times per process.  Call
+    :func:`clear_test_symbol_cache` if the tests tree changes in-process.
     """
+    key = str(tests_dir.resolve())
+    cached = _TEST_SYMBOL_CACHE.get(key)
+    if cached is not None:
+        return cached
     symbols: set = set()
     for pyfile in sorted(tests_dir.rglob("*.py")):
         if any(_is_excluded(part) for part in pyfile.parts):
@@ -917,7 +928,14 @@ def _collect_test_symbols(tests_dir: Path) -> FrozenSet[str]:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                  ast.ClassDef)):
                 symbols.add(node.name)
-    return frozenset(symbols)
+    index = frozenset(symbols)
+    _TEST_SYMBOL_CACHE[key] = index
+    return index
+
+
+def clear_test_symbol_cache() -> None:
+    """Drop the cached test-symbol index (for tests that mutate the tree)."""
+    _TEST_SYMBOL_CACHE.clear()
 
 
 def _check_test_ref_integrity(src_dir: Path) -> list:

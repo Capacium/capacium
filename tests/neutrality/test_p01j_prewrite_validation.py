@@ -29,8 +29,17 @@ def _valid_manifest(kind="skill", **overrides):
 
 def _make_patched_call(kind=None, name="test-sub", version="1.0.0",
                        owner="test-owner", source_path="/fake/src/test-sub",
-                       manifest_errors=None):
-    """Patch _install_single_sub_cap dependencies and test invocation."""
+                       manifest_errors=None, package_dir=None):
+    """Patch _install_single_sub_cap dependencies and test invocation.
+
+    Every effectful surface is patched: manifest detection, framework
+    resolution, adapter resolution, storage, registry, and the filesystem copy.
+
+    CAPR3-P01K-D — `get_adapter` in particular must be patched. Without it the
+    real OpenCode adapter runs and resolves the operator's actual
+    ``~/.capacium/packages`` tree, which is how the P01J success-path test
+    created and rewrote ``test-owner/test-sub/1.0.0`` on the operator's machine.
+    """
     from capacium.commands.install import _install_single_sub_cap
 
     manifest = _valid_manifest(kind=kind) if kind is not None else Manifest(kind="", name=name)
@@ -38,13 +47,24 @@ def _make_patched_call(kind=None, name="test-sub", version="1.0.0",
         manifest.validate = Mock(return_value=manifest_errors)
 
     mock_storage = MagicMock()
+    if package_dir is not None:
+        # Materialise the isolated package directory so any real metadata
+        # write lands under tmp_path instead of a mocked-away path.
+        package_dir.mkdir(parents=True, exist_ok=True)
+        mock_storage.get_package_path.return_value = package_dir
+        mock_storage.create_package_reference.return_value = package_dir
     mock_registry = MagicMock()
+    mock_adapter = MagicMock()
 
     with (
         patch("capacium.commands.install.Manifest.detect_from_directory",
               return_value=manifest),
         patch("capacium.commands.install.resolve_frameworks",
               return_value=["opencode"]),
+        patch("capacium.adapters.get_adapter", return_value=mock_adapter),
+        patch("capacium.commands.install.compute_fingerprint",
+              return_value="deadbeef"),
+        patch("capacium.commands.install._detect_git_remote", return_value=""),
         patch("capacium.commands.install.shutil.copytree") as mock_copytree,
     ):
         try:
@@ -145,15 +165,29 @@ def test_malformed_manifest_empty_kind_caught_before_write():
     registry.update_capability.assert_not_called()
 
 
-def test_valid_manifest_proceeds_to_storage_and_registry_write():
+def test_valid_manifest_proceeds_to_storage_and_registry_write(tmp_path):
     """A valid manifest passes all pre-write checks and proceeds to storage +
-    registry writes."""
-    exc, storage, registry, copytree = _make_patched_call(kind="skill")
+    registry writes.
+
+    Runs fully isolated: the package directory is under ``tmp_path`` and every
+    write surface — including adapter resolution — is mocked, so the success
+    path can be proven without touching the operator's real package home.
+    """
+    package_dir = tmp_path / "packages" / "test-owner" / "test-sub" / "1.0.0"
+    exc, storage, registry, copytree = _make_patched_call(
+        kind="skill",
+        source_path=str(tmp_path / "src" / "test-sub"),
+        package_dir=package_dir,
+    )
 
     assert exc is None, f"Unexpected exception: {exc}"
 
     copytree.assert_called()
     registry.add_capability.assert_called()
+
+    # The success path must stay inside the isolated root.
+    copied_to = Path(copytree.call_args.args[1])
+    assert tmp_path in copied_to.parents or copied_to == package_dir
 
 
 # ── Pre-write validation: remove path ──────────────────────────────────────

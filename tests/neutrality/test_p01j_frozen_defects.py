@@ -1,12 +1,12 @@
-"""CAPR3-P01J-A: Frozen defect tests — current known failures.
+"""CAPR3-P01J-A: Frozen defect tests — now all executable.
 
-These tests encode the current (pre-P01J) broken behavior uncovered by the
-P01I independent review. After P01J-A, every XFAIL marker and `pytest.skip`
-here must be REMOVED and the test must PASS against the rewritten scanner.
+These tests encode behavior that was broken before P01J and is asserted green
+from P01J/P01K onward. Every XFAIL marker and `pytest.skip` that once lived
+here has been removed: the two P01J-C/D placeholders were replaced with real
+probes in P01K-D, and `test_no_p01j_or_p01k_skip_or_xfail_remains` keeps them
+from coming back.
 
-Tests marked as `@pytest.mark.xfail` encode scanner defects confirmed by
-the independent review and the P01H probe. Tests with `pytest.skip` encode
-probe failures that require multi-module changes (P01J-C/D).
+No test in this module may be skipped or xfailed.
 """
 
 import sys
@@ -176,24 +176,98 @@ def test_p01j_inventory_intact_against_canonical_source():
 
 
 # ──────────────────────────────────────────────────────────────
-# P01J-C/D: multi-module probe failures (marked skip for now)
+# P01J-C/D probes — now executable (CAPR3-P01K-D)
+#
+# These were two `pytest.mark.skip` placeholders with `pass` bodies. A skipped
+# placeholder proves nothing, so both are replaced with real probes that
+# exercise the behavior they claimed to track.
 # ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.skip(reason="P01J-C: full manifest validation not yet implemented")
-def test_probe_full_manifest_validation_before_write():
-    """P01H probe: manifest.validate() must be called before any storage write.
-    Currently: manifest_validate_calls=0, storage_write_called=True."""
-    # This is a placeholder until P01J-C implements the fix.
-    # The probe at /private/tmp/capr3_p01h_probe.py confirms the failure.
-    pass
+def test_probe_full_manifest_validation_before_write(tmp_path):
+    """manifest.validate() must run, and block, before any storage write.
+
+    Replaces the P01J-C placeholder. Every write surface is a mock, and the
+    source path is an isolated tmp_path, so nothing touches real state.
+    """
+    from unittest.mock import MagicMock, Mock, patch
+
+    from capacium.commands.install import _install_single_sub_cap
+
+    source = tmp_path / "bundle" / "member"
+    source.mkdir(parents=True)
+
+    manifest = Mock()
+    manifest.kind = "skill"
+    manifest.validate.return_value = ["invalid manifest"]
+    manifest.get_target_frameworks.side_effect = RuntimeError(
+        "framework resolution must never be reached"
+    )
+
+    storage = MagicMock()
+    storage.get_package_path.return_value = tmp_path / "packages" / "member"
+    registry = MagicMock()
+
+    with (
+        patch("capacium.commands.install.Manifest.detect_from_directory",
+              return_value=manifest),
+        patch("capacium.commands.install.shutil.copytree") as copytree,
+    ):
+        with pytest.raises(ValueError, match="validation failed before write"):
+            _install_single_sub_cap(
+                sub_name="member", version="1.0.0", source_path=source,
+                owner="owner", registry=registry, storage=storage,
+                no_lock=True, bundle_dir=tmp_path / "bundle",
+            )
+
+    assert manifest.validate.call_count == 1, "validate() must be called once"
+    storage.create_package_reference.assert_not_called()
+    storage.get_package_path.assert_not_called()
+    copytree.assert_not_called()
+    registry.add_capability.assert_not_called()
 
 
-@pytest.mark.skip(reason="P01J-D: CapabilityIR.kind not enforced at dispatch")
 def test_probe_empty_capability_ir_rejected():
-    """P01H probe: OpenCodeAdapter().adapt(CapabilityIR(name='missing-kind'))
-    must raise before returning a descriptor.
-    Currently: adapted=True, kind=''."""
-    # This is a placeholder until P01J-D implements the fix.
-    # The probe at /private/tmp/capr3_p01h_probe.py confirms the failure.
-    pass
+    """Adapting an IR with no Kind must raise before a descriptor exists.
+
+    Replaces the P01J-D placeholder.
+    """
+    from capacium.adapters.capability_adapter import (
+        CapabilityIR, OpenCodeAdapter,
+    )
+
+    with pytest.raises(ValueError, match=r"CapabilityIR\.kind is required"):
+        OpenCodeAdapter().adapt(CapabilityIR(name="missing-kind"))
+
+
+def test_probe_unknown_and_legacy_capability_ir_rejected():
+    """Unknown and legacy Kinds must also fail before output generation."""
+    from capacium.adapters.capability_adapter import (
+        CapabilityIR, OpenCodeAdapter,
+    )
+
+    for bad in ("nonsense", "operator"):
+        with pytest.raises(ValueError):
+            OpenCodeAdapter().adapt(
+                CapabilityIR(name="bad-kind", owner="o", kind=bad)
+            )
+
+
+def test_no_p01j_or_p01k_skip_or_xfail_remains():
+    """No P01J/P01K neutrality test may be skipped or xfailed.
+
+    Guards the requirement directly: a future edit that re-introduces a
+    placeholder marker in these modules fails here.
+    """
+    import re
+
+    neutrality = Path(__file__).resolve().parent
+    offenders = []
+    for path in sorted(neutrality.glob("test_p01[jk]*.py")):
+        text = path.read_text()
+        for match in re.finditer(r"@pytest\.mark\.(skip|xfail)\b", text):
+            line = text[:match.start()].count("\n") + 1
+            offenders.append(f"{path.name}:{line}: {match.group(0)}")
+    assert not offenders, (
+        "P01J/P01K tests must not be skipped or xfailed: " + "; ".join(offenders)
+    )
