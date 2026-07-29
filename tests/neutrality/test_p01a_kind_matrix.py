@@ -76,6 +76,10 @@ def test_round_trip_kind(kind_value):
 
 @pytest.mark.parametrize("legacy", LEGACY_KINDS)
 def test_migrate_legacy_kind(legacy):
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            migrate_legacy_kind(legacy)
+        return
     result = migrate_legacy_kind(legacy)
     assert result.original_kind == legacy
     assert result.migrated_kind == CapaciumKind.WORKFLOW

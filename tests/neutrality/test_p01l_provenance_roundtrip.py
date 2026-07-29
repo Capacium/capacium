@@ -130,6 +130,12 @@ def test_manifest_without_evidence_has_no_migration_block(tmp_path):
 
 @pytest.mark.parametrize("legacy", ["operator", "checkpoint", "policy"])
 def test_legacy_registry_path_evidence_round_trips(tmp_path, legacy):
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            _registry_manifest(tmp_path, legacy, name=f"legacy-{legacy}")
+        assert not any(tmp_path.rglob("capability.yaml"))
+        return
+
     path = _registry_manifest(tmp_path, legacy, name=f"legacy-{legacy}")
     manifest = Manifest.load(path)
 

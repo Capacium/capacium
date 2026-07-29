@@ -424,6 +424,11 @@ def test_round_trip_identity(kind):
 def test_migrate_payload_preserves_owner(legacy):
     payload = {"kind": legacy, "name": "test", "owner": "alice", "version": "1.0.0", "extension_key": "value"}
     original = dict(payload)
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            migrate_legacy_payload(payload)
+        assert payload == original
+        return
     result = migrate_legacy_payload(payload)
     assert result.original_kind == legacy
     assert result.migrated_kind == CapaciumKind.WORKFLOW

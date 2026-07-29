@@ -133,8 +133,9 @@ def _semantic_checks(data: Dict[str, Any], strict: bool) -> Tuple[List[str], Lis
             )
         elif kind == "policy":
             errors.append(
-                "  kind 'policy' is legacy spec-only — must migrate to kind: workflow\n"
-                "    See: MANIFESTO §5.3 — no policy Kind in active Capacium registry"
+                "  kind 'policy' is an external install-policy document, not a "
+                "Capacium capability Kind\n"
+                "    Use the optional cap-policy companion instead"
             )
 
     # Description

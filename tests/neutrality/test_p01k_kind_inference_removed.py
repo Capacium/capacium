@@ -395,6 +395,19 @@ def test_registry_entry_without_kind_fails_closed(tmp_path, empty):
 def test_legacy_kind_goes_through_versioned_migration(tmp_path, legacy):
     repo = tmp_path / "legacy"
     repo.mkdir()
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            _auto_generate_manifest(
+                repo, "https://github.com/acme/legacy",
+                registry_meta={
+                    "name": "legacy",
+                    "owner": "acme",
+                    "kind": legacy,
+                    "version": "1.0.0",
+                },
+            )
+        assert not (repo / "capability.yaml").exists()
+        return
     _auto_generate_manifest(
         repo, "https://github.com/acme/legacy",
         registry_meta={"name": "legacy", "owner": "acme", "kind": legacy,
@@ -412,6 +425,19 @@ def test_legacy_migration_records_source_format_evidence(tmp_path, legacy):
 
     repo = tmp_path / "legacy-ev"
     repo.mkdir()
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            _auto_generate_manifest(
+                repo, "https://github.com/acme/legacy-ev",
+                registry_meta={
+                    "name": "legacy-ev",
+                    "owner": "acme",
+                    "kind": legacy,
+                    "version": "1.0.0",
+                },
+            )
+        assert not (repo / "capability.yaml").exists()
+        return
     _auto_generate_manifest(
         repo, "https://github.com/acme/legacy-ev",
         registry_meta={"name": "legacy-ev", "owner": "acme", "kind": legacy,

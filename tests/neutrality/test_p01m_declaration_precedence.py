@@ -220,6 +220,12 @@ def test_explicit_legacy_kind_outranks_recognized_source(tmp_path,
     url = _make_remote(tmp_path / "remotes", "legacy-source", ROOT_SKILL)
     storage = StorageManager(base_dir=tmp_path / "store" / "packages")
 
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            _fetch(url, storage, kind=legacy, name="legacy-source")
+        assert not any((tmp_path / "store" / "packages").rglob("capability.yaml"))
+        return
+
     cache_dir, _ = _fetch(url, storage, kind=legacy, name="legacy-source")
 
     manifest = _cached(cache_dir)

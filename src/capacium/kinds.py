@@ -44,7 +44,10 @@ class LegacySpecKind:
 LEGACY_SPEC_KINDS: FrozenSet[LegacySpecKind] = frozenset({
     LegacySpecKind("operator", "migrate to CapaciumKind.WORKFLOW with operator_meta"),
     LegacySpecKind("checkpoint", "migrate to CapaciumKind.WORKFLOW with checkpoint_meta"),
-    LegacySpecKind("policy", "migrate to CapaciumKind.WORKFLOW with policy_meta"),
+    LegacySpecKind(
+        "policy",
+        "external install-policy document; not a Capacium capability Kind",
+    ),
 })
 
 _LEGACY_SPEC_KIND_VALUES: FrozenSet[str] = frozenset(
@@ -286,6 +289,11 @@ def migrate_legacy_kind(
             f"'{kind_value}' is not a recognized legacy kind. "
             f"Legacy kinds: {examples}"
         )
+    if cleaned == "policy":
+        raise ValueError(
+            "Legacy kind 'policy' represents an external install-policy "
+            "document and cannot be migrated by Capacium Core; use cap-policy"
+        )
     note = legacy_migration_note(cleaned)
     warnings = (
         f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "
@@ -393,6 +401,11 @@ def migrate_legacy_payload(
         raise ValueError(
             f"'{cleaned}' is not a recognized legacy kind."
         )
+    if cleaned == "policy":
+        raise ValueError(
+            "Legacy kind 'policy' represents an external install-policy "
+            "document and cannot be migrated by Capacium Core; use cap-policy"
+        )
     note = legacy_migration_note(cleaned)
     transformed = copy.deepcopy(payload)
     transformed["kind"] = CapaciumKind.WORKFLOW.value
@@ -408,4 +421,3 @@ def migrate_legacy_payload(
         migration_reason=note,
         warnings=warnings,
     )
-

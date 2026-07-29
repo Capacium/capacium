@@ -160,6 +160,12 @@ def test_exchange_legacy_kind_migrates_with_evidence(tmp_path, isolated_temp,
                        files={"README.md": "# plain\n"})
     storage = StorageManager(base_dir=tmp_path / "store" / "packages")
 
+    if legacy == "policy":
+        with pytest.raises(ValueError, match="external install-policy"):
+            _fetch(url, storage, kind=legacy, name="legacy-cap")
+        assert not any((tmp_path / "store" / "packages").rglob("capability.yaml"))
+        return
+
     cache_dir, _ = _fetch(url, storage, kind=legacy, name="legacy-cap")
 
     assert cache_dir is not None

@@ -62,7 +62,11 @@ def test_legacy_spec_kind_rejected_with_migration_note(kind):
     msg = str(exc.value)
     assert "legacy spec-only" in msg
     assert kind in msg
-    assert "workflow" in msg.lower()
+    if kind == "policy":
+        assert "external install-policy" in msg
+        assert "workflow" not in msg.lower()
+    else:
+        assert "workflow" in msg.lower()
 
 
 def test_legacy_spec_kinds_not_in_active_set():
