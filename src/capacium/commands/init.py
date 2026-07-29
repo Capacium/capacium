@@ -59,7 +59,13 @@ def init_capability(
         if err:
             print(f"Error: {err}")
             return False
-        kind = kind or CapaciumKind.SKILL.value
+        if not (kind or "").strip():
+            # CAPR3-P01L-B: a scaffold used to default to 'skill' when --kind
+            # was omitted, so `cap init --name x` silently declared a Kind the
+            # author never chose and persisted it into the manifest.
+            print("Error: --kind is required. Capacium does not assume a Kind.")
+            print(f"  Valid kinds: {', '.join(sorted(_VALID_KINDS))}")
+            return False
         err = _validate_kind(kind)
         if err:
             print(f"Error: {err}")

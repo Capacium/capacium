@@ -1095,7 +1095,19 @@ def _clone_remote_source(
     source_str: str,
     version_filter: Optional[str] = None,
     github_token: Optional[str] = None,
+    registry_meta: Optional[dict] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
+    """Materialize a remote source into a temporary clone.
+
+    *registry_meta* carries an Exchange declaration for sources that ship no
+    manifest. It must be supplied by the caller **before** materialization,
+    because this function generates the manifest itself when the clone has
+    none; without it, a manifestless source is refused here and an explicit
+    Exchange Kind is never observed.
+
+    Callers with no declaration (direct installs) pass ``None`` and keep the
+    strict refusal.
+    """
     if _GITHUB_SHORT_RE.match(source_str):
         url = f"https://github.com/{source_str}.git"
     elif _is_git_remote_url(source_str):
@@ -1105,101 +1117,113 @@ def _clone_remote_source(
         return None
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-source-"))
-    clone_url = url
-    if github_token and "github.com" in url:
-        clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
-
-    tags = _fetch_remote_tag_refs(clone_url)
-    selected_tag = _select_remote_tag(tags, version_filter)
-
-    clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
-
-    display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
-    selected_label = selected_tag.tag if selected_tag else version_filter
-    print(
-        f"  Cloning {display_url}"
-        + (f" (tag: {selected_label})" if selected_label else "")
-        + "..."
-    )
+    # Every exit from here on must remove the temporary clone: an
+    # exception from manifest generation previously leaked it.
+    _materialized = False
     try:
-        result = subprocess.run(
-            clone_args,
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            print(f"  Clone failed: {result.stderr.strip()}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"  Clone failed: {e}")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
+        clone_url = url
+        if github_token and "github.com" in url:
+            clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
-    repo_dir = tmp_dir / "repo"
-    if not tags:
-        # A transient ls-remote failure must not make us label default-branch
-        # bytes as tagless after a successful full clone.
-        tags = _fetch_remote_tag_refs(str(repo_dir))
+        tags = _fetch_remote_tag_refs(clone_url)
         selected_tag = _select_remote_tag(tags, version_filter)
-    if version_filter and selected_tag is None:
-        print(f"  Version {version_filter} not found in remote tags.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
 
-    default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
-    if selected_tag is not None:
-        checkout = subprocess.run(
-            ["git", "checkout", "--detach", selected_tag.source_commit],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
+        clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
+
+        display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
+        selected_label = selected_tag.tag if selected_tag else version_filter
+        print(
+            f"  Cloning {display_url}"
+            + (f" (tag: {selected_label})" if selected_label else "")
+            + "..."
         )
-        if checkout.returncode != 0:
-            print(f"  Checkout failed: {checkout.stderr.strip()}")
+        try:
+            result = subprocess.run(
+                clone_args,
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                print(f"  Clone failed: {result.stderr.strip()}")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return None
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"  Clone failed: {e}")
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
-    head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
-    if not head_commit:
-        print("  Clone failed: unable to resolve the checked-out commit.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
-    if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
-        print("  Checkout failed: resolved commit does not match selected tag.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
+        repo_dir = tmp_dir / "repo"
+        if not tags:
+            # A transient ls-remote failure must not make us label default-branch
+            # bytes as tagless after a successful full clone.
+            tags = _fetch_remote_tag_refs(str(repo_dir))
+            selected_tag = _select_remote_tag(tags, version_filter)
+        if version_filter and selected_tag is None:
+            print(f"  Version {version_filter} not found in remote tags.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
-    resolved_commit = head_commit
-    if selected_tag is not None:
-        source_ref = selected_tag.source_ref
-        version = selected_tag.version
-    else:
-        source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
-        version = VersionManager.detect_embedded_version(repo_dir)
-        if not version:
-            version = f"0.0.0+{resolved_commit[:12]}"
+        default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+        if selected_tag is not None:
+            checkout = subprocess.run(
+                ["git", "checkout", "--detach", selected_tag.source_commit],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if checkout.returncode != 0:
+                print(f"  Checkout failed: {checkout.stderr.strip()}")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return None
 
-    (repo_dir / ".capacium-version").write_text(f"{version}\n")
-    _write_source_provenance(
-        repo_dir,
-        SourceProvenance(
-            source_url=url,
-            source_ref=source_ref,
-            source_commit=resolved_commit,
-            version=version,
-        ),
-    )
+        head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
+        if not head_commit:
+            print("  Clone failed: unable to resolve the checked-out commit.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+        if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
+            print("  Checkout failed: resolved commit does not match selected tag.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
-    manifest_paths = (
-        repo_dir / "capability.yaml",
-        repo_dir / "capability.yml",
-        repo_dir / "capability.json",
-    )
-    if not any(path.exists() for path in manifest_paths):
-        _auto_generate_manifest(repo_dir, url, resolved_version=version)
+        resolved_commit = head_commit
+        if selected_tag is not None:
+            source_ref = selected_tag.source_ref
+            version = selected_tag.version
+        else:
+            source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
+            version = VersionManager.detect_embedded_version(repo_dir)
+            if not version:
+                version = f"0.0.0+{resolved_commit[:12]}"
 
-    return repo_dir, url
+        (repo_dir / ".capacium-version").write_text(f"{version}\n")
+        _write_source_provenance(
+            repo_dir,
+            SourceProvenance(
+                source_url=url,
+                source_ref=source_ref,
+                source_commit=resolved_commit,
+                version=version,
+            ),
+        )
+
+        manifest_paths = (
+            repo_dir / "capability.yaml",
+            repo_dir / "capability.yml",
+            repo_dir / "capability.json",
+        )
+        if not any(path.exists() for path in manifest_paths):
+            _auto_generate_manifest(
+                repo_dir, url,
+                registry_meta=registry_meta,
+                resolved_version=version,
+            )
+
+        _materialized = True
+        return repo_dir, url
+    finally:
+        if not _materialized:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _fetch_remote_tags(repo_url: str) -> List[str]:
@@ -1546,40 +1570,53 @@ def _fetch_from_registry(
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
 
+    # CAPR3-P01L-A: build the Exchange declaration *before* materializing the
+    # source. _clone_remote_source() generates the manifest for a clone that
+    # ships none, so a declaration constructed afterwards arrives too late and
+    # a manifestless source is refused despite the registry declaring its Kind.
+    registry_meta = {
+        "name": remote.name,
+        "owner": remote.owner,
+        "version": best_version or remote.version,
+        "kind": remote.kind or "",
+        "description": remote.description or "",
+        "repository": repository,
+        "tags": remote.tags or [],
+    }
+
     resolved = _clone_remote_source(
         repository,
         version_filter=requested_version,
         github_token=github_token,
+        registry_meta=registry_meta,
     )
     if resolved is None:
         return None, None
     repo_dir, resolved_url = resolved
-    provenance = _read_source_provenance(repo_dir)
-    if provenance is not None:
-        best_version = provenance.version
+    try:
+        provenance = _read_source_provenance(repo_dir)
+        if provenance is not None:
+            best_version = provenance.version
 
-    manifest = Manifest.detect_from_directory(repo_dir)
-    if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
-        best_version = manifest.version
-    if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
-        registry_meta = {
-            "name": remote.name,
-            "owner": remote.owner,
-            "version": best_version or remote.version,
-            "kind": remote.kind or "",
-            "description": remote.description or "",
-            "repository": repository,
-            "tags": remote.tags or [],
-        }
-        _auto_generate_manifest(repo_dir, repository, registry_meta=registry_meta)
+        manifest = Manifest.detect_from_directory(repo_dir)
+        if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
+            best_version = manifest.version
+        if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
+            registry_meta["version"] = best_version or remote.version
+            _auto_generate_manifest(
+                repo_dir, repository, registry_meta=registry_meta,
+            )
 
-    # Copy into cache
-    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    shutil.copytree(repo_dir, cache_dir)
-    shutil.rmtree(repo_dir.parent, ignore_errors=True)
-    return cache_dir, resolved_url
+        # Copy into cache
+        cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+        shutil.copytree(repo_dir, cache_dir)
+        return cache_dir, resolved_url
+    finally:
+        # The clone is disposable once it has been cached, and must not
+        # survive a refusal either.
+        shutil.rmtree(repo_dir.parent, ignore_errors=True)
 
 
 def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
@@ -1889,7 +1926,12 @@ def _resolve_install_frameworks(
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
-        kind=manifest.kind or "",
+        # CAPR3-P01L-B: pass the manifest's Kind through rather than supplying
+        # an empty-string default at the sink. `kind` is a required Manifest
+        # field, so `or ""` never substituted anything — it only planted a
+        # hardcoded empty Kind at a dispatch sink. Unsupported and legacy
+        # Kinds are still rejected upstream with an actionable message.
+        kind=manifest.kind,
     )
 
 

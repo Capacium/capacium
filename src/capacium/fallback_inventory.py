@@ -90,44 +90,60 @@ def _is_excluded(dirname: str) -> bool:
 @dataclass(frozen=True)
 class ExceptionEntry:
     file: str
-    line: int
+    function: str
+    pattern: str
     kind: str
-    symbol: str
+    anchor: str
     reason: str
     test_ref: str
 
-    def matches(self, finding_file: str, finding_line: int,
-                finding_kind: str) -> bool:
-        """Match an exception to a scanner finding.
+    def identity(self) -> tuple:
+        return (self.file, self.function, self.pattern, self.kind, self.anchor)
 
-        Uses the exception's ``kind`` field (the resolved Kind literal such as
-        ``display``, ``migration``) to compare against the finding's
-        ``resolved_kind``.  The ``symbol`` field is the raw identifier form
-        (e.g. ``CapaciumKind.WORKFLOW``, ``??``) and is primarily used for
-        staleness checks against source text.
+    def matches(self, finding: "Finding") -> bool:
+        """Match an exception to exactly one scanner finding.
+
+        The identity is the full tuple of file, enclosing function, pattern,
+        canonical resolved Kind, and source anchor. Matching on file plus Kind
+        alone made an exception suppress every future finding of that Kind in
+        the same file, so a single proved wizard seed silently covered any
+        unrelated dispatch sink added later.
+
+        ``line`` is deliberately absent: it changes whenever unrelated code
+        moves, which would make every exception brittle without making it more
+        exact. The anchor pins the source text instead.
         """
         return (
-            self.file == finding_file
-            and self.kind == finding_kind
+            self.file == finding.file
+            and self.function == finding.function
+            and self.pattern == finding.pattern
+            and self.kind == finding.resolved_kind
+            and self.anchor == finding.code.strip()
         )
 
 
 KNOWN_EXCEPTIONS: FrozenSet[ExceptionEntry] = frozenset({
     ExceptionEntry(
-        file="ui.py", line=0, kind="display",
-        symbol="??",
-        reason="Display-only unknown indicator — never flows to dispatch",
-        test_ref="test_p01b_lifecycle_matrix",
+        file="commands/init.py",
+        function="init_capability",
+        pattern="or-default",
+        kind="skill",
+        anchor="input('  Kind [skill]: ').strip() or CapaciumKind.SKILL.value",
+        reason=(
+            "Interactive prompt default only — the operator is shown every "
+            "active Kind, the typed answer replaces the default, and "
+            "_validate_kind() rejects anything invalid before the manifest is "
+            "written. The non-interactive path next to this one does NOT get "
+            "a default: `cap init` without --kind fails closed."
+        ),
+        test_ref="test_p01l_init_prompt_default_is_interactive_only",
     ),
     ExceptionEntry(
-        file="kinds.py", line=0, kind="migration",
-        symbol="CapaciumKind.WORKFLOW",
-        reason="Versioned legacy Kind migration adapter",
-        test_ref="test_migrate_legacy_kind",
-    ),
-    ExceptionEntry(
-        file="commands/init.py", line=0, kind="skill",
-        symbol="CapaciumKind.SKILL.value",
+        file="commands/init.py",
+        function="init_skill",
+        pattern="assign-enum-default",
+        kind="skill",
+        anchor="default_kind = CapaciumKind.SKILL",
         reason=(
             "Interactive wizard prompt seed only — init_skill() prints every "
             "active Kind, the operator's answer overrides the seed, and the "
@@ -244,8 +260,43 @@ def _is_kind_enum_attr(node: ast.AST) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _sink_call_name(node: ast.Call) -> Optional[str]:
+    """Return the sink name for a call, or None when it is not a sink.
+
+    Recognises both call shapes:
+
+        adapter.dispatch(...)   qualified   -> "dispatch"
+        dispatch(...)           imported    -> "dispatch"
+
+    Only the qualified shape used to be scanned, so
+    ``from ..adapters import remove_capability`` followed by a direct call was
+    enough to hide a hardcoded Kind from every sink pattern.
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr in _SINK_PATTERNS:
+        return func.attr
+    if isinstance(func, ast.Name) and func.id in _SINK_PATTERNS:
+        return func.id
+    return None
+
+
 def _enum_member_to_kind(member: str) -> str:
-    return member.lower().replace("_", "-").replace("mcp-server", "mcp-server")
+    """Resolve an enum member name to its canonical Kind value.
+
+    Resolution goes through the ``CapaciumKind`` registry so aliases land on
+    the value they actually carry. Deriving the value from the member name
+    mislabelled every alias — ``MCP`` became ``mcp`` rather than
+    ``mcp-server`` and ``CONNECTOR`` became ``connector`` rather than
+    ``connector-pack`` — which in turn made exception matching compare against
+    a Kind that does not exist.
+    """
+    try:
+        from .kinds import CapaciumKind
+        return CapaciumKind[member].value
+    except (ImportError, KeyError):
+        # Scanner must stay usable even if the canonical registry cannot be
+        # imported; the derived form is a last resort, never the primary path.
+        return member.lower().replace("_", "-")
 
 
 def _func_name_for_node(tree: ast.AST, node: ast.AST) -> str:
@@ -365,16 +416,26 @@ def _scan_or_defaults(tree: ast.AST, rel_path: str) -> list:
     for n in ast.walk(tree):
         if isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or):
             for val in n.values:
+                resolved = None
                 if _is_kind_literal(val):
-                    func = _get_enclosing_func(tree, n)
-                    ret.append(Finding(
-                        file=rel_path, line=n.lineno, function=func,
-                        pattern="or-default",
-                        sink_role="dispatch-boundary",
-                        disposition="unlisted",
-                        code=ast.unparse(n) if hasattr(ast, 'unparse') else "expr or 'kind'",
-                        resolved_kind=val.value,
-                    ))
+                    resolved = val.value
+                else:
+                    # ``kind = kind or CapaciumKind.SKILL.value`` was invisible
+                    # while only string literals were recognised.
+                    em = _is_kind_enum_attr(val)
+                    if em:
+                        resolved = _enum_member_to_kind(em[1])
+                if resolved is None:
+                    continue
+                func = _get_enclosing_func(tree, n)
+                ret.append(Finding(
+                    file=rel_path, line=n.lineno, function=func,
+                    pattern="or-default",
+                    sink_role="dispatch-boundary",
+                    disposition="unlisted",
+                    code=ast.unparse(n) if hasattr(ast, 'unparse') else "expr or 'kind'",
+                    resolved_kind=resolved,
+                ))
     return ret
 
 
@@ -385,19 +446,28 @@ def _scan_conditional_defaults(tree: ast.AST, rel_path: str) -> list:
     """
     ret = []
     for n in ast.walk(tree):
-        if (isinstance(n, ast.IfExp)
-                and isinstance(n.orelse, ast.Constant)
+        if not isinstance(n, ast.IfExp):
+            continue
+        resolved = None
+        if (isinstance(n.orelse, ast.Constant)
                 and isinstance(n.orelse.value, str)
                 and n.orelse.value in _KIND_LITERALS):
-            func = _get_enclosing_func(tree, n)
-            ret.append(Finding(
-                file=rel_path, line=n.lineno, function=func,
-                pattern="conditional-default",
-                sink_role="dispatch-boundary",
-                disposition="unlisted",
-                code=ast.unparse(n).strip() if hasattr(ast, 'unparse') else "kind if ... else 'kind'",
-                resolved_kind=n.orelse.value,
-            ))
+            resolved = n.orelse.value
+        else:
+            em = _is_kind_enum_attr(n.orelse)
+            if em:
+                resolved = _enum_member_to_kind(em[1])
+        if resolved is None:
+            continue
+        func = _get_enclosing_func(tree, n)
+        ret.append(Finding(
+            file=rel_path, line=n.lineno, function=func,
+            pattern="conditional-default",
+            sink_role="dispatch-boundary",
+            disposition="unlisted",
+            code=ast.unparse(n).strip() if hasattr(ast, 'unparse') else "kind if ... else 'kind'",
+            resolved_kind=resolved,
+        ))
     return ret
 
 
@@ -567,9 +637,12 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
-        if not isinstance(n.func, ast.Attribute):
-            continue
-        if n.func.attr not in _SINK_PATTERNS:
+        # Both the qualified form (``adapter.dispatch(...)``) and the directly
+        # imported form (``from ... import dispatch; dispatch(...)``). Only
+        # the qualified form was recognised, so importing the sink was enough
+        # to hide a hardcoded Kind from the scanner entirely.
+        sink_name = _sink_call_name(n)
+        if sink_name is None:
             continue
         # Check positional args for or-expressions with Kind literal
         for arg in n.args:
@@ -601,7 +674,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
                         sink_role="dispatch-sink",
                         disposition="unlisted",
                         code=(ast.unparse(n).strip() if hasattr(ast, "unparse")
-                              else f'.{n.func.attr}(kind={em[0]}.{em[1]})'),
+                              else f'{sink_name}(kind={em[0]}.{em[1]})'),
                         resolved_kind=_enum_member_to_kind(em[1]),
                     ))
 
@@ -615,7 +688,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
                         pattern="sink-literal-default",
                         sink_role="dispatch-sink",
                         disposition="unlisted",
-                        code=f'.{n.func.attr}(kind="{kw.value.value}")',
+                        code=f'{sink_name}(kind="{kw.value.value}")',
                         resolved_kind=kw.value.value,
                     ))
                 elif (isinstance(kw.value, ast.BoolOp)
@@ -628,7 +701,7 @@ def _scan_sink_defaults(tree: ast.AST, rel_path: str) -> list:
                                 pattern="sink-or-default",
                                 sink_role="dispatch-sink",
                                 disposition="unlisted",
-                                code=ast.unparse(n).strip() if hasattr(ast, 'unparse') else f'.{n.func.attr}(kind=...)',
+                                code=ast.unparse(n).strip() if hasattr(ast, 'unparse') else f'{sink_name}(kind=...)',
                                 resolved_kind=val.value,
                             ))
     return ret
@@ -709,9 +782,10 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
             ))
 
     for n in ast.walk(tree):
-        if not isinstance(n, ast.Call) or not isinstance(n.func, ast.Attribute):
+        if not isinstance(n, ast.Call):
             continue
-        if n.func.attr not in _SINK_PATTERNS:
+        sink_name = _sink_call_name(n)
+        if sink_name is None:
             continue
         for arg in n.args:
             if isinstance(arg, ast.BoolOp) and isinstance(arg.op, ast.Or):
@@ -733,7 +807,7 @@ def _scan_noncanonical_sink_defaults(tree: ast.AST, rel_path: str) -> list:
                              else "sink-noncanonical-default"),
                     sink_role="dispatch-sink",
                     disposition="unlisted",
-                    code=f'.{n.func.attr}(kind="{kw.value.value}")',
+                    code=f'{sink_name}(kind="{kw.value.value}")',
                     resolved_kind=kw.value.value,
                 ))
     return ret
@@ -862,43 +936,17 @@ def _scan_enum_conditional(tree: ast.AST, rel_path: str) -> list:
 # ── Staleness and misclassification checks ────────────────────────────────────
 
 
-def _check_stale_entry(exc: ExceptionEntry, src_dir: Path) -> bool:
-    """Return True if an exception entry is stale.
+def _check_anchor_present(exc: ExceptionEntry, src_dir: Path) -> bool:
+    """Return True when the exception's source file still exists.
 
-    A ``??`` symbol is never stale (display-only indicator).
-    Any other symbol: stale if file missing, unreadable, or symbol absent.
-    Exception entries use bare filenames relative to the scan root's
-    ``src/capacium`` package directory (e.g. ``kinds.py``).
-
-    The *src_dir* is the ``src/capacium`` package directory.  If the direct
-    join fails, also check the parent directory (in case src_dir is one level
-    too deep).
+    Staleness is now decided by exact-match accounting in
+    :func:`scan_directory`: an exception that claims no live finding is
+    reported ``UNMATCHED`` and breaks integrity. This check only catches the
+    coarser case where the file itself is gone, which produces a clearer
+    message than "matched no live finding".
     """
-    if exc.symbol == "??":
-        return False
     candidates = [src_dir / exc.file, src_dir.parent / exc.file]
-    found = None
-    for c in candidates:
-        if c.exists():
-            found = c
-            break
-    if found is None:
-        return True
-    try:
-        text = found.read_text()
-    except OSError:
-        return True
-    return exc.symbol not in text
-
-
-def _check_misclassified_entry(exc: ExceptionEntry,
-                                findings: list) -> bool:
-    """Return True if a finding at the exception's location exists but has a
-    different resolved_kind than the exception expects."""
-    for f in findings:
-        if f.file == exc.file and f.resolved_kind != exc.kind:
-            return True
-    return False
+    return any(c.exists() for c in candidates)
 
 
 _TEST_SYMBOL_CACHE: Dict[str, FrozenSet[str]] = {}
@@ -1068,33 +1116,43 @@ def scan_directory(src_dir: Path) -> ScanResult:
     # Stable sort: file, line, pattern
     findings.sort(key=lambda f: (f.file, f.line, f.pattern))
 
-    # Apply exceptions and build violations
+    # Apply exceptions and build violations. Each exception must claim exactly
+    # one live finding: zero means the exception is stale and is silently
+    # widening the allowed surface, more than one means a single test proof is
+    # being stretched across findings it never examined.
     violations = []
-    for f in findings:
-        for exc in KNOWN_EXCEPTIONS:
-            if exc.matches(f.file, f.line, f.resolved_kind):
-                f.is_exception = True
-                f.test_proof = exc.test_ref
-                break
-        if not f.is_exception:
-            violations.append(f.violation_text())
-
-    # Check staleness and misclassification
     broken_exceptions = []
     is_inventory_intact = True
+
     for exc in KNOWN_EXCEPTIONS:
-        if _check_stale_entry(exc, src_dir):
+        if not _check_anchor_present(exc, src_dir):
             broken_exceptions.append(
-                f"STALE: {exc.file} symbol='{exc.symbol}' "
-                f"(source file or symbol no longer exists)"
+                f"STALE: {exc.file} no longer exists (anchor={exc.anchor!r})"
             )
             is_inventory_intact = False
-        elif _check_misclassified_entry(exc, findings):
+            continue
+        claimed = [f for f in findings if exc.matches(f)]
+        if len(claimed) == 1:
+            claimed[0].is_exception = True
+            claimed[0].test_proof = exc.test_ref
+            continue
+        is_inventory_intact = False
+        if not claimed:
             broken_exceptions.append(
-                f"MISCLASSIFIED: {exc.file} symbol='{exc.symbol}' "
-                f"expected kind='{exc.kind}' but scanner found different value"
+                f"UNMATCHED: {exc.file}:{exc.function}:{exc.pattern}:"
+                f"{exc.kind} anchor={exc.anchor!r} matched no live finding"
             )
-            is_inventory_intact = False
+        else:
+            where = ", ".join(f"line {f.line}" for f in claimed)
+            broken_exceptions.append(
+                f"AMBIGUOUS: {exc.file}:{exc.function}:{exc.pattern}:"
+                f"{exc.kind} matched {len(claimed)} findings ({where}); "
+                f"one test proof cannot cover them all"
+            )
+
+    for f in findings:
+        if not f.is_exception:
+            violations.append(f.violation_text())
 
     is_clean = len(violations) == 0 and len(broken_records) == 0
 

@@ -84,7 +84,10 @@ def test_scanner_detects_value_accessor_conditional_cascade():
     )
     assert "enum-conditional" in _patterns(r)
     kinds = {f.resolved_kind for f in r.findings}
-    assert {"skill", "mcp", "bundle"} <= kinds
+    # CAPR3-P01L-B: aliases resolve through the CapaciumKind registry, so
+    # CapaciumKind.MCP records its canonical value 'mcp-server' rather than
+    # the lowercased member name.
+    assert {"skill", "mcp-server", "bundle"} <= kinds
     assert not r.is_clean
 
 

@@ -8,6 +8,17 @@ from typing import Dict, List, Any, Optional
 MANIFEST_FILENAME = "capability.yaml"
 
 
+# Namespace for manifest extensions Core does not interpret but must preserve.
+EXTENSION_PREFIX = "x_"
+
+# Provenance recorded when a Kind was produced by a versioned migration rather
+# than declared directly. Core validates the shape of this block and nothing
+# else about it: what a source format means is not Core's business.
+KIND_MIGRATION_KEY = "x_kind_migration"
+_KIND_MIGRATION_FIELDS = (
+    "source_format", "original_kind", "migrated_kind", "migration_reason",
+)
+
 _VALID_OPERATOR_TYPES = {"ai", "human", "hybrid"}
 _RESOURCE_DATA_ASSET_FIELDS = {"resource_type", "resource_format", "size_hint", "access", "compatibility"}
 
@@ -45,14 +56,63 @@ class Manifest:
     access: Optional[Dict[str, Any]] = None
     compatibility: Optional[Dict[str, Any]] = None
     qualified_interfaces: List[Dict[str, Any]] = field(default_factory=list)
+    # Lossless extension namespace. Keys written under the ``x_`` prefix are
+    # not interpreted by Core but must survive a load-save-load cycle intact;
+    # dropping them silently destroyed provenance such as ``x_kind_migration``.
+    # This is the single extension contract — do not add a parallel one.
+    extensions: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
         o = self.owner or "global"
         return f"{o}/{self.name}"
 
+    def kind_migration(self) -> Optional[Dict[str, Any]]:
+        """Return the recorded Kind-migration provenance, if any."""
+        value = self.extensions.get(KIND_MIGRATION_KEY)
+        return value if isinstance(value, dict) else None
+
+    def _validate_extensions(self) -> List[str]:
+        """Check extension *shape* only — never their meaning.
+
+        Core stores provenance so a Kind can be traced back to the declaration
+        that produced it. Deciding whether a given source format is acceptable
+        is product policy and does not belong here.
+        """
+        errors: List[str] = []
+        if not isinstance(self.extensions, dict):
+            return [f"extensions must be a mapping, got "
+                    f"{type(self.extensions).__name__}"]
+        for key in self.extensions:
+            if not key.startswith(EXTENSION_PREFIX):
+                errors.append(
+                    f"extension key '{key}' must use the "
+                    f"'{EXTENSION_PREFIX}' prefix"
+                )
+        raw = self.extensions.get(KIND_MIGRATION_KEY)
+        if raw is not None:
+            if not isinstance(raw, dict):
+                errors.append(
+                    f"{KIND_MIGRATION_KEY} must be a mapping, got "
+                    f"{type(raw).__name__}"
+                )
+            else:
+                missing = [f for f in _KIND_MIGRATION_FIELDS if not raw.get(f)]
+                if missing:
+                    errors.append(
+                        f"{KIND_MIGRATION_KEY} is missing required field(s): "
+                        f"{', '.join(missing)}"
+                    )
+                for f in _KIND_MIGRATION_FIELDS:
+                    if f in raw and not isinstance(raw[f], str):
+                        errors.append(
+                            f"{KIND_MIGRATION_KEY}.{f} must be a string"
+                        )
+        return errors
+
     def validate(self) -> List[str]:
         errors = []
+        errors.extend(self._validate_extensions())
         from .kinds import ACTIVE_KINDS, all_recognized_kind_values
         _ALLOWED_KINDS = ACTIVE_KINDS
         _RECOGNIZED_KINDS = all_recognized_kind_values()
@@ -168,6 +228,14 @@ class Manifest:
         from .interfaces import QualifiedInterface
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data_copy.items() if k in known_fields}
+        # Capture the ``x_`` extension namespace before the filter discards it.
+        carried = {
+            k: v for k, v in data_copy.items()
+            if k.startswith(EXTENSION_PREFIX) and k not in known_fields
+        }
+        if carried:
+            declared = filtered.get("extensions") or {}
+            filtered["extensions"] = {**carried, **declared}
         result = cls(**filtered)
         # Parse qualified interfaces into typed objects if present
         if "qualified_interfaces" in data_copy and isinstance(data_copy["qualified_interfaces"], list):
@@ -178,7 +246,13 @@ class Manifest:
         return result
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Extensions are stored on their own field but serialized flat, so a
+        # manifest round trips to the same document it was loaded from.
+        carried = data.pop("extensions", None) or {}
+        for key, value in carried.items():
+            data.setdefault(key, value)
+        return data
 
     def save(self, path: Path) -> None:
         with open(path, "w") as f:

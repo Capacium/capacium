@@ -247,8 +247,9 @@ def test_substring_only_test_ref_is_rejected(monkeypatch):
 
     bogus = frozenset({
         ExceptionEntry(
-            file="kinds.py", line=0, kind="migration",
-            symbol="CapaciumKind.WORKFLOW",
+            file="kinds.py", function="migrate_legacy_kind",
+            pattern="assign-enum-default", kind="workflow",
+            anchor="kind = CapaciumKind.WORKFLOW",
             reason="probe",
             test_ref="test_migrate_legacy",
         )
@@ -263,8 +264,9 @@ def test_empty_test_ref_is_rejected(monkeypatch):
     import capacium.fallback_inventory as fi
 
     bogus = frozenset({
-        ExceptionEntry(file="kinds.py", line=0, kind="migration",
-                       symbol="CapaciumKind.WORKFLOW", reason="probe",
+        ExceptionEntry(file="kinds.py", function="migrate_legacy_kind",
+                       pattern="assign-enum-default", kind="workflow",
+                       anchor="kind = CapaciumKind.WORKFLOW", reason="probe",
                        test_ref=""),
     })
     monkeypatch.setattr(fi, "KNOWN_EXCEPTIONS", bogus)

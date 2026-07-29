@@ -19,13 +19,13 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from capacium.fallback_inventory import (
+    _KIND_LITERALS,
     scan_directory,
     verify_inventory,
     ExceptionEntry,
     Finding,
     KNOWN_EXCEPTIONS,
-    _check_stale_entry,
-    _check_misclassified_entry,
+    _check_anchor_present,
     ScanResult,
 )
 
@@ -34,28 +34,57 @@ from capacium.fallback_inventory import (
 # ---------------------------------------------------------------------------
 
 
+def _entry(**over):
+    base = dict(file="x.py", function="f", pattern="or-default", kind="skill",
+                anchor="kind or CapaciumKind.SKILL.value", reason="test",
+                test_ref="test_x")
+    base.update(over)
+    return ExceptionEntry(**base)
+
+
+def _finding(**over):
+    base = dict(file="x.py", line=1, function="f", pattern="or-default",
+                sink_role="dispatch-boundary", disposition="unlisted",
+                code="kind or CapaciumKind.SKILL.value", resolved_kind="skill")
+    base.update(over)
+    return Finding(**base)
+
+
 def test_exception_entry_is_frozen():
-    e = ExceptionEntry(file="x.py", line=0, kind="test",
-                       symbol="x", reason="test", test_ref="test_x")
+    e = _entry()
     assert e.file == "x.py"
-    assert e.symbol == "x"
+    assert e.anchor
     with pytest.raises(FrozenInstanceError):
         e.file = "y.py"
 
 
-def test_exception_entry_matches():
-    e = ExceptionEntry(file="x.py", line=0, kind="test",
-                       symbol="x", reason="test", test_ref="test_x")
-    assert e.matches("x.py", 0, "test")
-    assert not e.matches("y.py", 0, "test")
-    assert not e.matches("x.py", 0, "other")
+def test_exception_entry_matches_exact_identity():
+    """CAPR3-P01L-B: identity is file+function+pattern+kind+anchor."""
+    e = _entry()
+    assert e.matches(_finding())
+    assert not e.matches(_finding(file="y.py"))
+    assert not e.matches(_finding(function="other"))
+    assert not e.matches(_finding(pattern="assign-enum-default"))
+    assert not e.matches(_finding(resolved_kind="tool"))
+    assert not e.matches(_finding(code="a different anchor"))
+
+
+def test_exception_does_not_match_on_file_and_kind_alone():
+    """The over-broad match the P01K review reproduced."""
+    e = _entry()
+    same_file_same_kind = _finding(function="unrelated_sink",
+                                   pattern="sink-enum-default",
+                                   code="adapter.remove(kind=...)")
+    assert not e.matches(same_file_same_kind)
 
 
 def test_known_exceptions_immutable():
-    assert len(KNOWN_EXCEPTIONS) >= 2
+    assert len(KNOWN_EXCEPTIONS) >= 1
     for exc in KNOWN_EXCEPTIONS:
         assert exc.file
-        assert exc.symbol
+        assert exc.function
+        assert exc.pattern
+        assert exc.anchor
         assert exc.test_ref
 
 
@@ -120,12 +149,20 @@ def test_scan_assign_default_unlisted():
         assert any("assign" in e.pattern and "default" in e.pattern for e in result.findings)
 
 
-def test_known_display_exception_not_flagged():
+def test_every_known_exception_carries_a_test_ref():
+    """CAPR3-P01L-B: an exception without proof is not an exception.
+
+    Replaces the old `??` display-symbol check. That entry matched no live
+    finding at all, so it suppressed nothing and documented nothing; the
+    exact-identity model reports such entries as UNMATCHED instead.
+    """
+    assert KNOWN_EXCEPTIONS, "the exception set must not be empty"
     for exc in KNOWN_EXCEPTIONS:
-        if exc.symbol == "??":
-            assert exc.kind == "display"
-            return
-    assert False, "No display exception found"
+        assert exc.test_ref, f"{exc.file}:{exc.function} has no test proof"
+        assert exc.reason, f"{exc.file}:{exc.function} has no stated reason"
+        assert exc.kind in _KIND_LITERALS, (
+            f"{exc.file}:{exc.function} claims non-canonical kind {exc.kind!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -159,87 +196,15 @@ def test_scan_returns_typed_result():
 # ---------------------------------------------------------------------------
 
 
-def test_stale_existing_entry_not_stale():
-    """An entry whose file exists and symbol is present is not stale."""
+def test_anchor_present_for_existing_file():
     src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
-    if not src.exists():
-        pytest.skip("No real src dir available")
-    exc = ExceptionEntry(file="kinds.py", line=0, kind="migration",
-                         symbol="CapaciumKind", reason="test", test_ref="test_x")
-    assert not _check_stale_entry(exc, src)
+    assert src.exists(), "canonical package tree missing from the repository"
+    assert _check_anchor_present(_entry(file="kinds.py"), src)
 
 
-def test_stale_nonexistent_file():
+def test_anchor_absent_for_missing_file():
     src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
-    exc = ExceptionEntry(file="src/capacium/nonexistent.py", line=0, kind="test",
-                         symbol="FOO", reason="test", test_ref="test_x")
-    assert _check_stale_entry(exc, src)
-
-
-def test_stale_display_symbol_never_stale():
-    """?? is a magic symbol that never counts as stale."""
-    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
-    exc = ExceptionEntry(file="src/capacium/nonexistent.py", line=0, kind="display",
-                         symbol="??", reason="test", test_ref="test_x")
-    assert not _check_stale_entry(exc, src)
-
-
-def test_stale_symbol_removed():
-    """A symbol that was present but no longer exists is stale."""
-    src = Path(__file__).resolve().parent.parent.parent / "src" / "capacium"
-    exc = ExceptionEntry(file="src/capacium/fallback_inventory.py", line=0, kind="test",
-                         symbol="_THIS_DOES_NOT_EXIST_ANYWHERE", reason="test", test_ref="test_x")
-    assert _check_stale_entry(exc, src)
-
-
-# ---------------------------------------------------------------------------
-# Misclassified detection
-# ---------------------------------------------------------------------------
-
-
-def test_misclassified_no_entry():
-    exc = ExceptionEntry(file="x.py", line=0, kind="migration",
-                         symbol="X", reason="test", test_ref="test_x")
-    assert not _check_misclassified_entry(exc, [])
-
-
-def test_misclassified_mismatch():
-    exc = ExceptionEntry(file="x.py", line=0, kind="migration",
-                         symbol="X", reason="test", test_ref="test_x")
-    e = Finding(file="x.py", line=0, function="f", pattern="fn-default",
-               sink_role="boundary", disposition="unlisted",
-               code="test", resolved_kind="skill")
-    assert _check_misclassified_entry(exc, [e])
-
-
-def test_misclassified_match():
-    exc = ExceptionEntry(file="x.py", line=0, kind="migration",
-                         symbol="X", reason="test", test_ref="test_x")
-    e = Finding(file="x.py", line=0, function="f", pattern="fn-default",
-               sink_role="boundary", disposition="unlisted",
-               code="test", resolved_kind="migration")
-    assert not _check_misclassified_entry(exc, [e])
-
-
-def test_misclassified_different_line():
-    """Misclassification detects kind mismatch even across different lines.
-    The check operates on file-level resolution, not line-level."""
-    exc = ExceptionEntry(file="x.py", line=5, kind="migration",
-                         symbol="X", reason="test", test_ref="test_x")
-    e = Finding(file="x.py", line=10, function="f", pattern="fn-default",
-               sink_role="boundary", disposition="unlisted",
-               code="test", resolved_kind="skill")
-    assert _check_misclassified_entry(exc, [e])
-
-
-def test_misclassified_different_file():
-    exc = ExceptionEntry(file="x.py", line=0, kind="migration",
-                         symbol="X", reason="test", test_ref="test_x")
-    e = Finding(file="y.py", line=0, function="f", pattern="fn-default",
-               sink_role="boundary", disposition="unlisted",
-               code="test", resolved_kind="skill")
-    assert not _check_misclassified_entry(exc, [e])
-
+    assert not _check_anchor_present(_entry(file="nonexistent.py"), src)
 
 # ---------------------------------------------------------------------------
 # ScanResult.to_dict()
