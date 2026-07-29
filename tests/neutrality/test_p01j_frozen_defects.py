@@ -109,13 +109,18 @@ def test_defect_unreadable_file_is_blocking():
     """Unreadable files must produce a blocking broken_record."""
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "unreadable.py"
+        readable = Path(d) / "readable.py"
         p.write_text("pass\n")
+        readable.write_text("pass\n")
         import os
         os.chmod(p, 0o000)
         try:
             r = scan_directory(Path(d))
-            assert len(r.broken_records) >= 1, (
-                f"Unreadable file must produce blocking records, got {r.broken_records}"
+            assert r.broken_records == [
+                "unreadable.py: unreadable (no read permission)"
+            ], (
+                "Only the permissionless file must produce a blocking record, "
+                f"got {r.broken_records}"
             )
             assert not r.is_clean
         finally:

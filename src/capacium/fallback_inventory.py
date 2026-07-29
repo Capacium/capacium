@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tokenize
 from dataclasses import dataclass, field as _field
@@ -1297,6 +1298,9 @@ def scan_directory(src_dir: Path) -> ScanResult:
                 continue
             fp = Path(root) / fn
             rel_path = str(fp.relative_to(src_dir))
+            if fp.stat().st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH) == 0:
+                broken_records.append(f"{rel_path}: unreadable (no read permission)")
+                continue
             try:
                 source = fp.read_text()
             except OSError as exc:
