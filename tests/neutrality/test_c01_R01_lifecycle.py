@@ -383,11 +383,11 @@ def test_phase_lock_file_roundtrip(tmp_path: Path):
 
     enriched_reloaded = LockFile.from_dict(enriched)
     assert enriched_reloaded.name == lock.name
-    assert enriched.get("x_qualified_interfaces") is not None
-    ri_qis = enriched.get("x_qualified_interfaces")
-    assert isinstance(ri_qis, list) and len(ri_qis) == 2
+    ext_qis = enriched_reloaded._extensions.get("x_qualified_interfaces")
+    assert ext_qis is not None
+    assert isinstance(ext_qis, list) and len(ext_qis) == 2
 
-    qi0 = QualifiedInterface.from_dict(ri_qis[0])
+    qi0 = QualifiedInterface.from_dict(ext_qis[0])
     assert qi0.is_compatible_with(_reference_qis()[0]), (
         "lock::extension roundtrip compatibility broken"
     )

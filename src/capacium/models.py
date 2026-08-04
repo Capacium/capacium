@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -169,19 +169,27 @@ class LockFile:
     dependencies: List[LockEntry]
     source: str
     created_at: datetime
+    _extensions: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result: Dict[str, Any] = {}
+        result.update(self._extensions)
+        result.update({
             "name": self.name,
             "version": self.version,
             "fingerprint": self.fingerprint,
             "dependencies": [asdict(dep) for dep in self.dependencies],
             "source": self.source,
             "created_at": self.created_at.isoformat(),
-        }
+        })
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LockFile":
+        known_fields = {"name", "version", "fingerprint", "dependencies", "source", "created_at"}
+        extensions: Dict[str, Any] = {
+            k: v for k, v in data.items() if k.startswith("x_") and k not in known_fields
+        }
         deps = [LockEntry(**d) for d in data.get("dependencies", [])]
         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
         return cls(
@@ -191,6 +199,7 @@ class LockFile:
             dependencies=deps,
             source=data.get("source", ""),
             created_at=created_at,
+            _extensions=extensions,
         )
 
     def save(self, path: Path) -> None:
