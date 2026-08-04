@@ -51,7 +51,7 @@ def probe_full_manifest_validation_before_write() -> dict:
 
         error_type = None
         with (
-            patch("capacium.commands.install.Manifest.detect_from_directory",
+            patch("capacium.commands.install.Manifest.detect_source_declaration",
                   return_value=manifest),
             patch("capacium.commands.install.shutil.copytree") as copytree,
         ):

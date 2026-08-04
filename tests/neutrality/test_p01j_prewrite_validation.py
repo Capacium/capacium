@@ -42,7 +42,7 @@ def _make_patched_call(kind=None, name="test-sub", version="1.0.0",
     """
     from capacium.commands.install import _install_single_sub_cap
 
-    manifest = _valid_manifest(kind=kind) if kind is not None else Manifest(kind="", name=name)
+    manifest = _valid_manifest(kind=kind) if kind is not None else Manifest("", name=name)
     if manifest_errors is not None:
         manifest.validate = Mock(return_value=manifest_errors)
 
@@ -57,7 +57,7 @@ def _make_patched_call(kind=None, name="test-sub", version="1.0.0",
     mock_adapter = MagicMock()
 
     with (
-        patch("capacium.commands.install.Manifest.detect_from_directory",
+        patch("capacium.commands.install.Manifest.detect_source_declaration",
               return_value=manifest),
         patch("capacium.commands.install.resolve_frameworks",
               return_value=["opencode"]),

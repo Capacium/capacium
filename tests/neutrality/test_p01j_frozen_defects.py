@@ -213,8 +213,8 @@ def test_probe_full_manifest_validation_before_write(tmp_path):
     registry = MagicMock()
 
     with (
-        patch("capacium.commands.install.Manifest.detect_from_directory",
-              return_value=manifest),
+        patch("capacium.commands.install.Manifest.detect_source_declaration",
+                  return_value=manifest),
         patch("capacium.commands.install.shutil.copytree") as copytree,
     ):
         with pytest.raises(ValueError, match="validation failed before write"):
