@@ -96,18 +96,14 @@ def install_capability(
     if source_dir is not None:
         source_raw = str(source_dir)
         source_path = Path(source_raw)
-        is_remote_reference = (
-            not source_path.exists()
-            and (
-                _is_git_remote_url(source_raw)
-                or _GITHUB_SHORT_RE.match(source_raw)
-            )
-        )
+        is_remote_reference = _is_remote_source_reference(source_raw)
         if not is_remote_reference:
             # Validate a caller-supplied local source before StorageManager or
             # Registry can create operator-home state. Remote sources retain
             # their Exchange declaration precedence and clone-time migration.
-            local_source_manifest = Manifest.detect_from_directory(source_path)
+            local_source_manifest = Manifest.detect_source_declaration(
+                source_path
+            )
 
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
@@ -291,13 +287,7 @@ def install_capability(
         source_dir, source_url = resolved
     elif source_dir is not None:
         source_raw = str(source_dir)
-        if (
-            not Path(source_raw).exists()
-            and (
-                _is_git_remote_url(source_raw)
-                or _GITHUB_SHORT_RE.match(source_raw)
-            )
-        ):
+        if _is_remote_source_reference(source_raw):
             resolved = _resolve_source(source_raw, version_spec=version_spec, github_token=github_token)
             if resolved is None:
                 return False
@@ -332,7 +322,7 @@ def install_capability(
             # Fallback to current directory
             cwd = Path.cwd()
             try:
-                manifest = Manifest.detect_from_directory(cwd)
+                manifest = Manifest.detect_source_declaration(cwd)
             except ManifestDeclarationError:
                 manifest = None
             if (
@@ -354,7 +344,7 @@ def install_capability(
             return False
         source_dir = member_dir
 
-    source_manifest = Manifest.detect_from_directory(source_dir)
+    source_manifest = Manifest.detect_source_declaration(source_dir)
     requested_cap_id = cap_id
     canonical_cap_id = _canonical_identity(
         source_manifest, requested_cap_id, source_url
@@ -711,7 +701,7 @@ def _install_single_sub_cap(
     # Read and validate the manifest from the source path BEFORE creating
     # any package reference or copying files. This ensures zero storage
     # writes on invalid/missing Kind.
-    source_manifest = Manifest.detect_from_directory(source_path)
+    source_manifest = Manifest.detect_source_declaration(source_path)
     if not source_manifest.kind:
         raise ValueError(
             f"Sub-manifest {sub_name} has no 'kind' field. "
@@ -1000,7 +990,7 @@ def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
 
     members = infer_multi_skill_members(repo_dir)
     if not members:
-        manifest = Manifest.detect_from_directory(repo_dir)
+        manifest = Manifest.detect_source_declaration(repo_dir)
         if manifest.kind == "bundle":
             members = [
                 m for m in manifest.capabilities
@@ -1023,12 +1013,19 @@ def _is_git_remote_url(value: str) -> bool:
     return value.startswith(("https://", "http://", "git@", "file://"))
 
 
+def _is_remote_source_reference(value: str) -> bool:
+    """Treat an existing path as local before considering shorthand URLs."""
+    return not Path(value).exists() and bool(
+        _is_git_remote_url(value) or _GITHUB_SHORT_RE.match(value)
+    )
+
+
 def _resolve_source(
     source_str: str,
     version_spec: Optional[str] = None,
     github_token: Optional[str] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
-    if _is_git_remote_url(source_str) or _GITHUB_SHORT_RE.match(source_str):
+    if _is_remote_source_reference(source_str):
         version_filter = version_spec if version_spec not in ("latest", "stable", None) else None
         return _clone_remote_source(source_str, version_filter=version_filter, github_token=github_token)
 
@@ -1666,7 +1663,7 @@ def _fetch_from_registry(
         if provenance is not None:
             best_version = provenance.version
 
-        manifest = Manifest.detect_from_directory(repo_dir)
+        manifest = Manifest.detect_source_declaration(repo_dir)
         if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
             best_version = manifest.version
         if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
@@ -2237,7 +2234,7 @@ def _install_from_tarball(
     else:
         source_dir = tmp_dir
 
-    manifest = Manifest.detect_from_directory(source_dir)
+    manifest = Manifest.detect_source_declaration(source_dir)
     if manifest.name == source_dir.name and manifest.version == "1.0.0" and not (source_dir / "capability.yaml").exists():
         print("  Tarball does not contain a valid capability (no capability.yaml)")
         shutil.rmtree(tmp_dir, ignore_errors=True)

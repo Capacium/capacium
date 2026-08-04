@@ -378,6 +378,56 @@ class Manifest:
 
     @classmethod
     def detect_from_directory(cls, directory: Path) -> "Manifest":
+        """Read a package manifest using the legacy-compatible reader path.
+
+        Installed packages and adapter inputs may predate mandatory Kind
+        declarations. Keep their historical best-effort behavior here; new
+        source ingestion must use :meth:`detect_source_declaration` instead.
+        """
+        directory = Path(directory)
+        candidates = [
+            directory / "capability.yaml",
+            directory / "capability.yml",
+            directory / "capability.json",
+            directory / ".skillpkg.json",
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    return cls.load(path)
+                except Exception:
+                    continue
+
+        from .versioning import VersionManager
+        version = VersionManager.detect_version(directory)
+
+        members = infer_multi_skill_members(directory)
+        if members:
+            return cls(
+                kind="bundle",
+                owner="unknown",
+                name=directory.name,
+                version=version,
+                description=f"Multi-skill bundle {directory.name}",
+                capabilities=members,
+            )
+
+        return cls(
+            kind="skill",
+            owner="unknown",
+            name=directory.name,
+            version=version,
+            description=f"Capability {directory.name}",
+        )
+
+    @classmethod
+    def detect_source_declaration(cls, directory: Path) -> "Manifest":
+        """Resolve a new source declaration without compatibility inference.
+
+        Existing malformed manifests and missing Kind fields fail immediately.
+        Manifestless sources enter only through a versioned source-format
+        migration that records ``x_kind_migration`` provenance.
+        """
         directory = Path(directory)
         candidates = [
             directory / "capability.yaml",
