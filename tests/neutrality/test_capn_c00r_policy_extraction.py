@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import builtins
 import importlib.util
+import os
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -64,6 +68,69 @@ def test_policy_shim_exits_before_network_resolver_installer_or_storage(
     assert forbidden_imports.isdisjoint(imported)
 
 
+def test_policy_shim_with_source_exits_before_all_external_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from capacium import cli  # Load the command module before I/O is denied.
+
+    source = tmp_path / "source"
+    source.mkdir()
+    marker = source / "marker.txt"
+    marker.write_text("unchanged", encoding="utf-8")
+    before = marker.read_bytes()
+
+    forbidden_imports = {
+        "capacium.commands.install",
+        "capacium.commands.policy",
+        "capacium.commands._resolve",
+        "capacium.registry",
+        "capacium.storage",
+    }
+    attempted_effects: list[str] = []
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in forbidden_imports:
+            attempted_effects.append(f"import:{name}")
+            raise AssertionError(f"legacy policy shim imported {name}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    def forbidden_effect(*_args, **_kwargs):
+        attempted_effects.append("external-effect")
+        raise AssertionError("legacy policy shim attempted an external effect")
+
+    monkeypatch.setattr(sys, "argv", [
+        "cap",
+        "install",
+        "acme/demo",
+        "--source",
+        str(source),
+        "--policy",
+        "legacy-policy.yaml",
+    ])
+
+    with monkeypatch.context() as guard:
+        guard.setattr(builtins, "__import__", guarded_import)
+        guard.setattr("urllib.request.urlopen", forbidden_effect)
+        for method in ("open", "read_text", "write_text", "mkdir", "unlink"):
+            guard.setattr(Path, method, forbidden_effect)
+        for operation in ("copy", "copy2", "copytree", "move", "rmtree"):
+            guard.setattr(shutil, operation, forbidden_effect)
+        for operation in ("replace", "rename", "remove", "unlink", "mkdir", "makedirs"):
+            guard.setattr(os, operation, forbidden_effect)
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+    captured = capsys.readouterr()
+    assert exc.value.code == 2
+    assert "cap-policy install <capability> --policy <policy-file>" in captured.err
+    assert attempted_effects == []
+    assert marker.read_bytes() == before
+
+
 def test_install_help_does_not_advertise_policy_flag(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -101,6 +168,45 @@ def test_regular_install_path_is_unchanged(
 
 def test_policy_module_is_absent_from_core_package() -> None:
     assert importlib.util.find_spec("capacium.commands.policy") is None
+
+
+def test_source_scan_finds_no_active_policy_evaluator_or_workflow_migration() -> None:
+    source_root = Path(__file__).parents[2] / "src" / "capacium"
+    forbidden_calls = {"enforce_policy", "resolve_capability_info"}
+    forbidden_text = {
+        "capacium.commands.policy",
+        "policy-as-code",
+        "policy violation",
+        "policy_meta",
+    }
+    policy_workflow = re.compile(r"policy.*workflow|workflow.*policy", re.IGNORECASE)
+    findings: list[str] = []
+
+    for path in sorted(source_root.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        relative = path.relative_to(source_root)
+        tree = ast.parse(text, filename=str(relative))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = None
+            if isinstance(node.func, ast.Name):
+                name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+            if name in forbidden_calls:
+                findings.append(f"{relative}:{node.lineno}: call:{name}")
+
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            lowered = line.lower()
+            if any(token in lowered for token in forbidden_text):
+                findings.append(f"{relative}:{lineno}: {line.strip()}")
+            if policy_workflow.search(line):
+                findings.append(f"{relative}:{lineno}: {line.strip()}")
+
+    assert not (source_root / "commands" / "policy.py").exists()
+    assert findings == []
 
 
 @pytest.mark.parametrize(
