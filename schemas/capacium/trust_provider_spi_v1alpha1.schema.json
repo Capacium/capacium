@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/trust/trust-provider-spi/v1alpha1",
+  "title": "TrustProvider",
+  "description": "Provider-neutral trust verification SPI (Protocol). Capacium Core calls this interface; consumers configure their provider implementation. No authorization leakage.",
+  "type": "object",
+  "properties": {
+    "interface_id": {
+      "type": "string",
+      "const": "capacium.trust_provider.v1alpha1",
+      "description": "Canonical interface identifier"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "v1alpha1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Protocol",
+      "description": "Python typing.Protocol — runtime_checkable"
+    },
+    "properties": {
+      "type": "object",
+      "properties": {
+        "verify": {
+          "type": "object",
+          "description": "verify(signed_evidence: bytes, trust_context: dict) -> EvidenceVerificationResult",
+          "properties": {
+            "args": {
+              "type": "array",
+              "items": [
+                {"type": "string", "const": "signed_evidence"},
+                {"type": "string", "const": "trust_context"}
+              ]
+            },
+            "returns": {
+              "type": "string",
+              "const": "EvidenceVerificationResult"
+            }
+          }
+        },
+        "supported_algorithms": {
+          "type": "object",
+          "description": "Property: list[str] of supported signature algorithms"
+        },
+        "provider_id": {
+          "type": "object",
+          "description": "Property: str — unique provider identifier"
+        }
+      }
+    },
+    "boundary_rules": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Core boundary rules for TrustProvider implementations",
+      "default": [
+        "Must NOT emit permit/deny/entitlement decisions",
+        "Must NOT emit commercial actions or rights expiry",
+        "Must NOT emit lifecycle transitions",
+        "Must return ONLY cryptographic verification facts",
+        "EXPIRE status means cryptographic validity window, not commercial rights"
+      ]
+    }
+  },
+  "required": ["interface_id", "kind"]
+}

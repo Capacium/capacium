@@ -69,17 +69,17 @@ def test_missing_evidence_digest_raises_valueerror():
 
 
 def test_empty_evidence_digest_raises_valueerror():
-    with pytest.raises(ValueError, match="evidence_digest must be a non-empty string"):
+    with pytest.raises(ValueError, match="evidence_digest must match"):
         EvidenceVerificationResult.from_dict(_make({"evidence_digest": ""}))
 
 
 def test_non_hex_evidence_digest_raises_valueerror():
-    with pytest.raises(ValueError, match="evidence_digest contains non-hex"):
+    with pytest.raises(ValueError, match="evidence_digest must match"):
         EvidenceVerificationResult.from_dict(_make({"evidence_digest": "sha256:nothex!!"}))
 
 
 def test_plain_non_hex_digest_raises_valueerror():
-    with pytest.raises(ValueError, match="evidence_digest contains non-hex"):
+    with pytest.raises(ValueError, match="evidence_digest must match"):
         EvidenceVerificationResult.from_dict(_make({"evidence_digest": "xyz"}))
 
 
@@ -120,18 +120,18 @@ def test_valid_evr_with_all_required_fields_succeeds():
     assert result.verifier == "test-provider"
     assert result.algorithm == "Ed25519"
     assert result.evidence_digest == VALID_EVR_DICT["evidence_digest"]
-    assert result._version_validated is True
 
 
 def test_valid_evr_with_optional_fields_succeeds():
     d = _make({
+        "status": "invalid",
         "failure_reason": "SIGNATURE_MISMATCH",
-        "evidence_references": [{"digest": "sha256:abc123abc123", "uri": "https://example.com"}],
+        "evidence_references": [{"digest": "sha256:abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1", "uri": "https://example.com"}],
     })
     result = EvidenceVerificationResult.from_dict(d)
     assert result.failure_reason == "SIGNATURE_MISMATCH"
     assert len(result.evidence_references) == 1
-    assert result.evidence_references[0]["digest"] == "sha256:abc123abc123"
+    assert result.evidence_references[0]["digest"] == "sha256:abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1"
 
 
 def test_all_valid_status_strings_accepted():
@@ -143,17 +143,17 @@ def test_all_valid_status_strings_accepted():
 
 # ── schema version handling ───────────────────────────────────────────────
 
-def test_unknown_schema_version_preserved_and_flagged():
+def test_unknown_schema_version_raises_valueerror():
     d = _make({"schema_version": "v42-beta-something"})
-    result = EvidenceVerificationResult.from_dict(d)
-    assert result._version_validated is False
+    with pytest.raises(ValueError, match="Unsupported schema_version"):
+        EvidenceVerificationResult.from_dict(d)
 
 
-def test_missing_schema_version_flagged_none():
+def test_missing_schema_version_raises_valueerror():
     d = _make()
     del d["schema_version"]
-    result = EvidenceVerificationResult.from_dict(d)
-    assert result._version_validated is None
+    with pytest.raises(ValueError, match="missing required field: schema_version"):
+        EvidenceVerificationResult.from_dict(d)
 
 
 # ── optional field tolerance ──────────────────────────────────────────────
@@ -183,7 +183,7 @@ def test_missing_failure_reason_is_ok():
 
 def test_round_trip_preserves_all_required_and_optional_fields():
     original = EvidenceVerificationResult(
-        status=VerificationStatus.VALID,
+        status=VerificationStatus.INVALID,
         verified_at="2026-07-28T12:00:00Z",
         evidence_digest="sha256:deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe",
         algorithm="ES256",
@@ -192,7 +192,7 @@ def test_round_trip_preserves_all_required_and_optional_fields():
         key_id="kid-1",
         issuer="issuer.example",
         failure_reason="TEST_CAUSE",
-        evidence_references=[{"digest": "sha256:aaaaaaaaaaaa", "uri": "https://ref.example"}],
+        evidence_references=[{"digest": "sha256:aaaaaaaaaaaa0000aaaaaaaaaaaa0000aaaaaaaaaaaa0000aaaaaaaaaaaa1111", "uri": "https://ref.example"}],
         metadata={"extra": "info"},
     )
     roundtripped = EvidenceVerificationResult.from_dict(original.to_dict())
@@ -205,4 +205,3 @@ def test_round_trip_preserves_all_required_and_optional_fields():
     assert roundtripped.failure_reason == original.failure_reason
     assert roundtripped.evidence_references == original.evidence_references
     assert roundtripped.metadata == original.metadata
-    assert roundtripped._version_validated is True

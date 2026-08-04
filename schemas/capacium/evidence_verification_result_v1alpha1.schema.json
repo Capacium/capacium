@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/trust/evidence-verification-result/v1alpha1",
+  "title": "EvidenceVerificationResult",
+  "description": "Implementation-neutral cryptographic evidence verification result. Contains ONLY verification facts — no authorization, entitlement, or policy decisions.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "verified_at",
+    "evidence_digest",
+    "algorithm",
+    "verifier",
+    "evidence_type"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "v1alpha1",
+      "description": "EVR schema version identifier"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "valid",
+        "invalid",
+        "key_expired",
+        "key_revoked",
+        "unknown_key",
+        "malformed",
+        "unsupported_algorithm",
+        "inconclusive",
+        "unavailable"
+      ],
+      "description": "Cryptographic evidence verification outcome"
+    },
+    "verified_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp of verification"
+    },
+    "evidence_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 digest of evidence bytes, prefixed with sha256:"
+    },
+    "algorithm": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Signature algorithm (e.g. Ed25519, ES256)"
+    },
+    "verifier": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider identifier of the verifier"
+    },
+    "evidence_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Evidence format identifier (e.g. JWS, R4_LEGACY_V1ALPHA1)"
+    },
+    "key_id": {
+      "type": ["string", "null"],
+      "description": "Key identifier from the evidence"
+    },
+    "issuer": {
+      "type": ["string", "null"],
+      "description": "Issuer identifier from the evidence"
+    },
+    "failure_reason": {
+      "type": ["string", "null"],
+      "description": "Typed machine-readable failure code (absent when status is valid)"
+    },
+    "evidence_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "digest": {"type": "string"},
+          "uri": {"type": "string"}
+        }
+      },
+      "description": "List of evidence digest and URI references"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Provider-specific opaque metadata"
+    }
+  },
+  "additionalProperties": false,
+  "if": {
+    "properties": {
+      "status": {"const": "valid"}
+    }
+  },
+  "then": {
+    "properties": {
+      "failure_reason": {"type": "null"}
+    }
+  }
+}

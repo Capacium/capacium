@@ -216,11 +216,13 @@ def test_R05_05_algorithm_none_rejected_by_from_dict():
     """Algorithm 'none' is rejected by from_dict()."""
     with pytest.raises(ValueError, match=r"(?i)none.*rejected|explicitly rejected"):
         EvidenceVerificationResult.from_dict({
+            "schema_version": "v1alpha1",
             "status": "valid",
             "verified_at": "2026-08-04T00:00:00Z",
             "evidence_digest": "sha256:" + "a" * 64,
             "algorithm": "none",
             "verifier": "test",
+            "evidence_type": "JWS",
         })
 
 
@@ -229,11 +231,13 @@ def test_R05_05b_algorithm_NONE_cases_rejected():
     for alg in ("None", "NONE", "nOnE"):
         with pytest.raises(ValueError):
             EvidenceVerificationResult.from_dict({
+                "schema_version": "v1alpha1",
                 "status": "valid",
                 "verified_at": "2026-08-04T00:00:00Z",
                 "evidence_digest": "sha256:" + "a" * 64,
                 "algorithm": alg,
                 "verifier": "test",
+                "evidence_type": "JWS",
             })
 
 
@@ -383,14 +387,17 @@ def test_R05_11_core_isolation_src_does_not_import_from_contrib():
 
 def test_R05_extra_from_dict_rejects_missing_required_fields():
     """from_dict rejects dicts missing required fields."""
-    required = ["status", "verified_at", "evidence_digest", "algorithm", "verifier"]
+    required = ["schema_version", "status", "verified_at", "evidence_digest",
+                "algorithm", "verifier", "evidence_type"]
     for field in required:
         data = {
+            "schema_version": "v1alpha1",
             "status": "valid",
             "verified_at": "2026-08-04T00:00:00Z",
             "evidence_digest": "sha256:" + "a" * 64,
             "algorithm": "Ed25519",
             "verifier": "test",
+            "evidence_type": "JWS",
         }
         del data[field]
         with pytest.raises(ValueError, match=rf"(?i){field}"):
@@ -399,24 +406,23 @@ def test_R05_extra_from_dict_rejects_missing_required_fields():
 
 def test_R05_extra_from_dict_rejects_invalid_hex_digest():
     """from_dict rejects evidence_digest with non-hex content."""
-    with pytest.raises(ValueError, match="hex"):
+    with pytest.raises(ValueError, match="sha256"):
         EvidenceVerificationResult.from_dict({
+            "schema_version": "v1alpha1",
             "status": "valid",
             "verified_at": "2026-08-04T00:00:00Z",
             "evidence_digest": "sha256:zzzz" + "a" * 60,
             "algorithm": "Ed25519",
             "verifier": "test",
+            "evidence_type": "JWS",
         })
 
 
 def test_R05_extra_from_dict_rejects_empty_verifier():
     """from_dict rejects empty verifier string."""
-    # trust.py checks not verifier (falsy) — catches '' but not '   '
-    # which is truthy in Python.  Whitespace-only verifier passes
-    # validation (this is a known property of the current code).
-    # We verify verifier='' is rejected.
     with pytest.raises(ValueError, match="verifier"):
         EvidenceVerificationResult.from_dict({
+            "schema_version": "v1alpha1",
             "status": "valid",
             "verified_at": "2026-08-04T00:00:00Z",
             "evidence_digest": "sha256:" + "a" * 64,

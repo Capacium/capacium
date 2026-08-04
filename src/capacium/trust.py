@@ -11,6 +11,8 @@ VerificationStatus semantics (CAP-A11 — disambiguated):
 - UNAVAILABLE: no configured provider or provider unavailable
 """
 
+import re
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Protocol, runtime_checkable
@@ -57,7 +59,6 @@ class EvidenceVerificationResult:
     failure_reason: Optional[str] = None      # Typed, machine-readable code
     evidence_references: list = field(default_factory=list)  # List of {digest, uri} refs
     metadata: dict = field(default_factory=dict)  # Provider-specific (opaque to Core)
-    _version_validated: Optional[bool] = field(default=None, repr=False)
 
     def is_verified(self) -> bool:
         return self.status == VerificationStatus.VALID
@@ -78,8 +79,39 @@ class EvidenceVerificationResult:
             "metadata": self.metadata,
         }
 
+    _KNOWN_FIELDS = frozenset({
+        "schema_version", "status", "verified_at", "evidence_digest", "algorithm",
+        "verifier", "evidence_type", "key_id", "issuer", "failure_reason",
+        "evidence_references", "metadata",
+    })
+
+    _EVIDENCE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+    _RFC3339_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    )
+
     @classmethod
     def from_dict(cls, data: dict) -> "EvidenceVerificationResult":
+        unknown = [k for k in data if k not in cls._KNOWN_FIELDS]
+        if unknown:
+            raise ValueError(
+                f"Unknown field(s) in EvidenceVerificationResult: {', '.join(sorted(unknown))}"
+            )
+
+        if "schema_version" not in data:
+            raise ValueError(
+                "EvidenceVerificationResult missing required field: schema_version"
+            )
+        schema_version = data["schema_version"]
+        if not isinstance(schema_version, str):
+            raise ValueError(
+                f"schema_version must be a string, got: {schema_version!r}"
+            )
+        if schema_version != EVR_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported schema_version: {schema_version!r} (expected {EVR_SCHEMA_VERSION!r})"
+            )
+
         if "status" not in data:
             raise ValueError("EvidenceVerificationResult missing required field: status")
         try:
@@ -95,20 +127,25 @@ class EvidenceVerificationResult:
 
         if "verified_at" not in data:
             raise ValueError("EvidenceVerificationResult missing required field: verified_at")
+        verified_at = data["verified_at"]
+        if not isinstance(verified_at, str):
+            raise ValueError(f"verified_at must be a string, got: {verified_at!r}")
+        if not verified_at:
+            raise ValueError("verified_at must not be empty")
+        if not cls._RFC3339_RE.match(verified_at):
+            raise ValueError(
+                f"verified_at must be RFC 3339 (ISO 8601 with Z or offset), got: {verified_at!r}"
+            )
 
         if "evidence_digest" not in data:
             raise ValueError("EvidenceVerificationResult missing required field: evidence_digest")
         evidence_digest = data["evidence_digest"]
-        if not evidence_digest or not isinstance(evidence_digest, str):
-            raise ValueError(f"evidence_digest must be a non-empty string, got: {evidence_digest!r}")
-        if ":" in evidence_digest:
-            _, hex_part = evidence_digest.split(":", 1)
-        else:
-            hex_part = evidence_digest
-        try:
-            bytes.fromhex(hex_part)
-        except ValueError:
-            raise ValueError(f"evidence_digest contains non-hex characters: {evidence_digest!r}")
+        if not isinstance(evidence_digest, str):
+            raise ValueError(f"evidence_digest must be a string, got: {evidence_digest!r}")
+        if not cls._EVIDENCE_DIGEST_RE.match(evidence_digest):
+            raise ValueError(
+                f"evidence_digest must match sha256:<64-char-hex>, got: {evidence_digest!r}"
+            )
 
         if "algorithm" not in data:
             raise ValueError("EvidenceVerificationResult missing required field: algorithm")
@@ -120,23 +157,28 @@ class EvidenceVerificationResult:
 
         if "evidence_type" not in data:
             raise ValueError("EvidenceVerificationResult missing required field: evidence_type")
+        evidence_type = data["evidence_type"]
+        if not isinstance(evidence_type, str):
+            raise ValueError(f"evidence_type must be a string, got: {evidence_type!r}")
+        if not evidence_type:
+            raise ValueError("evidence_type must not be empty")
 
-        schema_version = data.get("schema_version")
-        version_validated = (schema_version == EVR_SCHEMA_VERSION) if schema_version else None
+        failure_reason = data.get("failure_reason")
+        if status == VerificationStatus.VALID and failure_reason is not None:
+            raise ValueError("VALID status cannot carry a failure_reason")
 
         return cls(
             status=status,
-            verified_at=data["verified_at"],
+            verified_at=verified_at,
             evidence_digest=evidence_digest,
             algorithm=algorithm,
             verifier=verifier,
-            evidence_type=data["evidence_type"],
+            evidence_type=evidence_type,
             key_id=data.get("key_id"),
             issuer=data.get("issuer"),
-            failure_reason=data.get("failure_reason"),
+            failure_reason=failure_reason,
             evidence_references=data.get("evidence_references", []),
             metadata=data.get("metadata", {}),
-            _version_validated=version_validated,
         )
 
 

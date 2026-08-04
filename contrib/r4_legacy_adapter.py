@@ -49,9 +49,11 @@ def verify_r4_evidence(
             verifier=verifier_id,
             evidence_type=R4_LEGACY_EVIDENCE_TYPE,
             failure_reason="MALFORMED_UTF8",
+            metadata={"classification": "LEGACY_REFERENCE_PROFILE_V1ALPHA1"},
         )
 
     try:
+        text = text.replace(".", "")
         signed = base64.urlsafe_b64decode(_add_padding(text))
     except Exception:
         return EvidenceVerificationResult(
@@ -62,6 +64,7 @@ def verify_r4_evidence(
             verifier=verifier_id,
             evidence_type=R4_LEGACY_EVIDENCE_TYPE,
             failure_reason="MALFORMED_BASE64",
+            metadata={"classification": "LEGACY_REFERENCE_PROFILE_V1ALPHA1"},
         )
 
     try:
@@ -79,6 +82,7 @@ def verify_r4_evidence(
             verifier=verifier_id,
             evidence_type=R4_LEGACY_EVIDENCE_TYPE,
             failure_reason="MALFORMED_R4_STRUCTURE",
+            metadata={"classification": "LEGACY_REFERENCE_PROFILE_V1ALPHA1"},
         )
 
     try:

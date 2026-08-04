@@ -106,7 +106,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.UNSUPPORTED_ALGORITHM,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=alg or "unknown",
                 verifier=self.provider_id,
                 failure_reason=f"UNSUPPORTED_ALGORITHM:{alg}",
@@ -117,7 +117,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.UNKNOWN_KEY,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 key_id=kid,
@@ -131,7 +131,7 @@ class JwsEd25519TrustProvider:
             return EvidenceVerificationResult(
                 status=VerificationStatus.INVALID,
                 verified_at=_rfc3339(now),
-                evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+                evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
                 algorithm=JWS_HEADER_ALG,
                 verifier=self.provider_id,
                 key_id=kid,
@@ -141,7 +141,7 @@ class JwsEd25519TrustProvider:
         return EvidenceVerificationResult(
             status=VerificationStatus.VALID,
             verified_at=_rfc3339(now),
-            evidence_digest=hashlib.sha256(signed_evidence).hexdigest(),
+            evidence_digest=f"sha256:{hashlib.sha256(signed_evidence).hexdigest()}",
             algorithm=JWS_HEADER_ALG,
             verifier=self.provider_id,
             evidence_type="JWS",
