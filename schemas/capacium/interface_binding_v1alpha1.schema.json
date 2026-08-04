@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/capacium/interface_binding/v1alpha1",
+  "title": "InterfaceBinding",
+  "description": "Provider-to-interface assignment — owned by consumer profiles. Multiple bindings may map the same interface to different providers. InterfaceBinding is not part of interface compatibility.",
+  "type": "object",
+  "required": ["interface_id", "provider_id", "operation_id"],
+  "properties": {
+    "interface_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Globally unique reverse-DNS interface identifier"
+    },
+    "provider_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Reverse-DNS provider identifier"
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "Dot-segment operation identifier — single segment (no dots) is valid"
+    }
+  },
+  "additionalProperties": false
+}

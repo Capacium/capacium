@@ -3,13 +3,54 @@
 CAPN-R2-P03: Interface identity is separate from provider/operation binding.
 Compatibility compares interface identity only — not provider assignment.
 InterfaceBinding carries provider/operation mapping and is owned by consumers.
+
+Identity grammar (CAPN-G2A-R02):
+  interface_id, provider_id → reverse-DNS: [a-z][a-z0-9_]*(.[a-z][a-z0-9_]*)+
+  operation_id             → dot-segments:  [a-z][a-z0-9_]*(.[a-z][a-z0-9_]*)*
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, Sequence
+
+# ── identity grammar ──────────────────────────────────────────────────────
+# Reverse-DNS: at least two dot-separated lowercase alphanumeric segments.
+# No leading/trailing dots, no consecutive dots, no uppercase.
+VALID_INTERFACE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+VALID_PROVIDER_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
+
+# Dot-separated lowercase alphanumeric + underscore segments.
+# Single segment (no dots) is valid.
+VALID_OPERATION_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+
+
+def validate_identity(
+    interface_id: str,
+    provider_id: str,
+    operation_id: str,
+) -> None:
+    """Validate identity fields against the frozen grammar.
+
+    Raises ValueError with a message naming the offending field and value.
+    """
+    if not VALID_INTERFACE_ID.match(interface_id):
+        raise ValueError(
+            f"Invalid interface_id {interface_id!r}: "
+            f"must match reverse-DNS grammar [a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+"
+        )
+    if not VALID_PROVIDER_ID.match(provider_id):
+        raise ValueError(
+            f"Invalid provider_id {provider_id!r}: "
+            f"must match reverse-DNS grammar [a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+"
+        )
+    if not VALID_OPERATION_ID.match(operation_id):
+        raise ValueError(
+            f"Invalid operation_id {operation_id!r}: "
+            f"must match dot-segment grammar [a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*"
+        )
 
 
 class InterfaceStatus(str, Enum):
@@ -48,6 +89,13 @@ class QualifiedInterface:
     digest: Optional[str] = None
     compatibility_metadata: dict = field(default_factory=dict)
     owner_payload: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not VALID_INTERFACE_ID.match(self.interface_id):
+            raise ValueError(
+                f"Invalid interface_id {self.interface_id!r}: "
+                f"must match reverse-DNS grammar [a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+"
+            )
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +143,9 @@ class InterfaceBinding:
     interface_id: str
     provider_id: str
     operation_id: str
+
+    def __post_init__(self) -> None:
+        validate_identity(self.interface_id, self.provider_id, self.operation_id)
 
     def to_dict(self) -> dict:
         return asdict(self)

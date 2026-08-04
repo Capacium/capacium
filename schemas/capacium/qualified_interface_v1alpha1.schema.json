@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/capacium/qualified_interface/v1alpha1",
+  "title": "QualifiedInterface",
+  "description": "Provider-neutral interface identity — versioned, losslessly round-tripped. Interface identity is defined by interface_id, interface_version, schema_version, and status. Compatibility compares interface identity fields only — NOT provider or operation.",
+  "type": "object",
+  "required": ["interface_id", "interface_version", "schema_version", "status"],
+  "properties": {
+    "interface_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Globally unique reverse-DNS interface name (e.g. 'capacium.xyz/interfaces/skill-runner/v1')"
+    },
+    "interface_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the interface contract"
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Version of the wire schema for this interface"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["required", "optional"],
+      "description": "Whether the interface is required or optional"
+    },
+    "schema_ref": {
+      "type": "string",
+      "description": "Optional URI reference to the interface schema artifact"
+    },
+    "digest": {
+      "type": "string",
+      "description": "Optional SHA-256 digest of the interface schema artifact"
+    },
+    "compatibility_metadata": {
+      "type": "object",
+      "description": "Opaque compatibility metadata — Core does not interpret"
+    },
+    "owner_payload": {
+      "type": "object",
+      "description": "Consumer-defined opaque payload — Core does not interpret"
+    }
+  },
+  "additionalProperties": false
+}

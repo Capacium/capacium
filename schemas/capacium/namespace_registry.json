@@ -1,0 +1,44 @@
+{
+  "namespace": "capacium",
+  "registry_version": "1",
+  "owner": "CAPN-C01",
+  "base_sha": "f270447fabee03f9963c38037aa9b0aa57f5a14c",
+  "entries": [
+    {
+      "interface_id": "capacium.qualified_interface.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/qualified_interface_v1alpha1.schema.json",
+      "sha256": "57dce5fea5e537307fd72d4c5e35bc0699cfd8630f16013abdeefe9b791c1fd5",
+      "owner": "CAPN-C01"
+    },
+    {
+      "interface_id": "capacium.interface_binding.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/interface_binding_v1alpha1.schema.json",
+      "sha256": "aa171999fc111e18f2c0166dcee7f634779d4f8ec7c966d9e1f61a1d5f170768",
+      "owner": "CAPN-C01"
+    },
+    {
+      "interface_id": "capacium.compatibility_result.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/compatibility_result_v1alpha1.schema.json",
+      "sha256": "79f5381b2f0bc6a3fab310e6825039cc999dc6ea5a545c756465f08e35060fbc",
+      "owner": "CAPN-C01"
+    },
+    {
+      "interface_id": "capacium.capacium_kind.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/capacium_kind_v1alpha1.schema.json",
+      "sha256": "0e14a83a822327522701766ab1f745a16c0569966017a0411d4dbf9f3c7d2ab8",
+      "owner": "CAPN-C01"
+    }
+  ]
+}
