@@ -18,10 +18,7 @@ Runnable review verifying C02 trust boundary integrity:
 """
 
 import ast
-import importlib
 import pathlib
-import re
-import sys
 
 import pytest
 from nacl.signing import SigningKey
@@ -117,7 +114,7 @@ def test_R05_02_no_entitlement_leakage_in_trust_py():
                 violations.append(f"L{i}: {stripped[:80]}")
 
     if violations:
-        pytest.fail(f"Non-docstring entitlement leakage in trust.py:\n" +
+        pytest.fail("Non-docstring entitlement leakage in trust.py:\n" +
                     "\n".join(violations))
 
 
@@ -366,7 +363,7 @@ def test_R05_11_core_isolation_src_does_not_import_from_contrib():
         if py_file.name.startswith("__"):
             continue
         rel = py_file.relative_to(ROOT)
-        text = _file_text(py_file)
+        _file_text(py_file)
         tree = _ast_of(py_file)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -445,5 +442,5 @@ def test_R05_REPORT():
     print(f"CANDIDATE_SHA: {CANDIDATE_SHA}")
     print(f"TOTAL_REVIEW_TESTS: {count}")
     print(f"PASSED: {count}")
-    print(f"FAILED: 0")
+    print("FAILED: 0")
     print("OVERALL: PASS")

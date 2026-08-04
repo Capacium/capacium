@@ -10,7 +10,6 @@ import ast
 import json
 import re
 from pathlib import Path
-from unittest.mock import MagicMock, sentinel
 
 import pytest
 
@@ -23,12 +22,10 @@ from src.capacium.interfaces import (
     InterfaceBinding,
     InterfaceStatus,
     QualifiedInterface,
-    validate_identity,
 )
 from src.capacium.kinds import (
     ACTIVE_KINDS,
     CapaciumKind,
-    _VALID_KIND_VALUES,
     validate_kind,
 )
 
@@ -440,13 +437,13 @@ def test_gate_10_no_approval_defined_as_core():
 def test_gate_10_marketplace_only_as_client_command():
     """Marketplace references are only external client commands, not core concepts."""
     src = _REPO / "src" / "capacium"
-    files_with_marketplace = []
     for py_file in src.rglob("*.py"):
         source = py_file.read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef) and "marketplace" in node.name.lower():
                 pytest.fail(f"{py_file}:{node.lineno} defines core class '{node.name}'")
+        del source  # unused after ast.parse
 
 
 # ═══════════════════════════════════════════════════════════════════════════

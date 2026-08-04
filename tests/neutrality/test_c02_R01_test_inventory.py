@@ -95,7 +95,7 @@ class TestC02R01Inventory:
                 line_num = text[: match.start()].count("\n") + 1
                 offenders.append(f"{f.name}:{line_num}")
             assert not offenders, (
-                f"No pytest.mark.skip/xfail allowed in neutrality: "
+                "No pytest.mark.skip/xfail allowed in neutrality: "
                 + "; ".join(offenders)
             )
 

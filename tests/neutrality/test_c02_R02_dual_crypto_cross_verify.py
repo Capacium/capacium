@@ -72,7 +72,7 @@ class PynaclJwsVerifierWithExpiry:
     Test helper only — NEVER promoted to src/capacium/.
     """
 
-    trusted_keys: dict[str, "nacl.signing.VerifyKey"]
+    trusted_keys: dict[str, "object"]  # nacl.signing.VerifyKey
     provider_id: str
 
     def verify(

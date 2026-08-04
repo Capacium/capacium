@@ -4,9 +4,7 @@ R4 evidence is base64-encoded payload + dot + base64-encoded 64-byte Ed25519 sig
 The adapter reads frozen R4 bytes without interpreting policy semantics.
 """
 
-import base64
 import hashlib
-import json
 
 import pytest
 from nacl.signing import SigningKey
@@ -16,7 +14,6 @@ from contrib.r4_legacy_adapter import (
     verify_r4_evidence,
 )
 from src.capacium.trust import (
-    EvidenceVerificationResult,
     VerificationStatus,
 )
 
