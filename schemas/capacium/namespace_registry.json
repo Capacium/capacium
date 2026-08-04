@@ -39,6 +39,54 @@
       "schema_ref": "schemas/capacium/capacium_kind_v1alpha1.schema.json",
       "sha256": "0e14a83a822327522701766ab1f745a16c0569966017a0411d4dbf9f3c7d2ab8",
       "owner": "CAPN-C01"
+    },
+    {
+      "interface_id": "capacium.evidence_verification_result.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/evidence_verification_result_v1alpha1.schema.json",
+      "schema_sha256": "7a9e499a5c6db56fb94b4b6d6798894c806cfd1d71a0b7158a2610c61b7bad2b",
+      "source_ref": "src/capacium/trust.py",
+      "source_sha256": "87e8e2b2cbfc18704a275d177c2d618bf69cac3113f9e9d462abb2a9b57182cd",
+      "sha256": "7a9e499a5c6db56fb94b4b6d6798894c806cfd1d71a0b7158a2610c61b7bad2b",
+      "owner": "CAPN-C02",
+      "proposed_by": "CAPN-C02"
+    },
+    {
+      "interface_id": "capacium.trust_provider_spi.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "REQUIRED",
+      "schema_ref": "schemas/capacium/trust_provider_spi_v1alpha1.schema.json",
+      "schema_sha256": "ccf2f671dab2063a3e389ca4eec949b9c21a579611823d23f4a2619782e2106a",
+      "source_ref": "src/capacium/trust.py",
+      "source_sha256": "87e8e2b2cbfc18704a275d177c2d618bf69cac3113f9e9d462abb2a9b57182cd",
+      "sha256": "ccf2f671dab2063a3e389ca4eec949b9c21a579611823d23f4a2619782e2106a",
+      "owner": "CAPN-C02",
+      "proposed_by": "CAPN-C02"
+    },
+    {
+      "interface_id": "capacium.jws_ed25519_trust_provider.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "OPTIONAL",
+      "candidate_status": "candidate",
+      "source_ref": "contrib/experimental_jws_spike.py",
+      "sha256": "a1b0967c010e02c1eaa77b5598f66693f52d7f43c8b04cab5069103fdc62b5f0",
+      "owner": "CAPN-C02",
+      "proposed_by": "CAPN-C02"
+    },
+    {
+      "interface_id": "capacium.r4_legacy_adapter.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "status": "OPTIONAL",
+      "profile": "LEGACY_REFERENCE_PROFILE_V1ALPHA1",
+      "source_ref": "contrib/r4_legacy_adapter.py",
+      "sha256": "6963d823fcabcb15e16a15cdb9409b0893b38efeaed6b7840883fb7ad584997e",
+      "owner": "CAPN-C02",
+      "proposed_by": "CAPN-C02"
     }
   ]
 }
