@@ -57,6 +57,7 @@ class EvidenceVerificationResult:
     failure_reason: Optional[str] = None      # Typed, machine-readable code
     evidence_references: list = field(default_factory=list)  # List of {digest, uri} refs
     metadata: dict = field(default_factory=dict)  # Provider-specific (opaque to Core)
+    _version_validated: Optional[bool] = field(default=None, repr=False)
 
     def is_verified(self) -> bool:
         return self.status == VerificationStatus.VALID
@@ -79,19 +80,63 @@ class EvidenceVerificationResult:
 
     @classmethod
     def from_dict(cls, data: dict) -> "EvidenceVerificationResult":
-        status_val = data.get("status", "inconclusive")
+        if "status" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: status")
+        try:
+            status = VerificationStatus(data["status"])
+        except ValueError:
+            raise ValueError(f"Unknown verification status: {data['status']!r}")
+
+        if "verifier" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: verifier")
+        verifier = data["verifier"]
+        if not verifier or not isinstance(verifier, str):
+            raise ValueError(f"verifier must be a non-empty string, got: {verifier!r}")
+
+        if "verified_at" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: verified_at")
+
+        if "evidence_digest" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: evidence_digest")
+        evidence_digest = data["evidence_digest"]
+        if not evidence_digest or not isinstance(evidence_digest, str):
+            raise ValueError(f"evidence_digest must be a non-empty string, got: {evidence_digest!r}")
+        if ":" in evidence_digest:
+            _, hex_part = evidence_digest.split(":", 1)
+        else:
+            hex_part = evidence_digest
+        try:
+            bytes.fromhex(hex_part)
+        except ValueError:
+            raise ValueError(f"evidence_digest contains non-hex characters: {evidence_digest!r}")
+
+        if "algorithm" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: algorithm")
+        algorithm = data["algorithm"]
+        if not algorithm or not isinstance(algorithm, str):
+            raise ValueError(f"algorithm must be a non-empty string, got: {algorithm!r}")
+        if algorithm.lower() == "none":
+            raise ValueError("algorithm 'none' is explicitly rejected")
+
+        if "evidence_type" not in data:
+            raise ValueError("EvidenceVerificationResult missing required field: evidence_type")
+
+        schema_version = data.get("schema_version")
+        version_validated = (schema_version == EVR_SCHEMA_VERSION) if schema_version else None
+
         return cls(
-            status=VerificationStatus(status_val),
+            status=status,
             verified_at=data["verified_at"],
-            evidence_digest=data["evidence_digest"],
-            algorithm=data["algorithm"],
-            verifier=data.get("verifier", ""),
-            evidence_type=data.get("evidence_type", "JWS"),
+            evidence_digest=evidence_digest,
+            algorithm=algorithm,
+            verifier=verifier,
+            evidence_type=data["evidence_type"],
             key_id=data.get("key_id"),
             issuer=data.get("issuer"),
             failure_reason=data.get("failure_reason"),
             evidence_references=data.get("evidence_references", []),
             metadata=data.get("metadata", {}),
+            _version_validated=version_validated,
         )
 
 

@@ -1,0 +1,97 @@
+{
+  "namespace": "capacium",
+  "type": "proposed_registry_entries",
+  "owner": "CAPN-C02",
+  "base_sha": "f270447d6e0e9f912f904b8bd1eb5ec3cff825bb6aa3ad6c1c7d9b3e0a5f6c2d",
+  "registry_owner": "CAPN-C01",
+  "candidate_branch": "capn-c02-g3a",
+  "generated_at": "2026-08-04T00:00:00Z",
+  "entries": [
+    {
+      "interface_id": "capacium.evidence_verification_result.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "schema_ref": "schemas/evidence-verification-result-v1alpha1.schema.json",
+      "status": "required",
+      "owner": "CAPN-C01 (Core)",
+      "profile_type": "core",
+      "source_file": "src/capacium/trust.py",
+      "sha256": "d5d09a1fba2cb7eeaf274540bdc3bed6bcdcde40508b7b9c54e2497823bc2b25",
+      "artifact": {
+        "class": "EvidenceVerificationResult",
+        "description": "Implementation-neutral cryptographic evidence verification result. Contains ONLY verification facts — no authorization, entitlement, or policy decisions.",
+        "schema_url": "https://capacium.xyz/schemas/trust/evidence-verification-result/v1alpha1"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane A",
+        "disambiguated_statuses": true,
+        "frozen_dataclass": true,
+        "round_trip_via": "to_dict/from_dict"
+      }
+    },
+    {
+      "interface_id": "capacium.trust_provider.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "status": "required",
+      "owner": "CAPN-C01 (Core)",
+      "profile_type": "core",
+      "source_file": "src/capacium/trust.py",
+      "sha256": "d5d09a1fba2cb7eeaf274540bdc3bed6bcdcde40508b7b9c54e2497823bc2b25",
+      "artifact": {
+        "class": "TrustProvider",
+        "description": "Provider-neutral trust verification SPI (Protocol). Capacium Core calls this interface; consumers configure their provider implementation.",
+        "kind": "Protocol"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane A",
+        "runtime_checkable": true,
+        "no_authorization_leakage": true
+      }
+    },
+    {
+      "interface_id": "capacium.jws_ed25519_trust_provider.v1alpha1.candidate",
+      "interface_version": "0.1.0",
+      "schema_version": "v1alpha1",
+      "status": "optional",
+      "owner": "CAPN-C02 (Candidate)",
+      "profile_type": "candidate_provider",
+      "source_file": "contrib/experimental_jws_spike.py",
+      "sha256": "47c98f04569c9fe87849e5ef296d9ed6cb7768626a1a2091e052731ab4768c2d",
+      "artifact": {
+        "class": "JwsEd25519TrustProvider",
+        "description": "JWS/Ed25519 verification spike TrustProvider. Maintained-standards spike using Ed25519 (RFC 8032) and JWS (RFC 7515). Candidate/pre-GA profile — resides in contrib/ not src/.",
+        "ga_status": "candidate"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane C",
+        "crypto": "PyNaCl (nacl.signing)",
+        "algorithms": ["EdDSA"],
+        "contrib_location": true,
+        "signing_utility_included": "jws_ed25519_sign (test/vector only)"
+      }
+    },
+    {
+      "interface_id": "capacium.r4_legacy_adapter.v1alpha1.reference",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "status": "optional",
+      "owner": "CAPN-C02 (Reference)",
+      "profile_type": "reference_legacy",
+      "source_file": "contrib/r4_legacy_adapter.py",
+      "sha256": "2af1f6f0d9587e0f3517ae3aad6382182800da3fdc2ccec3cfe0da2309a4cbd0",
+      "artifact": {
+        "class": "verify_r4_evidence",
+        "description": "R4 Legacy Evidence Adapter — reads frozen R4 evidence bytes without interpreting policy semantics. Byte-preserving, classified LEGACY_REFERENCE_PROFILE_V1ALPHA1.",
+        "classification": "LEGACY_REFERENCE_PROFILE_V1ALPHA1"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane R (R4 legacy)",
+        "crypto": "PyNaCl (nacl.signing)",
+        "algorithms": ["Ed25519"],
+        "isolation": "does_not_import_from_kinds_py",
+        "contrib_location": true
+      }
+    }
+  ]
+}

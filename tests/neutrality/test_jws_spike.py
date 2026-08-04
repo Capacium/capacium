@@ -112,7 +112,9 @@ class TestJwsEd25519:
         sk = SigningKey.generate()
         kid = "wire-key"
         trusted = {kid: sk.verify_key}
-        provider = JwsEd25519TrustProvider(trusted_keys=trusted)
+        provider = JwsEd25519TrustProvider(
+            trusted_keys=trusted, provider_id="spike.test-provider"
+        )
 
         jws = jws_ed25519_sign(sk, b'{"cap": "test"}', kid)
         result = provider.verify(jws.encode("utf-8"), {})
@@ -121,7 +123,7 @@ class TestJwsEd25519:
         assert data["schema_version"] == "v1alpha1"
         assert data["status"] == "valid"
         assert data["evidence_type"] == "JWS"
-        assert data["verifier"] == provider.provider_id
+        assert data["verifier"] == "spike.test-provider"
 
         recreated = EvidenceVerificationResult.from_dict(data)
         assert recreated.status == VerificationStatus.VALID

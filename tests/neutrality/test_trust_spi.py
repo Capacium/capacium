@@ -101,7 +101,7 @@ def test_evr_disambiguated_status_round_trip():
         result = EvidenceVerificationResult(
             status=status,
             verified_at="2026-07-28T00:00:00Z",
-            evidence_digest="sha256:test",
+            evidence_digest="sha256:deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe",
             algorithm="Ed25519",
             verifier="test-prov",
             failure_reason=f"{status.value}_test_reason",
