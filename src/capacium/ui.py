@@ -14,6 +14,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .kinds import CapaciumKind
+
 try:
     from capacium_models.labels import (
         get_kind_label,
@@ -53,26 +55,40 @@ _TRUST_COLORS_16 = {
     "signed": "\033[1;32m",
 }
 
-_KIND_COLORS_256 = {
-    "skill": "\033[38;5;77m",
-    "mcp-server": "\033[38;5;135m",
-    "tool": "\033[38;5;39m",
-    "bundle": "\033[38;5;51m",
-    "prompt": "\033[38;5;221m",
-    "template": "\033[38;5;244m",
-    "workflow": "\033[38;5;208m",
-    "connector-pack": "\033[38;5;175m",
+_KIND_COLOR_HEX: Dict[CapaciumKind, str] = {
+    CapaciumKind.SKILL: "\033[38;5;77m",
+    CapaciumKind.MCP: "\033[38;5;135m",
+    CapaciumKind.TOOL: "\033[38;5;39m",
+    CapaciumKind.BUNDLE: "\033[38;5;51m",
+    CapaciumKind.PROMPT: "\033[38;5;221m",
+    CapaciumKind.TEMPLATE: "\033[38;5;244m",
+    CapaciumKind.WORKFLOW: "\033[38;5;208m",
+    CapaciumKind.CONNECTOR: "\033[38;5;175m",
+    CapaciumKind.RESOURCE: "\033[38;5;180m",
 }
 
-_KIND_COLORS_16 = {
-    "skill": "\033[32m",
-    "mcp-server": "\033[35m",
-    "tool": "\033[34m",
-    "bundle": "\033[36m",
-    "prompt": "\033[33m",
-    "template": "\033[90m",
-    "workflow": "\033[33m",
-    "connector-pack": "\033[35m",
+_KIND_COLOR_16: Dict[CapaciumKind, str] = {
+    CapaciumKind.SKILL: "\033[32m",
+    CapaciumKind.MCP: "\033[35m",
+    CapaciumKind.TOOL: "\033[34m",
+    CapaciumKind.BUNDLE: "\033[36m",
+    CapaciumKind.PROMPT: "\033[33m",
+    CapaciumKind.TEMPLATE: "\033[90m",
+    CapaciumKind.WORKFLOW: "\033[33m",
+    CapaciumKind.CONNECTOR: "\033[35m",
+    CapaciumKind.RESOURCE: "\033[36m",
+}
+
+_KIND_ABBREVIATIONS: Dict[CapaciumKind, str] = {
+    CapaciumKind.MCP: "MCP",
+    CapaciumKind.CONNECTOR: "CONN",
+    CapaciumKind.SKILL: "SKL",
+    CapaciumKind.TOOL: "TOOL",
+    CapaciumKind.BUNDLE: "BNDL",
+    CapaciumKind.PROMPT: "PRMT",
+    CapaciumKind.TEMPLATE: "TMPL",
+    CapaciumKind.WORKFLOW: "WFLW",
+    CapaciumKind.RESOURCE: "RES",
 }
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -91,6 +107,9 @@ def _color_support() -> int:
 
 
 _COLOR_DEPTH = _color_support()
+
+_KIND_COLORS_256 = {k.value: v for k, v in _KIND_COLOR_HEX.items()}
+_KIND_COLORS_16 = {k.value: v for k, v in _KIND_COLOR_16.items()}
 
 
 class TrustBadge:
@@ -118,33 +137,33 @@ class KindPill:
 
     @classmethod
     def render(cls, kind: str) -> str:
-        k = (kind or "skill").lower()
+        k = (kind or "unknown").lower()
         color = cls._colors.get(k, _DIM)
         pad = " " if len(k) <= 8 else ""
         return f"{color} {k}{pad}{_RESET}"
 
     @classmethod
     def label(cls, kind: str) -> str:
-        k = (kind or "skill").lower()
+        k = (kind or "unknown").lower()
         color = cls._colors.get(k, _DIM)
         label = get_kind_label(k) if get_kind_label else k
         return f"{color}{label}{_RESET}"
 
     @classmethod
     def short(cls, kind: str) -> str:
-        abbreviations = {
-            "mcp-server": "MCP",
-            "connector-pack": "CONN",
-            "skill": "SKL",
-            "tool": "TOOL",
-            "bundle": "BNDL",
-            "prompt": "PRMT",
-            "template": "TMPL",
-            "workflow": "WFLW",
-        }
-        k = (kind or "skill").lower()
-        color = cls._colors.get(k, _DIM)
-        return f"{color}{abbreviations.get(k, k[:4].upper())}{_RESET}"
+        if not kind:
+            color = _DIM
+            abbrev = "??"
+            return f"{color}{abbrev}{_RESET}"
+        k_val = kind.lower()
+        # Resolve via enum-derived abbreviation map
+        try:
+            cap_kind = CapaciumKind(k_val)
+            abbrev = _KIND_ABBREVIATIONS.get(cap_kind, k_val[:4].upper())
+        except ValueError:
+            abbrev = k_val[:4].upper()
+        color = cls._colors.get(k_val, _DIM)
+        return f"{color}{abbrev}{_RESET}"
 
 
 @dataclass

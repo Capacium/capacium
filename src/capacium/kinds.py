@@ -1,0 +1,423 @@
+"""Central Capacium Kind registry with strict validation.
+
+All Capacium Kind definitions are managed here.  No other module may
+ship a competing Kind registry.  Unknown kind strings raise ValueError
+with a typed message; they are never silently coerced.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, FrozenSet, Tuple
+
+
+class CapaciumKind(Enum):
+    SKILL = "skill"
+    BUNDLE = "bundle"
+    TOOL = "tool"
+    PROMPT = "prompt"
+    TEMPLATE = "template"
+    WORKFLOW = "workflow"
+    MCP = "mcp-server"
+    MCP_SERVER = "mcp-server"
+    CONNECTOR = "connector-pack"
+    CONNECTOR_PACK = "connector-pack"
+    RESOURCE = "resource"
+
+
+@dataclass(frozen=True)
+class LegacySpecKind:
+    """A formerly valid Kind held over for validation-level recognition only.
+
+    Core must never promote a legacy spec kind into the active
+    CapaciumKind registry.
+    """
+
+    value: str
+    migration_note: str
+
+
+LEGACY_SPEC_KINDS: FrozenSet[LegacySpecKind] = frozenset({
+    LegacySpecKind("operator", "migrate to CapaciumKind.WORKFLOW with operator_meta"),
+    LegacySpecKind("checkpoint", "migrate to CapaciumKind.WORKFLOW with checkpoint_meta"),
+    LegacySpecKind(
+        "policy",
+        "external install-policy document; not a Capacium capability Kind",
+    ),
+})
+
+_LEGACY_SPEC_KIND_VALUES: FrozenSet[str] = frozenset(
+    sk.value for sk in LEGACY_SPEC_KINDS
+)
+
+_VALID_KIND_VALUES: frozenset[str] = frozenset(k.value for k in CapaciumKind)
+_VALID_KIND_NAMES: frozenset[str] = frozenset(k.name.upper() for k in CapaciumKind)
+
+KIND_EXAMPLES: tuple[str, ...] = tuple(k.value for k in CapaciumKind)
+
+ACTIVE_KINDS: FrozenSet[str] = _VALID_KIND_VALUES
+"""Canonical set of active Capacium Kinds that all modules must share."""
+
+
+def is_legacy_spec_kind(value: str) -> bool:
+    return value.strip() in _LEGACY_SPEC_KIND_VALUES
+
+
+def legacy_migration_note(value: str) -> str:
+    for sk in LEGACY_SPEC_KINDS:
+        if sk.value == value.strip():
+            return sk.migration_note
+    return ""
+
+
+def all_recognized_kind_values() -> frozenset[str]:
+    return _VALID_KIND_VALUES | _LEGACY_SPEC_KIND_VALUES
+
+
+def validate_kind(value: str) -> CapaciumKind:
+    """Return the matching CapaciumKind member, or raise ValueError.
+
+    Matching is case-insensitive against enum member *names* (e.g.
+    ``"WORKFLOW"`` → ``CapaciumKind.WORKFLOW``) and exact against
+    enum values (e.g. ``"mcp-server"`` → ``CapaciumKind.MCP``).
+    """
+    if not value or not value.strip():
+        raise ValueError("kind is required, got empty value")
+
+    cleaned = value.strip()
+
+    if cleaned in _LEGACY_SPEC_KIND_VALUES:
+        note = legacy_migration_note(cleaned)
+        raise ValueError(
+            f"Kind '{cleaned}' is a legacy spec-only kind — {note}"
+        )
+
+    if cleaned in _VALID_KIND_VALUES:
+        for k in CapaciumKind:
+            if k.value == cleaned:
+                return k
+
+    upper = cleaned.upper()
+    if upper in _VALID_KIND_NAMES:
+        return CapaciumKind[upper]
+
+    examples = ", ".join(sorted(k.name.lower() for k in CapaciumKind))
+    raise ValueError(f"Unknown kind '{value}': must be one of {examples}")
+
+
+_PAYLOAD_CODEC_VERSION = 1
+
+
+def _freeze_payload(value: Dict[str, Any]) -> str:
+    """Freeze a JSON-compatible dict into a canonical JSON string.
+
+    Strict mode: rejects NaN, Infinity, unsupported types, sets, tuples,
+    and non-string dict keys with a typed error. The string is deterministic
+    (sorted keys) and every valid JSON payload maps to exactly one string.
+    """
+    _validate_payload_for_json(value)
+    _reject_non_finite_floats(value)
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _validate_payload_for_json(value: object, path: str = "") -> None:
+    """Recursively validate that *value* is JSON-serializable without default=.
+
+    Every failure raises :class:`MigrationPayloadError` so callers can catch
+    one typed exception for all payload rejections. A generic ``ValueError``
+    is indistinguishable from unrelated failures raised deeper in the call
+    stack, which is why the whole surface is typed.
+
+    ``MigrationPayloadError`` subclasses ``ValueError``, so existing
+    ``except ValueError`` callers keep working.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise MigrationPayloadError(
+                    f"Migration payload error: non-string key {type(k).__name__} "
+                    f"at path '{path}' — JSON requires string keys"
+                )
+            _validate_payload_for_json(v, f"{path}.{k}")
+    elif isinstance(value, tuple):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported tuple at path '{path}' — "
+            f"tuples are not JSON-compatible"
+        )
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _validate_payload_for_json(item, f"{path}[{i}]")
+    elif isinstance(value, (set, frozenset)):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported {type(value).__name__} at "
+            f"path '{path}' — sets are not JSON-compatible"
+        )
+    elif isinstance(value, (bytes, bytearray)):
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported {type(value).__name__} at "
+            f"path '{path}' — bytes are not JSON-compatible"
+        )
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise MigrationPayloadError(
+                f"Migration payload error: non-finite float at path '{path}' "
+                f"(NaN/Infinity not supported)"
+            )
+    elif isinstance(value, (int, str, bool, type(None))):
+        pass
+    else:
+        raise MigrationPayloadError(
+            f"Migration payload error: unsupported type {type(value).__name__} "
+            f"at path '{path}' — only JSON-compatible types allowed"
+        )
+
+
+def _reject_non_finite_floats(value: object, path: str = "root") -> None:
+    """Walk the payload and reject NaN, Inf, -Inf float values.
+
+    Raises MigrationPayloadError for each non-finite float found.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _reject_non_finite_floats(v, f"{path}['{k}']")
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _reject_non_finite_floats(item, f"{path}[{i}]")
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise MigrationPayloadError(
+                f"Migration payload error: non-finite float at {path} "
+                f"(NaN/Infinity not supported)"
+            )
+
+
+def _thaw_payload(frozen: str) -> Dict[str, Any]:
+    """Thaw a frozen JSON string back into a mutable dict."""
+    return json.loads(frozen)
+
+
+class MigrationPayloadError(ValueError):
+    """Raised when a migration payload is missing, mis-typed, or structurally
+    invalid (e.g. accessing payload on a scalar-only migration)."""
+
+
+@dataclass(frozen=True)
+class KindMigrationResult:
+    """Typed result from the versioned legacy-kind migration adapter.
+
+    The ``migrated_payload`` is stored as a canonical JSON string for
+    unambiguous deep immutability. Call ``to_parser_payload()`` for a
+    fresh mutable dict suitable for parser consumption.
+
+    For scalar-only migrations (no payload dict), to_parser_payload()
+    raises MigrationPayloadError.
+    """
+
+    source_format: str
+    original_kind: str
+    migrated_kind: CapaciumKind
+    _payload_codec_version: int = field(default=_PAYLOAD_CODEC_VERSION, repr=False)
+    _frozen_payload: str = field(default="", repr=False)
+    migration_reason: str = ""
+    warnings: Tuple[str, ...] = ()
+
+    @property
+    def has_payload(self) -> bool:
+        return bool(self._frozen_payload)
+
+    @property
+    def migrated_payload(self) -> Dict[str, Any]:
+        if not self._frozen_payload:
+            raise MigrationPayloadError(
+                "This KindMigrationResult has no payload — it is a scalar-only "
+                "migration. Use .source_format, .original_kind, .migrated_kind, "
+                ".migration_reason, and .warnings instead."
+            )
+        return _thaw_payload(self._frozen_payload)
+
+    def to_parser_payload(self) -> Dict[str, Any]:
+        """Return a fresh deep-mutable copy for parser consumption.
+
+        Mutations of this copy do not affect the migration evidence.
+        Raises MigrationPayloadError if this is a scalar-only migration.
+        """
+        if not self._frozen_payload:
+            raise MigrationPayloadError(
+                "This KindMigrationResult has no payload — it is a scalar-only "
+                "migration."
+            )
+        return _thaw_payload(self._frozen_payload)
+
+    def to_dict(self) -> Dict[str, object]:
+        """Return a JSON-compatible dict for machine-readable evidence.
+
+        The migrated_payload is excluded by default since it may be large.
+        Use dump(include_payload=True) to include it.
+        """
+        return {
+            "source_format": self.source_format,
+            "original_kind": self.original_kind,
+            "migrated_kind": self.migrated_kind.value,
+            "payload_codec_version": self._payload_codec_version,
+            "has_payload": self.has_payload,
+            "migration_reason": self.migration_reason,
+            "warnings": list(self.warnings),
+        }
+
+
+# Retain backward-compatible alias
+NoPayloadError = MigrationPayloadError
+
+
+def migrate_legacy_kind(
+    kind_value: str,
+    format_version: str = "spec-v1-legacy",
+) -> KindMigrationResult:
+    """Migrate a legacy spec-only kind to its canonical CapaciumKind.
+
+    Returns a typed migration result with evidence. Raises ValueError
+    if the kind is not a recognized legacy spec kind.
+    """
+    cleaned = kind_value.strip()
+    if cleaned not in _LEGACY_SPEC_KIND_VALUES:
+        examples = ", ".join(sorted(_LEGACY_SPEC_KIND_VALUES))
+        raise ValueError(
+            f"'{kind_value}' is not a recognized legacy kind. "
+            f"Legacy kinds: {examples}"
+        )
+    if cleaned == "policy":
+        raise ValueError(
+            "Legacy kind 'policy' represents an external install-policy "
+            "document and cannot be migrated by Capacium Core; use cap-policy"
+        )
+    note = legacy_migration_note(cleaned)
+    warnings = (
+        f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "
+        f"({format_version}): {note}",
+    )
+    return KindMigrationResult(
+        source_format=format_version,
+        original_kind=cleaned,
+        migrated_kind=CapaciumKind.WORKFLOW,
+        migration_reason=note,
+        warnings=warnings,
+    )
+
+
+@dataclass(frozen=True)
+class SourceFormatKind:
+    """A non-Capacium source format whose artifact type implies a Kind.
+
+    Some ecosystems declare what an artifact *is* through their own format
+    rather than through a Capacium ``kind:`` field. Ingesting one is a
+    migration between formats, not an inference: the declaration is real, it
+    is simply written in another vocabulary.
+
+    Every such migration is versioned and carries its source format as
+    evidence, so a Kind can always be traced back to the declaration that
+    produced it. This is the only sanctioned path from a non-Capacium source
+    to a canonical Kind.
+    """
+
+    source_format: str
+    declared_by: str
+    kind: CapaciumKind
+    migration_note: str
+
+
+SOURCE_FORMAT_KINDS: FrozenSet[SourceFormatKind] = frozenset({
+    SourceFormatKind(
+        source_format="agent-skill-md-v1",
+        declared_by="<SKILL.md at repository root>",
+        kind=CapaciumKind.SKILL,
+        migration_note="Agent Skills source format declares a skill artifact",
+    ),
+    SourceFormatKind(
+        source_format="agent-skills-bundle-v1",
+        declared_by="<skills/*/SKILL.md members>",
+        kind=CapaciumKind.BUNDLE,
+        migration_note=(
+            "Agent Skills multi-skill layout declares a bundle of skill members"
+        ),
+    ),
+})
+
+_SOURCE_FORMATS: Dict[str, SourceFormatKind] = {
+    spec.source_format: spec for spec in SOURCE_FORMAT_KINDS
+}
+
+
+def recognized_source_formats() -> Tuple[str, ...]:
+    """Return every source format that can be migrated to a canonical Kind."""
+    return tuple(sorted(_SOURCE_FORMATS))
+
+
+def migrate_source_format_kind(source_format: str) -> KindMigrationResult:
+    """Migrate a recognized non-Capacium source format to a canonical Kind.
+
+    Returns a typed migration result carrying the source format as evidence.
+    Raises ValueError for an unrecognized format — there is no fallback and no
+    inference.
+    """
+    spec = _SOURCE_FORMATS.get(source_format)
+    if spec is None:
+        raise ValueError(
+            f"'{source_format}' is not a recognized source format. "
+            f"Recognized: {', '.join(recognized_source_formats())}"
+        )
+    return KindMigrationResult(
+        source_format=spec.source_format,
+        original_kind=spec.declared_by,
+        migrated_kind=spec.kind,
+        migration_reason=spec.migration_note,
+        warnings=(
+            f"Kind '{spec.kind.value}' migrated from source format "
+            f"'{spec.source_format}' declared by {spec.declared_by}",
+        ),
+    )
+
+
+def migrate_legacy_payload(
+    payload: Dict[str, Any],
+    source_format: str = "spec-v1-legacy",
+) -> KindMigrationResult:
+    """Migrate a legacy payload containing a spec-only Kind.
+
+    Returns a frozen typed result containing the deeply-isolated,
+    transformed payload. Does not mutate the caller's payload dictionary
+    or any of its nested collections.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    kind_val = payload.get("kind")
+    if not kind_val or not isinstance(kind_val, str) or not kind_val.strip():
+        raise ValueError("payload missing required 'kind' field")
+    cleaned = kind_val.strip()
+    if cleaned not in _LEGACY_SPEC_KIND_VALUES:
+        raise ValueError(
+            f"'{cleaned}' is not a recognized legacy kind."
+        )
+    if cleaned == "policy":
+        raise ValueError(
+            "Legacy kind 'policy' represents an external install-policy "
+            "document and cannot be migrated by Capacium Core; use cap-policy"
+        )
+    note = legacy_migration_note(cleaned)
+    transformed = copy.deepcopy(payload)
+    transformed["kind"] = CapaciumKind.WORKFLOW.value
+    warnings = (
+        f"Migrated legacy kind '{cleaned}' to '{CapaciumKind.WORKFLOW.value}' "
+        f"({source_format}): {note}",
+    )
+    return KindMigrationResult(
+        source_format=source_format,
+        original_kind=cleaned,
+        migrated_kind=CapaciumKind.WORKFLOW,
+        _frozen_payload=_freeze_payload(transformed),
+        migration_reason=note,
+        warnings=warnings,
+    )

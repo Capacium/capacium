@@ -1,0 +1,41 @@
+{
+  "inventory": {
+    "broken_exception_count": 0,
+    "broken_exceptions": [],
+    "broken_record_count": 0,
+    "broken_records": [],
+    "finding_count": 2,
+    "findings": [
+      {
+        "code": "input('  Kind [skill]: ').strip() or CapaciumKind.SKILL.value",
+        "disposition": "unlisted",
+        "file": "commands/init.py",
+        "function": "init_capability",
+        "is_exception": true,
+        "line": 94,
+        "pattern": "or-default",
+        "resolved_kind": "skill",
+        "sink_role": "dispatch-boundary",
+        "test_proof": "test_p01l_init_prompt_default_is_interactive_only"
+      },
+      {
+        "code": "default_kind = CapaciumKind.SKILL",
+        "disposition": "unlisted",
+        "file": "commands/init.py",
+        "function": "init_skill",
+        "is_exception": true,
+        "line": 243,
+        "pattern": "assign-enum-default",
+        "resolved_kind": "skill",
+        "sink_role": "dispatch-boundary",
+        "test_proof": "test_p01k_init_wizard_kind_is_interactive_only"
+      }
+    ],
+    "is_clean": true,
+    "is_inventory_intact": true,
+    "violation_count": 0,
+    "violations": []
+  },
+  "scan_root": "src/capacium",
+  "schema_version": 1
+}

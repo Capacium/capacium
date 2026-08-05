@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from .kinds import CapaciumKind
+
 
 def framework_skills_dirs() -> Dict[str, Path]:
     """Skills directories per framework, resolved against the *current* HOME.
@@ -37,7 +39,7 @@ def framework_skills_dirs() -> Dict[str, Path]:
 FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = framework_skills_dirs()
 
 FRAMEWORK_KINDS: Dict[str, Set[str]] = {
-    "claude-desktop": {"mcp-server", "skill"},
+    "claude-desktop": {CapaciumKind.MCP.value, CapaciumKind.SKILL.value},
 }
 """Frameworks whose default kinds differ from the universal set.
 
@@ -163,10 +165,10 @@ def _filter_frameworks_by_kind(frameworks: List[str], kind: str) -> List[str]:
 
 def resolve_frameworks(
     manifest_frameworks: Optional[List[str]],
+    kind: str,
     all_frameworks: bool = False,
     framework_filter: Optional[str] = None,
     preferred_frameworks: Optional[List[str]] = None,
-    kind: str = "skill",
 ) -> List[str]:
     framework_filter = FRAMEWORK_ALIASES.get(framework_filter or "", framework_filter) or None
     if framework_filter:
@@ -236,7 +238,7 @@ def create_framework_symlinks(
     from .symlink_manager import SymlinkManager
     sm = SymlinkManager()
     for fw in frameworks:
-        skills_dir = FRAMEWORK_SKILLS_DIRS.get(fw)
+        skills_dir = framework_skills_dirs().get(fw)
         if skills_dir is None and fw == "cursor":
             # Project-scope client: links only with an explicit project root.
             from .utils.project_scope import get_project_root

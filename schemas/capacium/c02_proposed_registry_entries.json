@@ -1,0 +1,101 @@
+{
+  "namespace": "capacium",
+  "type": "proposed_registry_entries",
+  "owner": "CAPN-C02",
+  "base_sha": "f270447fabee03f9963c38037aa9b0aa57f5a14c",
+  "candidate_sha": "38379ddbd5a5bf0c62e0bdf77c16cac867bb5968",
+  "registry_owner": "CAPN-C01",
+  "candidate_branch": "capn-c02-g3a",
+  "generated_at": "2026-08-04T00:00:00Z",
+  "entries": [
+    {
+      "interface_id": "capacium.evidence_verification_result.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "schema_ref": "schemas/capacium/evidence_verification_result_v1alpha1.schema.json",
+      "schema_sha256": "7a9e499a5c6db56fb94b4b6d6798894c806cfd1d71a0b7158a2610c61b7bad2b",
+      "status": "required",
+      "owner": "CAPN-C01 (Core)",
+      "profile_type": "core",
+      "source_file": "src/capacium/trust.py",
+      "sha256": "87e8e2b2cbfc18704a275d177c2d618bf69cac3113f9e9d462abb2a9b57182cd",
+      "artifact": {
+        "class": "EvidenceVerificationResult",
+        "description": "Implementation-neutral cryptographic evidence verification result. Contains ONLY verification facts — no authorization, entitlement, or policy decisions.",
+        "schema_url": "https://capacium.xyz/schemas/trust/evidence-verification-result/v1alpha1"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane A",
+        "disambiguated_statuses": true,
+        "frozen_dataclass": true,
+        "round_trip_via": "to_dict/from_dict"
+      }
+    },
+    {
+      "interface_id": "capacium.trust_provider.v1alpha1",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "schema_ref": "schemas/capacium/trust_provider_spi_v1alpha1.schema.json",
+      "schema_sha256": "ccf2f671dab2063a3e389ca4eec949b9c21a579611823d23f4a2619782e2106a",
+      "status": "required",
+      "owner": "CAPN-C01 (Core)",
+      "profile_type": "core",
+      "source_file": "src/capacium/trust.py",
+      "sha256": "87e8e2b2cbfc18704a275d177c2d618bf69cac3113f9e9d462abb2a9b57182cd",
+      "artifact": {
+        "class": "TrustProvider",
+        "description": "Provider-neutral trust verification SPI (Protocol). Capacium Core calls this interface; consumers configure their provider implementation.",
+        "kind": "Protocol"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane A",
+        "runtime_checkable": true,
+        "no_authorization_leakage": true
+      }
+    },
+    {
+      "interface_id": "capacium.jws_ed25519_trust_provider.v1alpha1.candidate",
+      "interface_version": "0.1.0",
+      "schema_version": "v1alpha1",
+      "status": "optional",
+      "owner": "CAPN-C02 (Candidate)",
+      "profile_type": "candidate_provider",
+      "source_file": "contrib/experimental_jws_spike.py",
+      "sha256": "a1b0967c010e02c1eaa77b5598f66693f52d7f43c8b04cab5069103fdc62b5f0",
+      "artifact": {
+        "class": "JwsEd25519TrustProvider",
+        "description": "JWS/Ed25519 verification spike TrustProvider. Maintained-standards spike using Ed25519 (RFC 8032) and JWS (RFC 7515). Candidate/pre-GA profile — resides in contrib/ not src/.",
+        "ga_status": "candidate"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane C",
+        "crypto": "PyNaCl (nacl.signing)",
+        "algorithms": ["EdDSA"],
+        "contrib_location": true,
+        "signing_utility_included": "jws_ed25519_sign (test/vector only)"
+      }
+    },
+    {
+      "interface_id": "capacium.r4_legacy_adapter.v1alpha1.reference",
+      "interface_version": "1.0.0",
+      "schema_version": "v1alpha1",
+      "status": "optional",
+      "owner": "CAPN-C02 (Reference)",
+      "profile_type": "reference_legacy",
+      "source_file": "contrib/r4_legacy_adapter.py",
+      "sha256": "6963d823fcabcb15e16a15cdb9409b0893b38efeaed6b7840883fb7ad584997e",
+      "artifact": {
+        "class": "verify_r4_evidence",
+        "description": "R4 Legacy Evidence Adapter — reads frozen R4 evidence bytes without interpreting policy semantics. Byte-preserving, classified LEGACY_REFERENCE_PROFILE_V1ALPHA1.",
+        "classification": "LEGACY_REFERENCE_PROFILE_V1ALPHA1"
+      },
+      "compatibility_metadata": {
+        "capn_lane": "P03 Lane R (R4 legacy)",
+        "crypto": "PyNaCl (nacl.signing)",
+        "algorithms": ["Ed25519"],
+        "isolation": "does_not_import_from_kinds_py",
+        "contrib_location": true
+      }
+    }
+  ]
+}

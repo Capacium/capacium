@@ -1,8 +1,10 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from enum import Enum
+
+from .kinds import CapaciumKind
 
 
 class ConflictState(Enum):
@@ -34,16 +36,7 @@ class ConflictResult:
         return self.state in (ConflictState.UNRECOGNIZED, ConflictState.VERSION_MISMATCH)
 
 
-class Kind(Enum):
-    SKILL = "skill"
-    BUNDLE = "bundle"
-    TOOL = "tool"
-    PROMPT = "prompt"
-    TEMPLATE = "template"
-    WORKFLOW = "workflow"
-    MCP_SERVER = "mcp-server"
-    CONNECTOR_PACK = "connector-pack"
-    RESOURCE = "resource"
+Kind = CapaciumKind
 
 
 # Kind-placement contract (V6): only these kinds may materialize as links in
@@ -68,7 +61,7 @@ class Capability:
     owner: str
     name: str
     version: str
-    kind: Kind = Kind.SKILL
+    kind: Kind
     fingerprint: str = ""
     install_path: Optional[Path] = None
     installed_at: Optional[datetime] = None
@@ -116,12 +109,29 @@ class Capability:
             filtered["dependencies"] = None
         if "owner" not in filtered:
             filtered["owner"] = "global"
-        kind_val = filtered.get("kind", "skill")
+        if "kind" not in filtered:
+            raise ValueError(
+                "missing 'kind' field — Capability.from_dict requires an explicit Kind"
+            )
+        kind_val = filtered.get("kind")
         if isinstance(kind_val, str):
+            if not kind_val.strip():
+                raise ValueError("empty 'kind' field")
+            from .kinds import validate_kind, is_legacy_spec_kind, legacy_migration_note
             try:
-                filtered["kind"] = Kind(kind_val)
-            except ValueError:
-                filtered["kind"] = Kind.SKILL
+                validated = validate_kind(kind_val)
+                filtered["kind"] = Kind(validated.value)
+            except ValueError as e:
+                if is_legacy_spec_kind(kind_val):
+                    note = legacy_migration_note(kind_val)
+                    raise ValueError(
+                        f"Kind '{kind_val}' is a legacy spec-only kind — {note}. "
+                        "Use the versioned migration adapter to migrate before parsing."
+                    ) from e
+                raise ValueError(
+                    f"Cannot load Capability with unknown kind '{kind_val}'. "
+                    f"Must be a valid CapaciumKind."
+                ) from e
         if "framework" in filtered and not filtered["framework"]:
             filtered["framework"] = None
         if "frameworks" in filtered and isinstance(filtered["frameworks"], str):
@@ -159,19 +169,27 @@ class LockFile:
     dependencies: List[LockEntry]
     source: str
     created_at: datetime
+    _extensions: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result: Dict[str, Any] = {}
+        result.update(self._extensions)
+        result.update({
             "name": self.name,
             "version": self.version,
             "fingerprint": self.fingerprint,
             "dependencies": [asdict(dep) for dep in self.dependencies],
             "source": self.source,
             "created_at": self.created_at.isoformat(),
-        }
+        })
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LockFile":
+        known_fields = {"name", "version", "fingerprint", "dependencies", "source", "created_at"}
+        extensions: Dict[str, Any] = {
+            k: v for k, v in data.items() if k.startswith("x_") and k not in known_fields
+        }
         deps = [LockEntry(**d) for d in data.get("dependencies", [])]
         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
         return cls(
@@ -181,6 +199,7 @@ class LockFile:
             dependencies=deps,
             source=data.get("source", ""),
             created_at=created_at,
+            _extensions=extensions,
         )
 
     def save(self, path: Path) -> None:

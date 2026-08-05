@@ -58,7 +58,7 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
             skill_dir = max(version_dirs, key=_version_dir_key)
             cap_yaml = skill_dir / "capability.yaml"
             data = _parse_yaml_simple(cap_yaml)
-            if data.get("kind", "skill") != "skill":
+            if data.get("kind") and data.get("kind") != "skill":
                 continue
             description = data.get("description", "")
 
@@ -70,7 +70,7 @@ def _discover_skills(cap_home: Path) -> List[Dict[str, Any]]:
                 "name": data.get("name", skill_dir.name),
                 "owner": data.get("owner", owner_dir.name),
                 "version": data.get("version", "0.0.0"),
-                "kind": data.get("kind", "skill"),
+                "kind": data.get("kind") or "unknown",
                 "description": description or f"Installed skill: {skill_dir.name}",
                 "path": str(skill_dir),
                 "skill_md": str(skill_md_path) if skill_md_path.exists() else None,

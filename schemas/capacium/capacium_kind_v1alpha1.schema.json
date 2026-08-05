@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://capacium.xyz/schemas/capacium/capacium_kind/v1alpha1",
+  "title": "CapaciumKind",
+  "description": "Central Capacium Kind registry enumeration. All Capacium Kind definitions are managed here. No other module may ship a competing Kind registry.",
+  "type": "string",
+  "enum": [
+    "skill",
+    "bundle",
+    "tool",
+    "prompt",
+    "template",
+    "workflow",
+    "mcp-server",
+    "connector-pack",
+    "resource"
+  ],
+  "additionalProperties": false
+}

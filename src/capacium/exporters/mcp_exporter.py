@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 from .base import BaseExporter
 from ..manifest import Manifest
+from ..kinds import CapaciumKind
 
 
 class MCPExporter(BaseExporter):
@@ -17,10 +18,14 @@ class MCPExporter(BaseExporter):
 
     @property
     def format_name(self) -> str:
-        return "mcp-server"
+        return CapaciumKind.MCP.value
 
     def can_export(self, manifest: Manifest) -> bool:
-        return manifest.kind in ("skill", "mcp-server", "resource")
+        return manifest.kind in (
+            CapaciumKind.SKILL.value,
+            CapaciumKind.MCP.value,
+            CapaciumKind.RESOURCE.value,
+        )
 
     def export(self, manifest: Manifest) -> Dict[str, Any]:
         result: Dict[str, Any] = {

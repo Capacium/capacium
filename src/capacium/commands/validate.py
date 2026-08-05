@@ -17,6 +17,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..kinds import (
+    ACTIVE_KINDS,
+    CapaciumKind,
+    _LEGACY_SPEC_KIND_VALUES as LEGACY_SPEC_KIND_VALUES,
+)
+
 try:
     import yaml
     _HAS_YAML = True
@@ -36,11 +42,8 @@ except ImportError:
 SCHEMA_URL = "https://capacium.xyz/spec/v1.0/schema.json"
 SCHEMA_CACHE_PATH = Path.home() / ".capacium" / "cache" / "spec-v1.0-schema.json"
 
-VALID_KINDS = {
-    "skill", "mcp-server", "bundle", "tool", "prompt",
-    "template", "workflow", "connector-pack",
-    "operator", "checkpoint", "policy",
-}
+_ACTIVE_KINDS = ACTIVE_KINDS
+_LEGACY_KINDS = LEGACY_SPEC_KIND_VALUES
 
 TRUST_STATES = ["discovered", "audited", "verified", "signed"]
 
@@ -105,35 +108,35 @@ def _semantic_checks(data: Dict[str, Any], strict: bool) -> Tuple[List[str], Lis
             warnings.append("  version '0.0.0' — update to a real release version")
 
     # Kind-specific
-    if kind == "mcp-server" and "mcp_meta" not in data:
+    if kind == CapaciumKind.MCP.value and "mcp_meta" not in data:
         warnings.append(
             "  kind 'mcp-server' missing 'mcp_meta' block\n"
             "    Add: mcp_meta.transport, mcp_meta.tools list"
         )
 
-    if kind == "bundle" and "bundle_meta" not in data:
+    if kind == CapaciumKind.BUNDLE.value and "bundle_meta" not in data:
         warnings.append(
             "  kind 'bundle' missing 'bundle_meta' block\n"
             "    Add: bundle_meta.capabilities list"
         )
 
-    if kind == "operator" and "operator_meta" not in data:
-        errors.append(
-            "  kind 'operator' requires 'operator_meta' block\n"
-            "    Add: operator_meta.role, operator_meta.sla_hours, operator_meta.approval_modes"
-        )
-
-    if kind == "checkpoint" and "checkpoint_meta" not in data:
-        errors.append(
-            "  kind 'checkpoint' requires 'checkpoint_meta' block\n"
-            "    Add: checkpoint_meta.fallback (approve|reject|escalate)"
-        )
-
-    if kind == "policy" and "policy_meta" not in data:
-        errors.append(
-            "  kind 'policy' requires 'policy_meta' block\n"
-            "    Add: policy_meta.minimum_trust_state (discovered|audited|verified|signed)"
-        )
+    if kind in _LEGACY_KINDS:
+        if kind == "operator":
+            errors.append(
+                "  kind 'operator' is legacy spec-only — must migrate to kind: workflow\n"
+                "    See: MANIFESTO §5.3 — no operator Kind in active Capacium registry"
+            )
+        elif kind == "checkpoint":
+            errors.append(
+                "  kind 'checkpoint' is legacy spec-only — must migrate to kind: workflow\n"
+                "    See: MANIFESTO §5.3 — no checkpoint Kind in active Capacium registry"
+            )
+        elif kind == "policy":
+            errors.append(
+                "  kind 'policy' is an external install-policy document, not a "
+                "Capacium capability Kind\n"
+                "    Use the optional cap-policy companion instead"
+            )
 
     # Description
     desc = data.get("description", "")

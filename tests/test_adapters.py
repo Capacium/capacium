@@ -20,22 +20,22 @@ class TestClaudeCodeAdapter:
 
     def test_install_capability(self, tmp_home, sample_capability_dir):
         adapter = ClaudeCodeAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
 
     def test_remove_capability(self, tmp_home, sample_capability_dir):
         adapter = ClaudeCodeAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = ClaudeCodeAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -48,7 +48,7 @@ class TestClaudeCodeAdapter:
 
     def test_list_capabilities(self, tmp_home, sample_capability_dir):
         adapter = ClaudeCodeAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         caps = adapter.list_capabilities()
         assert "test-cap" in caps
 
@@ -61,8 +61,8 @@ class TestClaudeCodeAdapter:
         cap_b.mkdir()
         (cap_b / "b.txt").write_text("b")
 
-        adapter.install_capability("cap-a", "1.0.0", cap_a)
-        adapter.install_capability("cap-b", "1.0.0", cap_b)
+        adapter.install_capability("cap-a", "1.0.0", cap_a, kind="skill")
+        adapter.install_capability("cap-b", "1.0.0", cap_b, kind="skill")
 
         caps = adapter.list_capabilities()
         assert "cap-a" in caps
@@ -70,7 +70,7 @@ class TestClaudeCodeAdapter:
 
     def test_get_capability_metadata(self, tmp_home, sample_capability_dir):
         adapter = ClaudeCodeAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         meta = adapter.get_capability_metadata("test-cap")
         assert meta is not None
@@ -86,7 +86,7 @@ class TestClaudeCodeAdapter:
         assert not skills_dir.exists()
 
         adapter = ClaudeCodeAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         assert skills_dir.exists()
         assert skills_dir.is_dir()
@@ -96,22 +96,22 @@ class TestGeminiCLIAdapter:
 
     def test_install_capability(self, tmp_home, sample_capability_dir):
         adapter = GeminiCLIAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
 
     def test_remove_capability(self, tmp_home, sample_capability_dir):
         adapter = GeminiCLIAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = GeminiCLIAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -124,7 +124,7 @@ class TestGeminiCLIAdapter:
 
     def test_list_capabilities(self, tmp_home, sample_capability_dir):
         adapter = GeminiCLIAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         caps = adapter.list_capabilities()
         assert "test-cap" in caps
 
@@ -137,8 +137,8 @@ class TestGeminiCLIAdapter:
         cap_b.mkdir()
         (cap_b / "b.txt").write_text("b")
 
-        adapter.install_capability("cap-a", "1.0.0", cap_a)
-        adapter.install_capability("cap-b", "1.0.0", cap_b)
+        adapter.install_capability("cap-a", "1.0.0", cap_a, kind="skill")
+        adapter.install_capability("cap-b", "1.0.0", cap_b, kind="skill")
 
         caps = adapter.list_capabilities()
         assert "cap-a" in caps
@@ -146,7 +146,7 @@ class TestGeminiCLIAdapter:
 
     def test_get_capability_metadata(self, tmp_home, sample_capability_dir):
         adapter = GeminiCLIAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         meta = adapter.get_capability_metadata("test-cap")
         assert meta is not None
@@ -162,7 +162,7 @@ class TestGeminiCLIAdapter:
         assert not skills_dir.exists()
 
         adapter = GeminiCLIAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         assert skills_dir.exists()
         assert skills_dir.is_dir()
@@ -172,22 +172,22 @@ class TestOpenClawAdapter:
 
     def test_install_capability(self, tmp_home, sample_capability_dir):
         adapter = OpenClawAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
 
     def test_remove_capability(self, tmp_home, sample_capability_dir):
         adapter = OpenClawAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = OpenClawAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -199,7 +199,7 @@ class TestOpenClawAdapter:
         assert not skills_dir.exists()
 
         adapter = OpenClawAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         assert skills_dir.exists()
         assert skills_dir.is_dir()
@@ -209,22 +209,22 @@ class TestHermesAdapter:
 
     def test_install_capability(self, tmp_home, sample_capability_dir):
         adapter = HermesAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
 
     def test_remove_capability(self, tmp_home, sample_capability_dir):
         adapter = HermesAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = HermesAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -236,7 +236,7 @@ class TestHermesAdapter:
         assert not skills_dir.exists()
 
         adapter = HermesAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         assert skills_dir.exists()
         assert skills_dir.is_dir()
@@ -246,22 +246,22 @@ class TestCopilotAdapter:
 
     def test_install_capability(self, tmp_home, sample_capability_dir):
         adapter = CopilotAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
 
     def test_remove_capability(self, tmp_home, sample_capability_dir):
         adapter = CopilotAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = CopilotAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -273,7 +273,7 @@ class TestCopilotAdapter:
         assert not skills_dir.exists()
 
         adapter = CopilotAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
 
         assert skills_dir.exists()
         assert skills_dir.is_dir()
@@ -292,7 +292,7 @@ class TestCursorAdapterSkills:
 
     def test_install_capability(self, tmp_home, project_root, sample_capability_dir):
         adapter = CursorAdapter()
-        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        result = adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert result is True
         assert adapter.capability_exists("test-cap")
         assert (project_root / ".cursor" / "skills" / "test-cap").is_symlink()
@@ -305,21 +305,21 @@ class TestCursorAdapterSkills:
         workdir.mkdir()
         monkeypatch.chdir(workdir)
         adapter = CursorAdapter()
-        assert adapter.install_capability("test-cap", "1.0.0", sample_capability_dir) is True
+        assert adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill") is True
         assert not (workdir / ".cursor").exists()
 
     def test_remove_capability(self, tmp_home, project_root, sample_capability_dir):
         adapter = CursorAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert adapter.capability_exists("test-cap")
 
-        result = adapter.remove_capability("test-cap")
+        result = adapter.remove_capability("test-cap", kind="")
         assert result is True
         assert not adapter.capability_exists("test-cap")
 
     def test_remove_nonexistent(self, tmp_home):
         adapter = CursorAdapter()
-        result = adapter.remove_capability("nonexistent")
+        result = adapter.remove_capability("nonexistent", kind="")
         assert result is True
 
     def test_capability_exists_false_for_missing(self, tmp_home):
@@ -331,7 +331,7 @@ class TestCursorAdapterSkills:
         # never the implicit cwd.
         skills_dir = project_root / ".cursor" / "skills"
         adapter = CursorAdapter()
-        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir)
+        adapter.install_capability("test-cap", "1.0.0", sample_capability_dir, kind="skill")
         assert skills_dir.exists()
         assert skills_dir.is_dir()
 
@@ -339,42 +339,42 @@ class TestCursorAdapterSkills:
 class TestAdapterAutoSelection:
 
     def test_default_to_opencode_when_no_frameworks(self):
-        manifest = Manifest(name="test", frameworks=[])
+        manifest = Manifest("skill", name="test", frameworks=[])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, OpenCodeAdapter)
 
     def test_default_to_opencode_when_none_frameworks(self):
-        manifest = Manifest(name="test")
+        manifest = Manifest("skill", name="test")
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, OpenCodeAdapter)
 
     def test_select_claude_code(self):
-        manifest = Manifest(name="test", frameworks=["claude-code"])
+        manifest = Manifest("skill", name="test", frameworks=["claude-code"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, ClaudeCodeAdapter)
 
     def test_select_gemini_cli(self):
-        manifest = Manifest(name="test", frameworks=["gemini-cli"])
+        manifest = Manifest("skill", name="test", frameworks=["gemini-cli"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, GeminiCLIAdapter)
 
     def test_select_openclaw(self):
-        manifest = Manifest(name="test", frameworks=["openclaw"])
+        manifest = Manifest("skill", name="test", frameworks=["openclaw"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, OpenClawAdapter)
 
     def test_select_hermes(self):
-        manifest = Manifest(name="test", frameworks=["hermes"])
+        manifest = Manifest("skill", name="test", frameworks=["hermes"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, HermesAdapter)
 
     def test_select_copilot(self):
-        manifest = Manifest(name="test", frameworks=["copilot"])
+        manifest = Manifest("skill", name="test", frameworks=["copilot"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, CopilotAdapter)
 
     def test_select_first_supported_framework(self):
-        manifest = Manifest(name="test", frameworks=["claude-code", "opencode"])
+        manifest = Manifest("skill", name="test", frameworks=["claude-code", "opencode"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, ClaudeCodeAdapter)
 
@@ -389,7 +389,7 @@ class TestAdapterAutoSelection:
         assert manifest.get_target_frameworks() == ["claude-code", "claude-desktop"]
 
     def test_fallback_to_opencode_for_unknown_framework(self):
-        manifest = Manifest(name="test", frameworks=["unknown-framework"])
+        manifest = Manifest("skill", name="test", frameworks=["unknown-framework"])
         adapter = get_adapter_for_manifest(manifest)
         assert isinstance(adapter, OpenCodeAdapter)
 

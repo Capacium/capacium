@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from capacium.models import Capability
+from capacium.models import Capability, Kind
 from capacium.registry import Registry
 from capacium.registry_client import RegistryDetail
 
@@ -218,6 +218,7 @@ def test_registry_roundtrip_preserves_source_ref_and_commit(tmp_home, capsys):
         owner="acme",
         name="provenance-cap",
         version="2.0.0",
+        kind=Kind.SKILL,
         fingerprint="abc123",
         install_path=tmp_home / "installed",
         installed_at=datetime.now(),

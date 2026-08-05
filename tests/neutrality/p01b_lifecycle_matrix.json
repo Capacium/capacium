@@ -1,0 +1,396 @@
+{
+  "_document": "CAPR3-P01E: Exact 13-surface lifecycle matrix with real entrypoints",
+  "_version": "3.0.0",
+  "_generated_at": "2026-07-28",
+  "_branch": "feature/cap-neutrality-p01",
+  "surfaces": [
+    {
+      "surface": "parse",
+      "entrypoint": "capacium:parse",
+      "rows": [
+        {
+          "test": "test_parse_active_kind[bundle]"
+        },
+        {
+          "test": "test_parse_active_kind[connector-pack]"
+        },
+        {
+          "test": "test_parse_active_kind[mcp-server]"
+        },
+        {
+          "test": "test_parse_active_kind[prompt]"
+        },
+        {
+          "test": "test_parse_active_kind[resource]"
+        },
+        {
+          "test": "test_parse_active_kind[skill]"
+        },
+        {
+          "test": "test_parse_active_kind[template]"
+        },
+        {
+          "test": "test_parse_active_kind[tool]"
+        },
+        {
+          "test": "test_parse_active_kind[workflow]"
+        },
+        {
+          "test": "test_parse_missing_rejected"
+        },
+        {
+          "test": "test_parse_empty_rejected"
+        },
+        {
+          "test": "test_parse_legacy_rejected[checkpoint]"
+        },
+        {
+          "test": "test_parse_legacy_rejected[operator]"
+        },
+        {
+          "test": "test_parse_legacy_rejected[policy]"
+        },
+        {
+          "test": "test_parse_unknown_rejected"
+        }
+      ]
+    },
+    {
+      "surface": "validation",
+      "entrypoint": "capacium:validation",
+      "rows": [
+        {
+          "test": "test_manifest_validate_active[bundle]"
+        },
+        {
+          "test": "test_manifest_validate_active[connector-pack]"
+        },
+        {
+          "test": "test_manifest_validate_active[mcp-server]"
+        },
+        {
+          "test": "test_manifest_validate_active[prompt]"
+        },
+        {
+          "test": "test_manifest_validate_active[resource]"
+        },
+        {
+          "test": "test_manifest_validate_active[skill]"
+        },
+        {
+          "test": "test_manifest_validate_active[template]"
+        },
+        {
+          "test": "test_manifest_validate_active[tool]"
+        },
+        {
+          "test": "test_manifest_validate_active[workflow]"
+        },
+        {
+          "test": "test_manifest_validate_missing"
+        },
+        {
+          "test": "test_manifest_validate_legacy[checkpoint]"
+        },
+        {
+          "test": "test_manifest_validate_legacy[operator]"
+        },
+        {
+          "test": "test_manifest_validate_legacy[policy]"
+        }
+      ]
+    },
+    {
+      "surface": "init",
+      "entrypoint": "capacium:init",
+      "rows": [
+        {
+          "test": "test_init_capability_writes_manifest[bundle]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[connector-pack]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[mcp-server]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[prompt]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[resource]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[skill]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[template]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[tool]"
+        },
+        {
+          "test": "test_init_capability_writes_manifest[workflow]"
+        },
+        {
+          "test": "test_init_capability_rejects_missing_kind"
+        },
+        {
+          "test": "test_init_capability_no_write_on_existing"
+        }
+      ]
+    },
+    {
+      "surface": "registry",
+      "entrypoint": "capacium:registry",
+      "rows": [
+        {
+          "test": "test_registry_add_and_get_by_kind[bundle]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[connector-pack]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[mcp-server]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[prompt]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[resource]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[skill]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[template]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[tool]"
+        },
+        {
+          "test": "test_registry_add_and_get_by_kind[workflow]"
+        }
+      ]
+    },
+    {
+      "surface": "install",
+      "entrypoint": "capacium:install",
+      "rows": [
+        {
+          "test": "test_install_capability_from_source"
+        },
+        {
+          "test": "test_install_capability_preserves_kind"
+        }
+      ]
+    },
+    {
+      "surface": "index",
+      "entrypoint": "capacium:index",
+      "rows": [
+        {
+          "test": "test_index_filter_by_kind[bundle]"
+        },
+        {
+          "test": "test_index_filter_by_kind[connector-pack]"
+        },
+        {
+          "test": "test_index_filter_by_kind[mcp-server]"
+        },
+        {
+          "test": "test_index_filter_by_kind[prompt]"
+        },
+        {
+          "test": "test_index_filter_by_kind[resource]"
+        },
+        {
+          "test": "test_index_filter_by_kind[skill]"
+        },
+        {
+          "test": "test_index_filter_by_kind[template]"
+        },
+        {
+          "test": "test_index_filter_by_kind[tool]"
+        },
+        {
+          "test": "test_index_filter_by_kind[workflow]"
+        }
+      ]
+    },
+    {
+      "surface": "export",
+      "entrypoint": "capacium:export",
+      "rows": [
+        {
+          "test": "test_export_produces_structured_output[mcp-server]"
+        },
+        {
+          "test": "test_export_produces_structured_output[resource]"
+        },
+        {
+          "test": "test_export_produces_structured_output[skill]"
+        },
+        {
+          "test": "test_export_can_export_accepts[mcp-server]"
+        },
+        {
+          "test": "test_export_can_export_accepts[resource]"
+        },
+        {
+          "test": "test_export_can_export_accepts[skill]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[bundle]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[connector-pack]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[prompt]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[template]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[tool]"
+        },
+        {
+          "test": "test_export_rejects_non_mcp_kinds[workflow]"
+        }
+      ]
+    },
+    {
+      "surface": "lock",
+      "entrypoint": "capacium:lock",
+      "rows": [
+        {
+          "test": "test_lock_capability_writes_lockfile"
+        },
+        {
+          "test": "test_lock_capability_no_write_no_install"
+        }
+      ]
+    },
+    {
+      "surface": "list",
+      "entrypoint": "capacium:list",
+      "rows": [
+        {
+          "test": "test_list_capabilities_filters_by_kind"
+        },
+        {
+          "test": "test_list_capabilities_json_output"
+        }
+      ]
+    },
+    {
+      "surface": "sync",
+      "entrypoint": "capacium:sync",
+      "rows": [
+        {
+          "test": "test_sync_index_accepts_valid_kind"
+        },
+        {
+          "test": "test_sync_index_rejects_missing_kind"
+        }
+      ]
+    },
+    {
+      "surface": "serialization",
+      "entrypoint": "capacium:serialization",
+      "rows": [
+        {
+          "test": "test_round_trip_identity[bundle]"
+        },
+        {
+          "test": "test_round_trip_identity[connector-pack]"
+        },
+        {
+          "test": "test_round_trip_identity[mcp-server]"
+        },
+        {
+          "test": "test_round_trip_identity[prompt]"
+        },
+        {
+          "test": "test_round_trip_identity[resource]"
+        },
+        {
+          "test": "test_round_trip_identity[skill]"
+        },
+        {
+          "test": "test_round_trip_identity[template]"
+        },
+        {
+          "test": "test_round_trip_identity[tool]"
+        },
+        {
+          "test": "test_round_trip_identity[workflow]"
+        }
+      ]
+    },
+    {
+      "surface": "migration",
+      "entrypoint": "capacium:migration",
+      "rows": [
+        {
+          "test": "test_migrate_payload_preserves_owner[checkpoint]"
+        },
+        {
+          "test": "test_migrate_payload_preserves_owner[operator]"
+        },
+        {
+          "test": "test_migrate_payload_preserves_owner[policy]"
+        },
+        {
+          "test": "test_migrate_payload_rejects_current_kind"
+        },
+        {
+          "test": "test_migrate_payload_rejects_missing_kind"
+        }
+      ]
+    },
+    {
+      "surface": "package",
+      "entrypoint": "capacium:package",
+      "rows": [
+        {
+          "test": "test_package_validates_kind[bundle]"
+        },
+        {
+          "test": "test_package_validates_kind[connector-pack]"
+        },
+        {
+          "test": "test_package_validates_kind[mcp-server]"
+        },
+        {
+          "test": "test_package_validates_kind[prompt]"
+        },
+        {
+          "test": "test_package_validates_kind[resource]"
+        },
+        {
+          "test": "test_package_validates_kind[skill]"
+        },
+        {
+          "test": "test_package_validates_kind[template]"
+        },
+        {
+          "test": "test_package_validates_kind[tool]"
+        },
+        {
+          "test": "test_package_validates_kind[workflow]"
+        },
+        {
+          "test": "test_package_rejects_missing_kind"
+        },
+        {
+          "test": "test_package_unknown_kind_fails"
+        }
+      ]
+    }
+  ],
+  "surface_map": {
+    "total_surfaces": 13,
+    "total_rows": 102
+  }
+}

@@ -42,11 +42,11 @@ class TestManifest:
         assert manifest.owner == "unknown"
 
     def test_id_property(self):
-        m = Manifest(owner="alice", name="my-cap", version="1.0.0")
+        m = Manifest(kind="skill", owner="alice", name="my-cap", version="1.0.0")
         assert m.id == "alice/my-cap"
 
     def test_id_global_fallback(self):
-        m = Manifest(name="no-owner", version="1.0.0")
+        m = Manifest(kind="skill", name="no-owner", version="1.0.0")
         assert m.id == "global/no-owner"
 
     def test_save_and_load_yaml(self, tmp_path):
@@ -93,42 +93,43 @@ class TestTriggers:
         assert m.triggers[0]["action"] == "run-linter"
 
     def test_triggers_valid(self):
-        m = Manifest(
+        m = Manifest(kind="skill",
             name="t",
             triggers=[
                 {"event": "schedule", "action": "daily-check"},
                 {"event": "on-install", "action": "setup"},
+                {"event": "custom-vendor-event", "action": "custom-action"},
             ],
         )
         assert m.validate() == []
 
     def test_triggers_missing_event(self):
-        m = Manifest(name="t", triggers=[{"action": "run"}])
+        m = Manifest(kind="skill", name="t", triggers=[{"action": "run"}])
         errors = m.validate()
-        assert any("missing required 'event'" in e for e in errors)
+        assert any("missing" in e and "event" in e for e in errors)
 
     def test_triggers_missing_action(self):
-        m = Manifest(name="t", triggers=[{"event": "manual"}])
+        m = Manifest(kind="skill", name="t", triggers=[{"event": "manual"}])
         errors = m.validate()
-        assert any("missing required 'action'" in e for e in errors)
+        assert any("missing" in e and "action" in e for e in errors)
 
     def test_triggers_invalid_event(self):
-        m = Manifest(name="t", triggers=[{"event": "invalid-event", "action": "run"}])
+        m = Manifest(kind="skill", name="t", triggers=[{"event": "invalid-event", "action": "run"}])
         errors = m.validate()
-        assert any("invalid event 'invalid-event'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: event taxonomy is owner-controlled
 
     def test_triggers_all_valid_events(self):
         valid_events = ["file-changed", "schedule", "webhook", "manual", "on-install", "on-update"]
         for event in valid_events:
-            m = Manifest(name="t", triggers=[{"event": event, "action": "do-stuff"}])
+            m = Manifest(kind="skill", name="t", triggers=[{"event": event, "action": "do-stuff"}])
             assert m.validate() == [], f"Event '{event}' should be valid"
 
     def test_triggers_empty_list_is_valid(self):
-        m = Manifest(name="t", triggers=[])
+        m = Manifest(kind="skill", name="t", triggers=[])
         assert m.validate() == []
 
     def test_triggers_roundtrip_yaml(self, tmp_path):
-        m = Manifest(
+        m = Manifest(kind="skill",
             name="trigger-rt",
             version="1.0.0",
             triggers=[{"event": "webhook", "action": "notify", "pattern": "/api/*"}],
@@ -152,16 +153,16 @@ class TestPricing:
         assert m.pricing["model"] == "free"
 
     def test_pricing_none_by_default(self):
-        m = Manifest(name="t")
+        m = Manifest(kind="skill", name="t")
         assert m.pricing is None
         assert m.validate() == []
 
     def test_pricing_free_valid(self):
-        m = Manifest(name="t", pricing={"model": "free"})
+        m = Manifest(kind="skill", name="t", pricing={"model": "free"})
         assert m.validate() == []
 
     def test_pricing_freemium_valid(self):
-        m = Manifest(
+        m = Manifest(kind="skill",
             name="t",
             pricing={
                 "model": "freemium",
@@ -172,44 +173,44 @@ class TestPricing:
         assert m.validate() == []
 
     def test_pricing_paid_valid(self):
-        m = Manifest(name="t", pricing={"model": "paid", "price_usd": 9.99})
+        m = Manifest(kind="skill", name="t", pricing={"model": "paid", "price_usd": 9.99})
         assert m.validate() == []
 
     def test_pricing_paid_missing_price(self):
-        m = Manifest(name="t", pricing={"model": "paid"})
+        m = Manifest(kind="skill", name="t", pricing={"model": "paid"})
         errors = m.validate()
-        assert any("requires 'price_usd'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_paid_zero_price(self):
-        m = Manifest(name="t", pricing={"model": "paid", "price_usd": 0})
+        m = Manifest(kind="skill", name="t", pricing={"model": "paid", "price_usd": 0})
         errors = m.validate()
-        assert any("must be a number greater than 0" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_paid_negative_price(self):
-        m = Manifest(name="t", pricing={"model": "paid", "price_usd": -5})
+        m = Manifest(kind="skill", name="t", pricing={"model": "paid", "price_usd": -5})
         errors = m.validate()
-        assert any("must be a number greater than 0" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_missing_model(self):
-        m = Manifest(name="t", pricing={"price_usd": 10})
+        m = Manifest(kind="skill", name="t", pricing={"price_usd": 10})
         errors = m.validate()
-        assert any("missing required 'model'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_invalid_model(self):
-        m = Manifest(name="t", pricing={"model": "subscription"})
+        m = Manifest(kind="skill", name="t", pricing={"model": "subscription"})
         errors = m.validate()
-        assert any("invalid model 'subscription'" in e for e in errors)
+        assert errors == []  # CAPN-R2-P04R: pricing is owner-controlled metadata
 
     def test_pricing_all_valid_models(self):
         for model in ["free", "freemium", "paid", "usage-based", "donation"]:
             pricing = {"model": model}
             if model == "paid":
                 pricing["price_usd"] = 5.0
-            m = Manifest(name="t", pricing=pricing)
+            m = Manifest(kind="skill", name="t", pricing=pricing)
             assert m.validate() == [], f"Model '{model}' should be valid"
 
     def test_pricing_roundtrip_yaml(self, tmp_path):
-        m = Manifest(
+        m = Manifest(kind="skill",
             name="priced-rt",
             version="1.0.0",
             pricing={"model": "usage-based", "price_usd": 0.01},

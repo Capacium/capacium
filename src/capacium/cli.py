@@ -5,6 +5,7 @@ from pathlib import Path
 
 from . import __version__
 from .commands.registry import add_registry_parser
+from .commands.init import VALID_TEMPLATES
 
 
 def main():
@@ -79,8 +80,7 @@ def main():
     )
     install_parser.add_argument(
         "--policy",
-        help="Path to a policy.yaml (kind: policy) that must be satisfied before install. "
-             "Exit code 3 = policy violation.",
+        help=argparse.SUPPRESS,
     )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
@@ -156,7 +156,7 @@ def main():
     )
     init_parser.add_argument(
         "--template",
-        choices=["skill", "mcp-server", "bundle", "resource"],
+        choices=sorted(VALID_TEMPLATES),
         help="Scaffold from template: skill | mcp-server | bundle | resource. Creates capability.yaml + SKILL.md + README.md.",
     )
     init_parser.add_argument(
@@ -518,29 +518,21 @@ def main():
 
     try:
         if args.command == "install":
+            policy_path = getattr(args, "policy", None)
+            if policy_path:
+                print(
+                    "Error: --policy moved to the optional capacium-install-policy "
+                    "companion. Use: cap-policy install <capability> "
+                    "--policy <policy-file>",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+
             from .commands.install import install_capability
             source_dir = Path(args.source) if args.source else None
             cap_spec = args.capability or ""
             if args.version:
                 cap_spec = f"{args.capability}@{args.version}" if args.capability else f"@{args.version}"
-
-            # W50-002: policy-as-code enforcement — fetch capability info BEFORE install
-            policy_path = getattr(args, "policy", None)
-            if policy_path and cap_spec:
-                try:
-                    from .commands.policy import enforce_policy
-                    from .commands._resolve import resolve_capability_info
-                    registry_url = getattr(args, "registry", None)
-                    cap_info = resolve_capability_info(cap_spec, registry_url=registry_url)
-                    if cap_info:
-                        enforce_policy(cap_info, policy_path)
-                    # enforce_policy sys.exit(3) on violation; continues if compliant
-                except SystemExit:
-                    raise
-                except Exception as _pol_err:
-                    import sys as _sys
-                    print(f"[cap] Policy check failed: {_pol_err}", file=_sys.stderr)
-                    _sys.exit(3)
 
             success = install_capability(
                 cap_spec,

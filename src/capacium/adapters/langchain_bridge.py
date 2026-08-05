@@ -1,18 +1,8 @@
-"""LangChain / Agent Flow bridge adapters.
-
-Exports capabilities as JSON tool definitions compatible with:
-- LangChain agent tool format
-- Flowise / Langflow node import format
-- AutoGPT / BabyAGI tool specification
-
-These adapters don't patch a local config file. Instead they produce
-a standardized JSON tool definition that can be imported into
-agent orchestration frameworks.
-"""
 import json
 from pathlib import Path
 from typing import Any, Dict
 
+from ..kinds import CapaciumKind
 from ..storage import StorageManager
 from .base import FrameworkAdapter, ensure_package_dir
 from .mcp_config_patcher import McpConfigPatcher
@@ -30,14 +20,14 @@ class _LangChainBridgeBase(FrameworkAdapter):
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         """Export a skill as a LangChain-compatible tool definition."""
-        return self._export_tool_def(cap_name, version, source_dir, owner, kind="skill")
+        return self._export_tool_def(cap_name, version, source_dir, owner, kind=CapaciumKind.SKILL.value)
 
     def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
         return self._remove_tool_def(cap_name)
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         """Export an MCP server as a LangChain-compatible tool definition."""
-        return self._export_tool_def(cap_name, version, source_dir, owner, kind="mcp-server")
+        return self._export_tool_def(cap_name, version, source_dir, owner, kind=CapaciumKind.MCP.value)
 
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
         return self._remove_tool_def(cap_name)
@@ -99,7 +89,7 @@ class LangChainToolAdapter(_LangChainBridgeBase):
     def _build_tool_definition(self, cap_name, version, manifest, mcp_meta, package_dir, kind):
         base = super()._build_tool_definition(cap_name, version, manifest, mcp_meta, package_dir, kind)
 
-        if kind == "mcp-server":
+        if kind == CapaciumKind.MCP.value:
             entry = McpConfigPatcher.build_mcp_entry(cap_name, package_dir, mcp_meta)
             base["langchain"] = {
                 "type": "StructuredTool",
@@ -126,7 +116,7 @@ class FlowiseAdapter(_LangChainBridgeBase):
     def _build_tool_definition(self, cap_name, version, manifest, mcp_meta, package_dir, kind):
         base = super()._build_tool_definition(cap_name, version, manifest, mcp_meta, package_dir, kind)
 
-        if kind == "mcp-server":
+        if kind == CapaciumKind.MCP.value:
             entry = McpConfigPatcher.build_mcp_entry(cap_name, package_dir, mcp_meta)
             base["flowise"] = {
                 "category": "MCP Servers",

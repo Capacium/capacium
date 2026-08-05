@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict
 
+from .kinds import CapaciumKind
+
 if TYPE_CHECKING:
     from src.capacium.index import Index
 
@@ -130,11 +132,15 @@ _TAG_CATEGORY_MAP: Dict[str, str] = {
 }
 
 _KIND_DEFAULTS: Dict[str, str] = {
-    "mcp-server": "MCP Infrastructure/Utility MCPs",
-    "skill": "AI & Agents/Agent Skills",
-    "tool": "Developer Tools/CLI Plugins",
-    "bundle": "AI & Agents/Agent Workflows",
-    "resource": "Data & Knowledge/Resources",
+    CapaciumKind.MCP.value: "MCP Infrastructure/Utility MCPs",
+    CapaciumKind.SKILL.value: "AI & Agents/Agent Skills",
+    CapaciumKind.TOOL.value: "Developer Tools/CLI Plugins",
+    CapaciumKind.BUNDLE.value: "AI & Agents/Agent Workflows",
+    CapaciumKind.RESOURCE.value: "Data & Knowledge/Resources",
+    CapaciumKind.PROMPT.value: "AI & Agents/Prompts",
+    CapaciumKind.TEMPLATE.value: "Developer Tools/Templates",
+    CapaciumKind.WORKFLOW.value: "AI & Agents/Workflows",
+    CapaciumKind.CONNECTOR.value: "MCP Infrastructure/Connector Packs",
 }
 
 _FALLBACK_CATEGORY = "Utilities/File Management"

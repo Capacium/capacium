@@ -13,12 +13,13 @@ def _cap(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_init_creates_valid_manifest(tmp_path: Path):
-    """cap init --name creates valid capability.yaml."""
+    """cap init --name --kind creates valid capability.yaml."""
     manifest_path = tmp_path / "capability.yaml"
     result = subprocess.run(
         [
             sys.executable, "-m", "capacium.cli", "init",
             "--name", "test-skill",
+            "--kind", "skill",
             "--version", "1.0.0",
             "--description", "A test skill",
         ],
@@ -29,6 +30,23 @@ def test_init_creates_valid_manifest(tmp_path: Path):
     assert result.returncode == 0
     content = manifest_path.read_text()
     assert "name: test-skill" in content
+    assert "kind: skill" in content
+
+
+def test_init_without_kind_fails_closed(tmp_path: Path):
+    """CAPR3-P01L-B: `cap init` never assumes a Kind."""
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "capacium.cli", "init",
+            "--name", "test-skill",
+            "--version", "1.0.0",
+        ],
+        capture_output=True, text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "--kind is required" in result.stdout
+    assert not (tmp_path / "capability.yaml").exists()
 
 
 def test_init_interactive_creates_manifest(tmp_path: Path):

@@ -144,7 +144,7 @@ class Registry:
 
     def _backfill_frameworks(self):
         """Backfill the frameworks JSON column from .cap-meta.json in framework symlinks."""
-        from .framework_detector import FRAMEWORK_SKILLS_DIRS
+        from .framework_detector import framework_skills_dirs
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -163,7 +163,7 @@ class Registry:
                 if framework_val:
                     found_frameworks.add(framework_val)
 
-                for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+                for fw_name, skills_dir in framework_skills_dirs().items():
                     meta_path = skills_dir / name_val / ".cap-meta.json"
                     if meta_path.exists():
                         try:

@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
+from ..kinds import validate_kind
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
@@ -175,8 +176,15 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
                 adapter = get_adapter(fw_name)
             except ValueError:
                 continue
+            # Validate Kind before adapter dispatch — never pass "unknown"
+            cap_kind = cap.kind.value if cap.kind else None
+            if not cap_kind or cap_kind == "unknown":
+                raise ValueError(
+                    f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
+                    "Cannot dispatch to adapter without a valid Capacium Kind."
+                )
             adapter.remove_capability(
-                cap_name, owner=owner, kind=cap.kind.value if cap.kind else "skill"
+                cap_name, owner=owner, kind=cap_kind
             )
 
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)
@@ -276,7 +284,10 @@ def _purge_all_adapter_symlinks(cap_name: str) -> None:
         except ValueError:
             continue
         if adapter.capability_exists(cap_name):
-            adapter.remove_capability(cap_name, kind="mcp-server")
+            # Direct MCP removal: this loop targets MCP config surfaces, so the
+            # branch is named rather than selected by a hardcoded Kind literal
+            # passed into remove_capability().
+            adapter.remove_mcp_server(cap_name)
 
 
 def _remove_sub_capabilities(
@@ -319,6 +330,14 @@ def _remove_sub_capabilities(
         if member_cap is not None:
             _remove_sub_capabilities(member_cap, registry, force, snapshot=snapshot)
 
+        member_kind = member_cap.kind.value if member_cap and member_cap.kind else None
+        if not member_kind or member_kind == "unknown":
+            raise ValueError(
+                f"Sub-capability '{member_id}' has invalid Kind "
+                f"'{member_kind}'. Cannot dispatch to adapter."
+            )
+        validate_kind(member_kind)
+
         frameworks = member_cap.frameworks if (member_cap and member_cap.frameworks) else [member_cap.framework if member_cap else "opencode"]
         for fw_name in frameworks:
             try:
@@ -328,7 +347,7 @@ def _remove_sub_capabilities(
             adapter.remove_capability(
                 m_name,
                 owner=m_owner,
-                kind=member_cap.kind.value if member_cap and member_cap.kind else "skill",
+                kind=member_kind,
             )
 
         if member_cap is not None:

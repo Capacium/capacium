@@ -155,8 +155,8 @@ description: A test operator capability
         operator_pkg = packages_dir / "test" / "operator-cap" / "1.0.0"
         assert not operator_pkg.exists()
 
-    def test_validate_manifest_rejects_spec_only_kinds(self, tmp_path):
-        """Manifest validation catches spec-only kinds before install."""
+    def test_validate_manifest_recognizes_legacy_spec_kind(self, tmp_path):
+        """Legacy spec-only kinds are recognized with migration warnings."""
         manifest_yaml = tmp_path / "capability.yaml"
         manifest_yaml.write_text("""\
 kind: operator
@@ -168,6 +168,4 @@ description: A test operator capability
         from capacium.manifest import Manifest
         manifest = Manifest.load(manifest_yaml)
         errors = manifest.validate()
-        assert len(errors) >= 1
-        assert any("unsupported" in e.lower() for e in errors)
-        assert any("operator" in e for e in errors)
+        assert any("legacy" in e.lower() or "migrate" in e.lower() for e in errors)

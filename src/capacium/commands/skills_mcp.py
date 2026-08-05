@@ -81,7 +81,7 @@ def _discover_skills(cap_home: Path):
                 "name":        data.get("name", skill_dir.name),
                 "owner":       data.get("owner", owner_dir.name),
                 "version":     data.get("version", "0.0.0"),
-                "kind":        data.get("kind", "skill"),
+                "kind":        data.get("kind") or "unknown",
                 "description": data.get("description", f"Installed skill: {skill_dir.name}"),
                 "path":        str(skill_dir),
             })

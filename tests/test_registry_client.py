@@ -24,7 +24,7 @@ class FakeResponse:
 
 
 def test_registry_result_from_kwargs():
-    r = RegistryResult(name="test-cap", owner="alice", version="1.0.0")
+    r = RegistryResult(name="test-cap", owner="alice", version="1.0.0", kind="skill")
     assert r.name == "test-cap"
     assert r.owner == "alice"
     assert r.kind == "skill"

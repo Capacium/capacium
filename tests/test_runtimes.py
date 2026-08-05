@@ -38,7 +38,7 @@ class TestManifestRuntimes:
         assert m.runtimes == {"uv": ">=0.4.0", "node": ">=20"}
 
     def test_runtimes_field_default_empty(self):
-        m = Manifest(name="x", version="1.0.0")
+        m = Manifest(kind="skill", name="x", version="1.0.0")
         assert m.runtimes == {}
 
     def test_runtimes_field_non_dict_normalized(self):

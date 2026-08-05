@@ -86,7 +86,7 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
             "owner": cap.owner,
             "name": cap.name,
             "version": cap.version,
-            "kind": cap.kind.value if cap.kind else "skill",
+            "kind": cap.kind.value if cap.kind else "unknown",
             "fingerprint": cap.fingerprint,
             "frameworks": list(all_frameworks),
             "adapter_statuses": adapter_statuses,
@@ -116,7 +116,7 @@ def _print_capabilities(capabilities, label: str, details: bool = False, registr
     print(header)
     for cap in capabilities:
         cap_id = f"{cap.owner}/{cap.name}"
-        kind_str = cap.kind.value if cap.kind else "skill"
+        kind_str = cap.kind.value if cap.kind else "unknown"
         all_frameworks = cap.frameworks if cap.frameworks else ([cap.framework] if cap.framework else [])
         fw_str = ", ".join(all_frameworks) if all_frameworks else "\u2014"
         print(f"  * [{kind_str}] {cap_id}@{cap.version}  \u2192 {fw_str}")

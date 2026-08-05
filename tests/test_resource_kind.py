@@ -4,7 +4,7 @@ from pathlib import Path
 
 from capacium.manifest import Manifest
 from capacium.models import Kind, Capability
-from capacium.commands.init import VALID_KINDS, _validate_kind
+from capacium.commands.init import _VALID_KINDS as VALID_KINDS, _validate_kind
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

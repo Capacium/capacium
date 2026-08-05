@@ -6,14 +6,15 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
 from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
-from ..manifest import Manifest
+from ..manifest import Manifest, ManifestDeclarationError
 from ..models import Capability, ConflictResult, ConflictState, Kind
+from ..kinds import KIND_EXAMPLES, CapaciumKind
 from ..runtimes import (
     RuntimeResolver,
     format_failure_report,
@@ -91,6 +92,19 @@ def install_capability(
     project: Optional[str] = None,
     prune: bool = False,
 ) -> bool:
+    local_source_manifest = None
+    if source_dir is not None:
+        source_raw = str(source_dir)
+        source_path = Path(source_raw)
+        is_remote_reference = _is_remote_source_reference(source_raw)
+        if not is_remote_reference:
+            # Validate a caller-supplied local source before StorageManager or
+            # Registry can create operator-home state. Remote sources retain
+            # their Exchange declaration precedence and clone-time migration.
+            local_source_manifest = Manifest.detect_source_declaration(
+                source_path
+            )
+
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
         # (cursor). Without it, those adapters never write into cwd.
@@ -112,16 +126,15 @@ def install_capability(
             return False
         cap_spec = autodetected_name
 
-    if source_dir is not None and (not cap_spec or cap_spec.strip() == ""):
-        source_raw = str(source_dir)
-        if not (_is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw)):
-            source_manifest = Manifest.detect_from_directory(source_dir)
-            if source_manifest.name:
-                cap_spec = (
-                    f"{source_manifest.owner}/{source_manifest.name}"
-                    if source_manifest.owner
-                    else source_manifest.name
-                )
+    if local_source_manifest is not None and (
+        not cap_spec or cap_spec.strip() == ""
+    ):
+        if local_source_manifest.name:
+            cap_spec = (
+                f"{local_source_manifest.owner}/{local_source_manifest.name}"
+                if local_source_manifest.owner
+                else local_source_manifest.name
+            )
 
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
@@ -274,7 +287,7 @@ def install_capability(
         source_dir, source_url = resolved
     elif source_dir is not None:
         source_raw = str(source_dir)
-        if _is_git_remote_url(source_raw) or _GITHUB_SHORT_RE.match(source_raw):
+        if _is_remote_source_reference(source_raw):
             resolved = _resolve_source(source_raw, version_spec=version_spec, github_token=github_token)
             if resolved is None:
                 return False
@@ -308,8 +321,15 @@ def install_capability(
         if source_dir is None:
             # Fallback to current directory
             cwd = Path.cwd()
-            manifest = Manifest.detect_from_directory(cwd)
-            if (cwd / "capability.yaml").exists() and manifest.name == cap_name:
+            try:
+                manifest = Manifest.detect_source_declaration(cwd)
+            except ManifestDeclarationError:
+                manifest = None
+            if (
+                manifest is not None
+                and (cwd / "capability.yaml").exists()
+                and manifest.name == cap_name
+            ):
                 source_dir = cwd
             else:
                 print(f"  Capability '{cap_id}' not found.")
@@ -324,7 +344,7 @@ def install_capability(
             return False
         source_dir = member_dir
 
-    source_manifest = Manifest.detect_from_directory(source_dir)
+    source_manifest = Manifest.detect_source_declaration(source_dir)
     requested_cap_id = cap_id
     canonical_cap_id = _canonical_identity(
         source_manifest, requested_cap_id, source_url
@@ -422,7 +442,7 @@ def install_capability(
         )
 
     if not resolved_frameworks:
-        print(f"  Error: '{source_manifest.kind or 'skill'}' kind is not supported by the selected framework(s).")
+        print(f"  Error: '{source_manifest.kind or 'unknown'}' kind is not supported by the selected framework(s).")
         return False
 
     _ALLOWED_KINDS = {k.value for k in Kind}
@@ -454,7 +474,7 @@ def install_capability(
     # SKILL.md is undiscoverable in skill clients. If it actually contains
     # nested member skills it is a mis-modeled multi-skill repo — refuse
     # instead of creating a dead root link.
-    if (manifest.kind or "skill") == "skill" and not (package_dir / "SKILL.md").exists():
+    if (manifest.kind or "") == "skill" and not (package_dir / "SKILL.md").exists():
         from ..manifest import infer_multi_skill_members
         nested = infer_multi_skill_members(package_dir)
         if nested:
@@ -512,7 +532,7 @@ def install_capability(
                 version,
                 package_dir,
                 owner=owner,
-                kind=manifest.kind or "skill",
+                kind=manifest.kind,
             )
         except RuntimeUnavailableError as exc:
             # Host-global condition: no client config was written and no other
@@ -544,11 +564,13 @@ def install_capability(
     first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
     if not source_url:
         source_url = source_manifest.repository or _detect_git_remote(source_dir)
+    if not manifest.kind or not str(manifest.kind).strip():
+        raise ValueError(f"Manifest kind is required for installation: {cap_name}")
     cap = Capability(
         owner=owner,
         name=cap_name,
         version=version,
-        kind=Kind(manifest.kind) if manifest.kind else Kind.SKILL,
+        kind=Kind(manifest.kind),
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
@@ -674,6 +696,30 @@ def _install_single_sub_cap(
     all_frameworks: bool = False,
 ) -> None:
     source_path = source_path.resolve()
+
+    # ── Validate before write ──
+    # Read and validate the manifest from the source path BEFORE creating
+    # any package reference or copying files. This ensures zero storage
+    # writes on invalid/missing Kind.
+    source_manifest = Manifest.detect_source_declaration(source_path)
+    if not source_manifest.kind:
+        raise ValueError(
+            f"Sub-manifest {sub_name} has no 'kind' field. "
+            "This manifest predates the Kind neutrality format and must be "
+            "updated via the versioned migration adapter."
+        )
+    # Validate the Kind through the canonical boundary
+    from ..kinds import validate_kind
+    validate_kind(source_manifest.kind)
+    # Full manifest validation — must pass before any storage write
+    manifest_errors = source_manifest.validate()
+    if manifest_errors:
+        raise ValueError(
+            f"Sub-manifest {sub_name} validation failed before write: "
+            + "; ".join(manifest_errors)
+        )
+
+    # ── Only now write storage ──
     shares_bundle_storage = False
     if bundle_dir is not None:
         try:
@@ -692,11 +738,11 @@ def _install_single_sub_cap(
         storage.remove_package_path(package_dir)
         shutil.copytree(source_path, package_dir)
 
-    sub_manifest = Manifest.detect_from_directory(package_dir)
+    sub_kind = source_manifest.kind
     sub_frameworks = resolve_frameworks(
-        sub_manifest.get_target_frameworks(),
+        source_manifest.get_target_frameworks(),
         all_frameworks=all_frameworks,
-        kind=sub_manifest.kind or "skill",
+        kind=sub_kind,
     )
     for fw in sub_frameworks:
         try:
@@ -704,16 +750,11 @@ def _install_single_sub_cap(
             adapter = get_adapter(fw)
         except ValueError:
             continue
-        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_manifest.kind or "skill")
+        adapter.install_capability(sub_name, version, package_dir, owner=owner, kind=sub_kind)
 
-    sub_errors = sub_manifest.validate()
-    if sub_errors:
-        for e in sub_errors:
-            print(f"  Warning ({sub_name}): {e}")
-
-    if sub_manifest.kind == "bundle":
+    if source_manifest.kind == "bundle":
         sub_sub_fingerprints = _install_bundle_members(
-            sub_manifest, owner, package_dir, registry, storage, no_lock,
+            source_manifest, owner, package_dir, registry, storage, no_lock,
             force=force, all_frameworks=all_frameworks,
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
@@ -721,12 +762,12 @@ def _install_single_sub_cap(
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"])
 
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
-    source_url = sub_manifest.repository or _detect_git_remote(source_path)
+    source_url = source_manifest.repository or _detect_git_remote(source_path)
     capacity = Capability(
         owner=owner,
         name=sub_name,
         version=version,
-        kind=Kind(sub_manifest.kind) if sub_manifest.kind else Kind.SKILL,
+        kind=Kind(source_manifest.kind),
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
@@ -949,7 +990,7 @@ def _resolve_sub_skill_dir(repo_dir: Path, sub_skill: str) -> Optional[Path]:
 
     members = infer_multi_skill_members(repo_dir)
     if not members:
-        manifest = Manifest.detect_from_directory(repo_dir)
+        manifest = Manifest.detect_source_declaration(repo_dir)
         if manifest.kind == "bundle":
             members = [
                 m for m in manifest.capabilities
@@ -972,12 +1013,19 @@ def _is_git_remote_url(value: str) -> bool:
     return value.startswith(("https://", "http://", "git@", "file://"))
 
 
+def _is_remote_source_reference(value: str) -> bool:
+    """Treat an existing path as local before considering shorthand URLs."""
+    return not Path(value).exists() and bool(
+        _is_git_remote_url(value) or _GITHUB_SHORT_RE.match(value)
+    )
+
+
 def _resolve_source(
     source_str: str,
     version_spec: Optional[str] = None,
     github_token: Optional[str] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
-    if _is_git_remote_url(source_str) or _GITHUB_SHORT_RE.match(source_str):
+    if _is_remote_source_reference(source_str):
         version_filter = version_spec if version_spec not in ("latest", "stable", None) else None
         return _clone_remote_source(source_str, version_filter=version_filter, github_token=github_token)
 
@@ -1073,7 +1121,19 @@ def _clone_remote_source(
     source_str: str,
     version_filter: Optional[str] = None,
     github_token: Optional[str] = None,
+    registry_meta: Optional[dict] = None,
 ) -> Optional[tuple[Path, Optional[str]]]:
+    """Materialize a remote source into a temporary clone.
+
+    *registry_meta* carries an Exchange declaration for sources that ship no
+    manifest. It must be supplied by the caller **before** materialization,
+    because this function generates the manifest itself when the clone has
+    none; without it, a manifestless source is refused here and an explicit
+    Exchange Kind is never observed.
+
+    Callers with no declaration (direct installs) pass ``None`` and keep the
+    strict refusal.
+    """
     if _GITHUB_SHORT_RE.match(source_str):
         url = f"https://github.com/{source_str}.git"
     elif _is_git_remote_url(source_str):
@@ -1083,101 +1143,113 @@ def _clone_remote_source(
         return None
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-source-"))
-    clone_url = url
-    if github_token and "github.com" in url:
-        clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
-
-    tags = _fetch_remote_tag_refs(clone_url)
-    selected_tag = _select_remote_tag(tags, version_filter)
-
-    clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
-
-    display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
-    selected_label = selected_tag.tag if selected_tag else version_filter
-    print(
-        f"  Cloning {display_url}"
-        + (f" (tag: {selected_label})" if selected_label else "")
-        + "..."
-    )
+    # Every exit from here on must remove the temporary clone: an
+    # exception from manifest generation previously leaked it.
+    _materialized = False
     try:
-        result = subprocess.run(
-            clone_args,
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            print(f"  Clone failed: {result.stderr.strip()}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return None
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"  Clone failed: {e}")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
+        clone_url = url
+        if github_token and "github.com" in url:
+            clone_url = url.replace("https://github.com/", f"https://{github_token}@github.com/")
 
-    repo_dir = tmp_dir / "repo"
-    if not tags:
-        # A transient ls-remote failure must not make us label default-branch
-        # bytes as tagless after a successful full clone.
-        tags = _fetch_remote_tag_refs(str(repo_dir))
+        tags = _fetch_remote_tag_refs(clone_url)
         selected_tag = _select_remote_tag(tags, version_filter)
-    if version_filter and selected_tag is None:
-        print(f"  Version {version_filter} not found in remote tags.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
 
-    default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
-    if selected_tag is not None:
-        checkout = subprocess.run(
-            ["git", "checkout", "--detach", selected_tag.source_commit],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
+        clone_args = ["git", "clone", clone_url, str(tmp_dir / "repo")]
+
+        display_url = url.replace("https://", "https://***@") if github_token and "github.com" in url else url
+        selected_label = selected_tag.tag if selected_tag else version_filter
+        print(
+            f"  Cloning {display_url}"
+            + (f" (tag: {selected_label})" if selected_label else "")
+            + "..."
         )
-        if checkout.returncode != 0:
-            print(f"  Checkout failed: {checkout.stderr.strip()}")
+        try:
+            result = subprocess.run(
+                clone_args,
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                print(f"  Clone failed: {result.stderr.strip()}")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return None
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"  Clone failed: {e}")
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
-    head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
-    if not head_commit:
-        print("  Clone failed: unable to resolve the checked-out commit.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
-    if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
-        print("  Checkout failed: resolved commit does not match selected tag.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None
+        repo_dir = tmp_dir / "repo"
+        if not tags:
+            # A transient ls-remote failure must not make us label default-branch
+            # bytes as tagless after a successful full clone.
+            tags = _fetch_remote_tag_refs(str(repo_dir))
+            selected_tag = _select_remote_tag(tags, version_filter)
+        if version_filter and selected_tag is None:
+            print(f"  Version {version_filter} not found in remote tags.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
-    resolved_commit = head_commit
-    if selected_tag is not None:
-        source_ref = selected_tag.source_ref
-        version = selected_tag.version
-    else:
-        source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
-        version = VersionManager.detect_embedded_version(repo_dir)
-        if not version:
-            version = f"0.0.0+{resolved_commit[:12]}"
+        default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+        if selected_tag is not None:
+            checkout = subprocess.run(
+                ["git", "checkout", "--detach", selected_tag.source_commit],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if checkout.returncode != 0:
+                print(f"  Checkout failed: {checkout.stderr.strip()}")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return None
 
-    (repo_dir / ".capacium-version").write_text(f"{version}\n")
-    _write_source_provenance(
-        repo_dir,
-        SourceProvenance(
-            source_url=url,
-            source_ref=source_ref,
-            source_commit=resolved_commit,
-            version=version,
-        ),
-    )
+        head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
+        if not head_commit:
+            print("  Clone failed: unable to resolve the checked-out commit.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+        if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
+            print("  Checkout failed: resolved commit does not match selected tag.")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
-    manifest_paths = (
-        repo_dir / "capability.yaml",
-        repo_dir / "capability.yml",
-        repo_dir / "capability.json",
-    )
-    if not any(path.exists() for path in manifest_paths):
-        _auto_generate_manifest(repo_dir, url, resolved_version=version)
+        resolved_commit = head_commit
+        if selected_tag is not None:
+            source_ref = selected_tag.source_ref
+            version = selected_tag.version
+        else:
+            source_ref = f"refs/heads/{default_branch}" if default_branch else "HEAD"
+            version = VersionManager.detect_embedded_version(repo_dir)
+            if not version:
+                version = f"0.0.0+{resolved_commit[:12]}"
 
-    return repo_dir, url
+        (repo_dir / ".capacium-version").write_text(f"{version}\n")
+        _write_source_provenance(
+            repo_dir,
+            SourceProvenance(
+                source_url=url,
+                source_ref=source_ref,
+                source_commit=resolved_commit,
+                version=version,
+            ),
+        )
+
+        manifest_paths = (
+            repo_dir / "capability.yaml",
+            repo_dir / "capability.yml",
+            repo_dir / "capability.json",
+        )
+        if not any(path.exists() for path in manifest_paths):
+            _auto_generate_manifest(
+                repo_dir, url,
+                registry_meta=registry_meta,
+                resolved_version=version,
+            )
+
+        _materialized = True
+        return repo_dir, url
+    finally:
+        if not _materialized:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _fetch_remote_tags(repo_url: str) -> List[str]:
@@ -1206,26 +1278,168 @@ def _fetch_remote_tags(repo_url: str) -> List[str]:
         return []
 
 
+class KindDeclarationRequired(ValueError):
+    """Raised when an ingested source declares no canonical Capacium Kind.
+
+    Capacium never guesses a Kind. A source that does not declare one cannot
+    be packaged, and this is raised before any storage, adapter, or registry
+    side effect occurs.
+    """
+
+
+def _resolve_declared_kind(
+    raw_kind: object,
+    *,
+    origin: str,
+    source_format: str,
+) -> Tuple[str, Optional[object]]:
+    """Resolve an explicitly declared Kind to its canonical value.
+
+    Returns ``(canonical_kind_value, migration_evidence)``. The evidence is a
+    :class:`~capacium.kinds.KindMigrationResult` when *raw_kind* was a legacy
+    spec-only Kind, and ``None`` for an already-canonical Kind.
+
+    A legacy Kind is only ever accepted through the canonical versioned
+    migration adapter, which records the source format as evidence. There is
+    no other legacy path and no inference of any sort.
+
+    Raises :class:`KindDeclarationRequired` when no Kind is declared, and
+    ``ValueError`` when a declared Kind is not recognised.
+    """
+    from ..kinds import is_legacy_spec_kind, migrate_legacy_kind, validate_kind
+
+    if raw_kind is None or not str(raw_kind).strip():
+        raise KindDeclarationRequired(
+            f"{origin} declares no 'kind'. Capacium does not infer a Kind from "
+            f"repository or file names.\n"
+            f"  Fix: add a capability.yaml to the source with an explicit "
+            f"'kind:' field, or install from a registry entry that declares "
+            f"one.\n"
+            f"  Valid kinds: {', '.join(sorted(KIND_EXAMPLES))}"
+        )
+
+    cleaned = str(raw_kind).strip()
+    if is_legacy_spec_kind(cleaned):
+        migration = migrate_legacy_kind(cleaned, format_version=source_format)
+        return migration.migrated_kind.value, migration
+    return validate_kind(cleaned).value, None
+
+
+def _declared_exchange_kind(registry_meta: Optional[dict]) -> Optional[str]:
+    """Return the Kind an Exchange record actually declares, or None.
+
+    "The record exists" and "the record declares a Kind" are different
+    questions. Mapping truthiness answers the first, and using it for the
+    second made an Exchange entry with ``kind: ""`` look like an explicit
+    declaration of nothing — which then masked a perfectly good source-format
+    declaration in the repository itself.
+
+    Returns the stripped Kind string when one is genuinely declared, and None
+    when the record is absent, has no ``kind`` key, or carries an empty or
+    whitespace-only value.
+    """
+    if not isinstance(registry_meta, dict):
+        return None
+    raw = registry_meta.get("kind")
+    if raw is None:
+        return None
+    cleaned = str(raw).strip()
+    return cleaned or None
+
+
+def _migrate_recognized_source_format(repo_dir: Path, origin: str):
+    """Resolve a Kind from a recognized non-Capacium source format.
+
+    Detection is structural — what the source actually contains — never
+    lexical. A root ``SKILL.md`` is the Agent Skills format declaring a skill;
+    a ``skills/<name>/SKILL.md`` layout declares a bundle of members. Both are
+    declarations written in another vocabulary, so both are migrated through
+    the canonical versioned adapter and carry their source format as evidence.
+
+    Raises :class:`KindDeclarationRequired` when nothing recognizable is
+    present, before any side effect.
+    """
+    from ..kinds import migrate_source_format_kind, recognized_source_formats
+    from ..manifest import infer_multi_skill_members
+
+    if (repo_dir / "SKILL.md").is_file():
+        return migrate_source_format_kind("agent-skill-md-v1")
+    if infer_multi_skill_members(repo_dir):
+        return migrate_source_format_kind("agent-skills-bundle-v1")
+
+    raise KindDeclarationRequired(
+        f"Source {origin} ships no capability manifest, no registry entry "
+        f"declares its kind, and it matches no recognized source format. "
+        f"Capacium does not infer a Kind from repository names.\n"
+        f"  Fix: add a capability.yaml with an explicit 'kind:' field to the "
+        f"source repository, then reinstall.\n"
+        f"  Valid kinds: {', '.join(sorted(KIND_EXAMPLES))}\n"
+        f"  Recognized source formats: "
+        f"{', '.join(recognized_source_formats())}"
+    )
+
+
 def _auto_generate_manifest(
     repo_dir: Path,
     repo_url: str,
     registry_meta: Optional[dict] = None,
     resolved_version: Optional[str] = None,
 ) -> None:
+    """Write a capability.yaml for a source that ships none.
+
+    The Kind must be explicitly declared by the registry metadata. Kind is
+    never inferred from repository names, topics, or directory layout: a name
+    containing ``mcp``, ``bundle``, ``tool``, ``template``, or ``workflow`` is
+    a naming coincidence, not a declaration, and treating it as one silently
+    mis-packaged capabilities.
+
+    Raises :class:`KindDeclarationRequired` before writing anything when no
+    Kind is declared.
+    """
     dest = repo_dir / "capability.yaml"
     if dest.exists():
         return
 
-    if registry_meta:
-        name = registry_meta.get("name", repo_dir.name)
-        owner = registry_meta.get("owner", "unknown")
-        kind = registry_meta.get("kind", "skill")
+    migration = None
+    declared = _declared_exchange_kind(registry_meta)
+
+    if registry_meta is not None:
+        name = registry_meta.get("name") or repo_dir.name
+        owner = registry_meta.get("owner") or "unknown"
         version = resolved_version or registry_meta.get("version", "1.0.0")
-        description = registry_meta.get("description", f"Auto-detected capability {name}")
+        description = registry_meta.get("description") or (
+            f"Auto-detected capability {name}"
+        )
         if version in ("", "latest", "stable"):
             version = "1.0.0"
-        tags_list = registry_meta.get("tags", [])
+        tags_list = registry_meta.get("tags") or []
+
+        if declared is not None:
+            # Rule 2: an explicit Exchange Kind outranks structural evidence.
+            # Rule 4: if it is unknown or invalid this raises — no silent
+            # fallback to source-format recognition.
+            kind, migration = _resolve_declared_kind(
+                declared,
+                origin=f"Registry entry for {owner}/{name}",
+                source_format="registry-metadata-v1",
+            )
+        else:
+            # Rule 3: the record exists but declares no Kind. Empty metadata is
+            # not a declaration, so it must not mask a recognized source
+            # format. Exchange name, owner, description, version, tags, and
+            # repository are still authoritative — only the Kind comes from
+            # the source.
+            migration = _migrate_recognized_source_format(repo_dir, repo_url)
+            kind = migration.migrated_kind.value
     else:
+        # No Capacium manifest and no registry metadata at all. The only
+        # accepted path is a recognized non-Capacium source format, migrated
+        # explicitly with evidence. Resolved first, so an unrecognized source
+        # fails closed before any tag fetch, manifest write, storage, adapter,
+        # or registry side effect — never by guessing from the repository name.
+        migration = _migrate_recognized_source_format(repo_dir, repo_url)
+        kind = migration.migrated_kind.value
+
         name = repo_dir.name
         owner = "unknown"
         m = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", repo_url)
@@ -1247,33 +1461,29 @@ def _auto_generate_manifest(
                 return tuple(parts)
             version = max(tags, key=_vk)
 
-        kind = "skill"
-        topics_lower = name.lower()
-        if "mcp" in topics_lower or "mcp-server" in topics_lower:
-            kind = "mcp-server"
-        elif "bundle" in topics_lower or "pack" in topics_lower:
-            kind = "bundle"
-        elif "tool" in topics_lower:
-            kind = "tool"
-        elif "template" in topics_lower:
-            kind = "template"
-        elif "workflow" in topics_lower:
-            kind = "workflow"
-
         description = f"Auto-detected capability {name}"
 
     if not version or version in ("", "latest", "stable"):
         version = "1.0.0"
 
-    # V13/STAB-001: multi-skill repositories become bundles with member
-    # skills instead of a single undiscoverable root skill.
+    # V13/STAB-001: multi-skill layouts are attached as bundle members.
+    # The declared Kind stays authoritative — a multi-skill layout is
+    # structural evidence, not licence to silently re-Kind an explicit
+    # declaration, which is how a declared 'skill' used to become a 'bundle'
+    # without the declaring party ever being told.
+    from ..manifest import infer_multi_skill_members
+    discovered = infer_multi_skill_members(repo_dir)
     members = []
-    if kind in ("skill", "bundle"):
-        from ..manifest import infer_multi_skill_members
-        members = infer_multi_skill_members(repo_dir)
-        if members:
-            kind = "bundle"
+    if discovered:
+        if kind == CapaciumKind.BUNDLE.value:
+            members = discovered
             description = f"Multi-skill bundle {name} ({len(members)} skills)"
+        else:
+            print(
+                f"  Note: {name} has a multi-skill layout ({len(discovered)} "
+                f"members) but declares kind: {kind}. Declare kind: bundle in "
+                f"the source to package those members."
+            )
 
     yaml_data = {
         "kind": kind,
@@ -1287,6 +1497,20 @@ def _auto_generate_manifest(
         yaml_data["capabilities"] = members
     if tags_list:
         yaml_data["tags"] = tags_list
+    if migration is not None:
+        # Point-of-record evidence that this Kind came through the canonical
+        # versioned migration adapter, not from inference.
+        yaml_data["x_kind_migration"] = {
+            "source_format": migration.source_format,
+            "original_kind": migration.original_kind,
+            "migrated_kind": migration.migrated_kind.value,
+            "migration_reason": migration.migration_reason,
+        }
+        print(
+            f"  Kind '{migration.migrated_kind.value}' migrated from "
+            f"{migration.source_format} (declared by "
+            f"{migration.original_kind})"
+        )
 
     try:
         import yaml
@@ -1411,40 +1635,53 @@ def _fetch_from_registry(
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
 
+    # CAPR3-P01L-A: build the Exchange declaration *before* materializing the
+    # source. _clone_remote_source() generates the manifest for a clone that
+    # ships none, so a declaration constructed afterwards arrives too late and
+    # a manifestless source is refused despite the registry declaring its Kind.
+    registry_meta = {
+        "name": remote.name,
+        "owner": remote.owner,
+        "version": best_version or remote.version,
+        "kind": remote.kind or "",
+        "description": remote.description or "",
+        "repository": repository,
+        "tags": remote.tags or [],
+    }
+
     resolved = _clone_remote_source(
         repository,
         version_filter=requested_version,
         github_token=github_token,
+        registry_meta=registry_meta,
     )
     if resolved is None:
         return None, None
     repo_dir, resolved_url = resolved
-    provenance = _read_source_provenance(repo_dir)
-    if provenance is not None:
-        best_version = provenance.version
+    try:
+        provenance = _read_source_provenance(repo_dir)
+        if provenance is not None:
+            best_version = provenance.version
 
-    manifest = Manifest.detect_from_directory(repo_dir)
-    if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
-        best_version = manifest.version
-    if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
-        registry_meta = {
-            "name": remote.name,
-            "owner": remote.owner,
-            "version": best_version or remote.version,
-            "kind": remote.kind or "skill",
-            "description": remote.description or "",
-            "repository": repository,
-            "tags": remote.tags or [],
-        }
-        _auto_generate_manifest(repo_dir, repository, registry_meta=registry_meta)
+        manifest = Manifest.detect_source_declaration(repo_dir)
+        if best_version in ("", "0.0.0", "latest", "stable") and manifest.version:
+            best_version = manifest.version
+        if not manifest.name or (manifest.name == repo_dir.name and manifest.version == "1.0.0"):
+            registry_meta["version"] = best_version or remote.version
+            _auto_generate_manifest(
+                repo_dir, repository, registry_meta=registry_meta,
+            )
 
-    # Copy into cache
-    cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    shutil.copytree(repo_dir, cache_dir)
-    shutil.rmtree(repo_dir.parent, ignore_errors=True)
-    return cache_dir, resolved_url
+        # Copy into cache
+        cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+        shutil.copytree(repo_dir, cache_dir)
+        return cache_dir, resolved_url
+    finally:
+        # The clone is disposable once it has been cached, and must not
+        # survive a refusal either.
+        shutil.rmtree(repo_dir.parent, ignore_errors=True)
 
 
 def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
@@ -1467,8 +1704,8 @@ def _is_framework_already(cap_name: str, owner: str, version_spec: str, framewor
     if adapter is not None and adapter.capability_exists(cap_name):
         return True
 
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
-    skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+    from ..framework_detector import framework_skills_dirs
+    skills_dir = framework_skills_dirs().get(framework)
     if skills_dir is not None:
         link_path = skills_dir / cap_name
         return link_path.exists()
@@ -1489,7 +1726,7 @@ def _append_framework(
     _bundle_stack: Optional[set[str]] = None,
 ) -> bool:
     from ..adapters import get_adapter
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS, create_framework_symlinks
+    from ..framework_detector import framework_skills_dirs, create_framework_symlinks
 
     registry = Registry()
     cap_id = f"{owner}/{cap_name}"
@@ -1582,7 +1819,7 @@ def _append_framework(
         print(f"  Frameworks: {', '.join(all_frameworks)}")
         return True
 
-    kind_str = existing.kind.value if existing.kind else "skill"
+    kind_str = existing.kind.value if existing.kind else "unknown"
 
     try:
         adapter = get_adapter(framework)
@@ -1607,7 +1844,7 @@ def _append_framework(
         # Generic skills-dir fallback for frameworks without a dedicated
         # adapter. Registered adapters are preferred because they resolve the
         # current HOME and project scope dynamically.
-        skills_dir = FRAMEWORK_SKILLS_DIRS.get(framework)
+        skills_dir = framework_skills_dirs().get(framework)
         if skills_dir is None:
             print(f"  Unknown framework: {framework}")
             return False
@@ -1754,7 +1991,12 @@ def _resolve_install_frameworks(
         all_frameworks=all_frameworks,
         framework_filter=framework_filter,
         preferred_frameworks=preferred,
-        kind=manifest.kind or "skill",
+        # CAPR3-P01L-B: pass the manifest's Kind through rather than supplying
+        # an empty-string default at the sink. `kind` is a required Manifest
+        # field, so `or ""` never substituted anything — it only planted a
+        # hardcoded empty Kind at a dispatch sink. Unsupported and legacy
+        # Kinds are still rejected upstream with an actionable message.
+        kind=manifest.kind,
     )
 
 
@@ -1775,9 +2017,9 @@ class PromptHandler:
 
 
 def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_framework: Optional[str] = None) -> None:
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+    from ..framework_detector import framework_skills_dirs
 
-    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+    for fw_name, skills_dir in framework_skills_dirs().items():
         if target_framework and fw_name != target_framework:
             continue
         link_path = skills_dir / cap_name
@@ -1814,7 +2056,11 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_fr
             continue
         if adapter.capability_exists(cap_name):
             print(f"  Removing old installation from {fw_name} config...")
-            adapter.remove_capability(cap_name, owner=existing_owner, kind="mcp-server")
+            # Call the MCP removal branch directly. Routing through
+            # remove_capability(kind=CapaciumKind.MCP.value) pushed a hardcoded
+            # Kind into a dispatch sink purely to select this branch; these
+            # frameworks are MCP config surfaces, so say so explicitly.
+            adapter.remove_mcp_server(cap_name, existing_owner)
 
 
 def _check_bundle_member_conflict(
@@ -1838,9 +2084,9 @@ def check_conflict(
     owner: str,
     version_spec: str,
 ) -> ConflictResult:
-    from ..framework_detector import FRAMEWORK_SKILLS_DIRS
+    from ..framework_detector import framework_skills_dirs
 
-    for fw_name, skills_dir in FRAMEWORK_SKILLS_DIRS.items():
+    for fw_name, skills_dir in framework_skills_dirs().items():
         link_path = skills_dir / cap_name
         if not link_path.exists():
             continue
@@ -1988,7 +2234,7 @@ def _install_from_tarball(
     else:
         source_dir = tmp_dir
 
-    manifest = Manifest.detect_from_directory(source_dir)
+    manifest = Manifest.detect_source_declaration(source_dir)
     if manifest.name == source_dir.name and manifest.version == "1.0.0" and not (source_dir / "capability.yaml").exists():
         print("  Tarball does not contain a valid capability (no capability.yaml)")
         shutil.rmtree(tmp_dir, ignore_errors=True)

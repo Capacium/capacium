@@ -80,7 +80,7 @@ class TestOmniSymlinkGate:
             "antigravity": tmp_path / ".gemini" / "antigravity" / "skills",
         }
         monkeypatch.setattr(
-            "capacium.framework_detector.FRAMEWORK_SKILLS_DIRS", dirs
+            "capacium.framework_detector.framework_skills_dirs", lambda: dirs
         )
         return dirs
 

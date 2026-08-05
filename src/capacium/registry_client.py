@@ -15,7 +15,7 @@ class RegistryResult:
     name: str
     owner: str
     version: str
-    kind: str = "skill"
+    kind: str
     description: str = ""
     fingerprint: str = ""
     dependencies: Dict[str, str] = field(default_factory=dict)
@@ -34,7 +34,7 @@ class RegistryResult:
 class RegistryDetail:
     name: str
     owner: str
-    kind: str = "skill"
+    kind: str
     description: str = ""
     version: str = ""
     versions: List[str] = field(default_factory=list)

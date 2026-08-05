@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capacium"
-version = "0.16.0"
+version = "0.17.0"
 description = "Capability Packaging System — agent-agnostic packaging for AI agent capabilities"
 readme = "README.md"
 authors = [
@@ -54,11 +54,16 @@ yaml = ["PyYAML>=6.0"]
 signing = [
     "cryptography>=42.0.0",
 ]
+trust = [
+    "PyNaCl>=1.5.0",
+]
 
 [project.urls]
-Homepage = "https://github.com/Capacium/capacium"
-Repository = "https://github.com/Capacium/capacium"
-Issues = "https://github.com/Capacium/capacium/issues"
+Homepage = "https://capacium.xyz"
+Repository = "https://git.langevc.com/capacium/capacium"
+Issues = "https://git.langevc.com/capacium/capacium/issues"
+Source = "https://git.langevc.com/capacium/capacium"
+Mirror = "https://github.com/Capacium/capacium"
 
 [project.scripts]
 cap = "capacium.cli:main"
@@ -70,3 +75,9 @@ include = ["capacium*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
