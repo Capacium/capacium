@@ -1,6 +1,52 @@
+import gc
+import shutil
+import sys
+import time
+
 import pytest
 import tempfile
 from pathlib import Path
+
+
+# Reference to the real rmtree, patched out at the end of the session on
+# Windows only (see _patch_rmtree_for_windows below).
+_real_rmtree = shutil.rmtree
+
+
+def _rmtree_retry(path, attempts: int = 5, delay: float = 0.25) -> None:
+    """shutil.rmtree replacement that retries on transient Windows handle
+    contention before falling back to an ignoring best-effort removal."""
+    for attempt in range(attempts):
+        try:
+            _real_rmtree(path)
+            return
+        except (PermissionError, OSError):
+            if attempt == attempts - 1:
+                _real_rmtree(path, ignore_errors=True)
+                return
+            gc.collect()
+            time.sleep(delay)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _patch_rmtree_for_windows():
+    """On Windows, retry rmtree everywhere so git-owned .git handles don't
+    fail tmp_path teardown.
+
+    pytest's tmp_path teardown uses shutil.rmtree via its own helpers; by
+    monkeypatching shutil.rmtree at the module level for the whole session we
+    make every teardown (including pytest's) tolerate WinError 5 / WinError 32
+    on .git Packfiles, matching the ignore_errors guard the production rm
+    paths already carry. No-op on POSIX.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    shutil.rmtree = _rmtree_retry
+    try:
+        yield
+    finally:
+        shutil.rmtree = _real_rmtree
 
 
 @pytest.fixture(autouse=True)

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -43,6 +45,10 @@ def test_nfpm_workflow_uses_distinct_package_filenames():
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="nfpm packaging runs a bash script; deb/rpm are Linux-only artifacts",
+)
 def test_nfpm_step_fixture_produces_deb_and_rpm(tmp_path):
     step = _nfpm_step()
     binary = tmp_path / "cap-Linux-X64" / "cap"

@@ -7,6 +7,10 @@ on:
 
 # GITHUB_REF_NAME is set by Forgejo Actions (GitHub-Actions-compatible env).
 jobs:
+  # The single gate a v*.*.* tag must pass before it is mirrored to GitHub.
+  # ADR 2026-08-13-release-distribution-boundary: the mirror job below waits
+  # on this job, so a ref whose pyproject version does not match its tag never
+  # reaches GitHub (CAP-CI-001).
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -30,7 +34,36 @@ jobs:
           if ! grep -q "@v${TAG_VERSION}" README.md; then
             echo "ERROR: README.md references are not updated to v${TAG_VERSION}."
             echo "  Run: sed -i 's/@v[0-9.]*/@v${TAG_VERSION}/g' README.md"
-            echo "  Run: sed -i 's|ghcr.io/capacium/cap:[0-9.]*|ghcr.io/capacium/cap:${TAG_VERSION}|g' README.md"
             exit 1
           fi
           echo "README version references match v${TAG_VERSION}."
+      - name: Validate documented image name matches what docker.yml pushes
+        run: |
+          # The image name must be the short, two-segment form docker.yml now
+          # produces (ADR 2026-08-13): ghcr.io/capacium/cap:<version>, tag
+          # without a leading v. This used to check a self-consistent string
+          # against itself; it now checks the documented name against the name
+          # the pipeline actually produces (CAP-CI-002).
+          IMAGE_LINE="ghcr.io/capacium/cap:${GITHUB_REF_NAME#v}"
+          if ! grep -qF "${IMAGE_LINE}" README.md; then
+            echo "ERROR: README.md does not document the pushed image '${IMAGE_LINE}'."
+            echo "  Expected a docker example naming 'ghcr.io/capacium/cap:${GITHUB_REF_NAME#v}'."
+            exit 1
+          fi
+          echo "README documents the pushed image name '${IMAGE_LINE}'."
+
+  # Only mirrors the tag after validation is green. This is the single tag
+  # mirror path; mirror.yml no longer mirrors v* tags.
+  mirror:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push tag to GitHub mirror
+        env:
+          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+        run: |
+          remote="https://x-access-token:${GH_MIRROR_TOKEN}@github.com/Capacium/capacium.git"
+          git push --force "$remote" "+${GITHUB_REF}:${GITHUB_REF}"
