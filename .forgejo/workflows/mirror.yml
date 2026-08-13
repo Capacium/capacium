@@ -6,6 +6,11 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref zum Nachspiegeln, z.B. refs/tags/v0.17.0'
+        required: true
 
 jobs:
   mirror:
@@ -17,6 +22,7 @@ jobs:
       - name: Push to GitHub mirror
         env:
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
+          MIRROR_REF: ${{ inputs.ref || github.ref }}
         run: |
           remote="https://x-access-token:${GH_MIRROR_TOKEN}@github.com/Capacium/capacium.git"
           # Mirror exactly the ref that triggered this run (branch or tag). No --prune
@@ -25,4 +31,4 @@ jobs:
           # on the mirror — including GitHub's default 'main' (which GitHub refuses,
           # failing the job) and any GitHub-managed branch such as gh-pages. Pushing
           # only ${GITHUB_REF} keeps the mirror in sync and leaves those untouched.
-          git push --force "$remote" "+${GITHUB_REF}:${GITHUB_REF}"
+          git push --force "$remote" "+${MIRROR_REF}:${MIRROR_REF}"
