@@ -2,10 +2,15 @@ name: Mirror to GitHub
 
 # Forgejo is canonical; GitHub (Capacium/capacium) is the public read-only
 # mirror. Force-push the ref that triggered each run so GitHub tracks Forgejo.
+#
+# NOTE: v* tag mirroring is NOT handled here. Tags are gated by
+# validate-release-tag.yml, whose `mirror` job force-pushes the tag only after
+# the `validate` job is green (ADR 2026-08-13-release-distribution-boundary).
+# This workflow mirrors branches and manually-requested refs only; do not add
+# a `tags:` trigger here without re-deciding that ADR.
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       ref:

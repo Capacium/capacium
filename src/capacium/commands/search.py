@@ -5,9 +5,14 @@ SEARCH-V2 — Local-first search with fallback to remote Exchange API.
 import json
 import select
 import sys
-import termios
-import tty
 from pathlib import Path
+
+try:
+    import termios
+    import tty
+except ImportError:  # termios/tty are POSIX-only; Windows has neither
+    termios = None  # type: ignore[assignment]
+    tty = None  # type: ignore[assignment]
 from typing import Any, Dict, List, Optional
 
 from ..index import Index
@@ -52,6 +57,14 @@ def _key_bindings() -> Dict[str, str]:
 
 
 def _read_key() -> str:
+    if termios is None or tty is None:
+        # POSIX-only raw terminal handling. On Windows (or any non-POSIX
+        # platform) fall back to line-buffered input rather than importing
+        # termios, which does not exist there.
+        try:
+            return sys.stdin.read(1)
+        except (OSError, ValueError):
+            return "q"
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:

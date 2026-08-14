@@ -7,11 +7,16 @@ keyboard-driven actions, and JSON output support.
 import json
 import select
 import sys
-import termios
 import textwrap
-import tty
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+try:
+    import termios
+    import tty
+except ImportError:  # termios/tty are POSIX-only; Windows has neither
+    termios = None  # type: ignore[assignment]
+    tty = None  # type: ignore[assignment]
 
 
 from ..index import Index
@@ -25,6 +30,12 @@ _JSON_SCHEMA = "https://capacium.xyz/schemas/info-v1.json"
 
 
 def _read_key() -> str:
+    if termios is None or tty is None:
+        # POSIX-only raw terminal handling; fall back on non-POSIX platforms.
+        try:
+            return sys.stdin.read(1)
+        except (OSError, ValueError):
+            return "q"
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
