@@ -1,4 +1,13 @@
-"""Safe package-store garbage collection and retention planning."""
+"""Safe package-store garbage collection and retention planning.
+
+On top of the read-only provenance reconciler (``cap reconcile``), this module
+builds a *cleanup plan* that names, per entry, one of four actions — ``adopt``,
+``relink``, ``quarantine`` or ``delete`` — together with the reason that entry
+should be acted on. This is the D2 half of the drift-and-cleanup pair: the
+reconciler answers *who wrote it, at what version, is it still alive*; the plan
+here turns that answer into a safe, reversible disposition that never collapses
+two entries that merely look alike (CAP-REC-D2, 2026-08-16).
+"""
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -32,6 +41,293 @@ class GCReport:
     @property
     def reclaimed_bytes(self) -> int:
         return sum(entry.size_bytes for entry in self.entries)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup plan (CAP-REC-D2): adopt / relink / quarantine / delete per entry
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CleanupAction:
+    """One disposition for one reconciler entry, with an explicit reason.
+
+    ``target`` is the path the action operates on (the harness link to relink or
+    delete, the foreign dir to adopt, the store dir to quarantine). ``to`` names
+    the destination for relink/adopt where one exists. ``reason`` is a
+    human-readable justification particular to this entry — never a bare action
+    name, so a dry-run line explains *why* the entry is touched.
+    """
+
+    action: str
+    target: Path
+    reason: str
+    to: Optional[Path] = None
+    ref: Optional[str] = None
+
+
+@dataclass
+class CleanupReport:
+    actions: List[CleanupAction] = field(default_factory=list)
+    applied: List[str] = field(default_factory=list)
+    quarantined: List[str] = field(default_factory=list)
+
+    @property
+    def counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for action in self.actions:
+            counts[action.action] = counts.get(action.action, 0) + 1
+        return counts
+
+
+def _quarantine_root() -> Path:
+    """A quarantine dir under the store, timestamped so repeated cleanups never
+    overwrite an earlier, still-inspectable quarantine."""
+    from datetime import datetime
+
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    return Path.home() / ".capacium" / "quarantine" / ts
+
+
+def _registry_for_install_path(registry: Registry, cap_id: str, version: str) -> Optional[Path]:
+    """The on-disk install path for a registered ``cap_id@version``."""
+    cap = registry.get_capability(cap_id, version)
+    if cap is None or not cap.install_path:
+        return None
+    return Path(cap.install_path)
+
+
+def _relink_target_for_entry(entry: Dict[str, object], registry: Registry) -> Optional[Path]:
+    """Derive the *new* target a stale/relocated/indirect link should point at.
+
+    Priority: the entry's own ``resolved`` (for an indirect two-hop link, the
+    final in-store path); otherwise the current registered generation of the
+    entry's ``cap_id``; otherwise the relocation target's install path.
+    """
+    resolved = entry.get("resolved")
+    if resolved:
+        candidate = Path(str(resolved))
+        if candidate.exists():
+            return candidate
+
+    cap_id = entry.get("cap_id")
+    current_version = entry.get("current_version")
+    if cap_id and current_version:
+        path = _registry_for_install_path(registry, str(cap_id), str(current_version))
+        if path is not None and path.exists():
+            return path
+    return None
+
+
+def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registry] = None) -> List[CleanupAction]:
+    """Turn a reconciler report into a per-entry cleanup plan.
+
+    Reads the reconciler output once (running it when ``report`` is not given)
+    and maps every drift shape to one of ``adopt``, ``relink``, ``quarantine`` or
+    ``delete``. Each action carries a reason specific to the entry, so two
+    near-identically named links are emitted as two distinct actions and never
+    folded (CAP-REC-D2).
+
+    * ``delete``     — a dead link (target gone) or a phantom registry row
+                        (no files on disk): nothing to preserve.
+    * ``relink``     — a stale link, a relocation-gap link, an indirect two-hop
+                        link, or a hold-drift: a live successor exists to point at.
+    * ``quarantine`` — an on-disk install with no registry row: it is preserved
+                        (moved aside) rather than deleted, because its provenance
+                        is unknown.
+    * ``adopt``      — a foreign entry: brought under Capacium by writing a
+                        provenance mark; never merged with a look-alike.
+    """
+    registry = registry or Registry()
+    if report is None:
+        from .reconcile import reconcile
+
+        report = reconcile()
+
+    actions: List[CleanupAction] = []
+
+    for entry in report.get("skills", []):
+        state = entry.get("state")
+        path = Path(str(entry.get("path", "")))
+        if state == "dead":
+            actions.append(CleanupAction(
+                action="delete", target=path,
+                reason="link target does not exist on disk",
+                ref=entry.get("cap_id"),
+            ))
+        elif state == "stale":
+            target = _relink_target_for_entry(entry, registry)
+            current = entry.get("current_version")
+            actions.append(CleanupAction(
+                action="relink", target=path,
+                reason=f"link points at superseded version {entry.get('version')}; current is {current}",
+                to=target, ref=entry.get("cap_id"),
+            ))
+        elif state == "relocation_gap":
+            reloc = entry.get("relocation") or {}
+            target = _relink_target_for_entry(entry, registry)
+            actions.append(CleanupAction(
+                action="relink", target=path,
+                reason=(
+                    f"link still names relocated owner {reloc.get('from')}; "
+                    f"canonical is {reloc.get('to')}"
+                ),
+                to=target, ref=entry.get("cap_id"),
+            ))
+        elif state == "indirect":
+            target = _relink_target_for_entry(entry, registry)
+            actions.append(CleanupAction(
+                action="relink", target=path,
+                reason="non-canonical two-hop indirection leaves the package store",
+                to=target, ref=entry.get("cap_id"),
+            ))
+        elif state == "foreign":
+            actions.append(CleanupAction(
+                action="adopt", target=path,
+                reason="foreign entry is not managed by Capacium",
+                ref=str(path),
+            ))
+
+    for finding in report.get("findings", []):
+        kind = finding.get("kind")
+        capability = str(finding.get("capability", ""))
+        if kind == "phantom":
+            target = Path(finding.get("install_path") or "")
+            actions.append(CleanupAction(
+                action="delete", target=target,
+                reason="registry row has no files on disk",
+                ref=capability,
+            ))
+        elif kind == "unregistered":
+            target = Path(str(finding.get("path", "")))
+            actions.append(CleanupAction(
+                action="quarantine", target=target,
+                reason="on-disk install has no registry row",
+                ref=capability,
+            ))
+        elif kind == "vestigial":
+            target = Path(str(finding.get("path", "")))
+            actions.append(CleanupAction(
+                action="delete", target=target,
+                reason="empty owner directory",
+                ref=str(target),
+            ))
+        elif kind == "hold_drift":
+            held = finding.get("held_version")
+            # Relink every harness link that resolves to the capability's store
+            # path back to the held version.
+            cap_id = str(finding.get("capability", ""))
+            held_path = _registry_for_install_path(registry, cap_id, str(held))
+            link_acted = False
+            for entry in report.get("skills", []):
+                if entry.get("cap_id") != cap_id:
+                    continue
+                link = Path(str(entry.get("path", "")))
+                actions.append(CleanupAction(
+                    action="relink", target=link,
+                    reason=f"held version {held} is not what the harness link resolves to",
+                    to=(held_path if held_path and held_path.exists() else None),
+                    ref=cap_id,
+                ))
+                link_acted = True
+            if not link_acted:
+                actions.append(CleanupAction(
+                    action="relink", target=Path(),
+                    reason=f"held version {held} is not what harness links resolve to",
+                    to=held_path, ref=cap_id,
+                ))
+
+    return actions
+
+
+def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_root: Path) -> bool:
+    """Perform a single cleanup action. Returns True when the path was mutated."""
+    target = action.target
+    if action.action == "delete":
+        if str(target) and (target.exists() or target.is_symlink()):
+            StorageManager.remove_package_path(target)
+            if action.ref:
+                # Delete also removes the registry row for a phantom capability.
+                cap_id, _, version = action.ref.rpartition("@")
+                if cap_id and version:
+                    registry.remove_capability(cap_id, version)
+            return True
+        # Phantom with no install_path or an already-gone path: still drop the row.
+        if action.ref and action.ref.rpartition("@")[0] and action.ref.rpartition("@")[2]:
+            cap_id, _, version = action.ref.rpartition("@")
+            return registry.remove_capability(cap_id, version)
+        return False
+    if action.action == "quarantine":
+        if not str(target) or not (target.exists() or target.is_symlink()):
+            return False
+        destination = quarantine_root / target.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        idx = 0
+        while destination.exists():
+            idx += 1
+            destination = Path(str(destination) + f".{idx}")
+        target.rename(destination)
+        return True
+    if action.action == "relink":
+        if action.to is None or not action.to.exists():
+            return False
+        if not target.is_symlink():
+            return False
+        import os
+
+        os.unlink(target)
+        target.symlink_to(action.to, target_is_directory=True)
+        return True
+    if action.action == "adopt":
+        # Adopt writes a provenance mark so a foreign path becomes
+        # Capacium-managed. Only a real directory is adoptable: a bare file or a
+        # symlink is left alone rather than risk clobbering a look-alike entry
+        # (CAP-REC-D2, 2026-08-16).
+        if not str(target) or not target.is_dir() or target.is_symlink():
+            return False
+        from ..framework_detector import write_meta_at_target
+
+        owner = "global"
+        name = target.name
+        version = "0.0.0"
+        write_meta_at_target(
+            target_dir=target,
+            cap_name=name,
+            owner=owner,
+            version=version,
+            kind="skill",
+            fingerprint="f" * 64,
+            frameworks=[],
+        )
+        return True
+    return False
+
+
+def apply_cleanup(actions: Iterable[CleanupAction], *, dry_run: bool = False, registry: Optional[Registry] = None) -> CleanupReport:
+    """Apply a cleanup plan, or print what it would do when ``dry_run``."""
+    registry = registry or Registry()
+    quarantine_root = _quarantine_root()
+    report = CleanupReport(actions=list(actions))
+
+    prefix = "Would " if dry_run else ""
+    for action in report.actions:
+        detail = action.reason
+        extra = f" -> {action.to}" if action.to is not None else ""
+        print(f"  {prefix}{action.action:<10} {action.target}{extra} ({detail})")
+
+    if dry_run:
+        return report
+
+    for action in report.actions:
+        try:
+            if _apply_cleanup_action(action, registry, quarantine_root):
+                if action.action == "quarantine":
+                    report.quarantined.append(str(action.target))
+                else:
+                    report.applied.append(str(action.target))
+        except OSError:
+            continue
+    return report
 
 
 def _cap_ref(cap: Capability) -> str:
@@ -296,4 +592,83 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
             f"  Pruned {len(report.removed)} superseded version(s) "
             f"({report.reclaimed_bytes} bytes)."
         )
+
+    # CAP-REC-D2: after installing a newer generation, any stale harness link
+    # still pointing at a superseded generation is relinked to the new one, so
+    # no harness exposes two versions of the same capability at once (criterion 1).
+    relink_target = None
+    keep_cap = registry.get_capability(f"{owner}/{name}", keep_version)
+    if keep_cap is not None and keep_cap.install_path:
+        relink_target = Path(keep_cap.install_path)
+    for link in _stale_links_for(owner, name, keep_version, registry):
+        reason = f"still links to superseded generation; relinking to {keep_ref}"
+        print(f"  relink     {link} -> {relink_target} ({reason})")
+        _relink_link(link, relink_target)
     return report
+
+
+def _stale_links_for(owner: str, name: str, keep_version: str, registry: Registry) -> List[Path]:
+    """Harness symlinks that were written for ``owner/name`` but not to the
+    currently-kept generation. Only the links themselves are yielded — never a
+    directory the reconciler would report separately (CAP-REC-D2).
+
+    A bundle member's harness link has a *written* target of the member's own
+    store path (``.../owner/name/version``) even though that path is itself a
+    symlink into the bundle's physical tree. Classification must therefore use
+    the written (literal) target, not the resolved one, so a member link is
+    matched to its member, never to the bundle it physically resolves into."""
+    from .reconcile import _all_skill_roots, _resolve_target, _packages_dir
+
+    packages = _packages_dir()
+    keep_cap = registry.get_capability(f"{owner}/{name}", keep_version)
+    keep_target = Path(keep_cap.install_path).resolve() if keep_cap and keep_cap.install_path else None
+    stale: List[Path] = []
+    for _fw_id, skills_dir in _all_skill_roots().items():
+        if not skills_dir.exists():
+            continue
+        for child in skills_dir.iterdir():
+            if not child.is_symlink():
+                continue
+            literal = _resolve_target(child)
+            literal_within, cid, _ver = _literal_store_identity(literal, packages)
+            if not literal_within or cid != f"{owner}/{name}":
+                continue
+            if keep_target is not None and literal.resolve() == keep_target:
+                continue
+            stale.append(child)
+    return stale
+
+
+def _literal_store_identity(target: Path, packages: Path) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Parse ``owner/name/version`` from a *written* target path without following
+    a symlink at the leaf. Returns (within_store, owner/name, version).
+
+    A bundle member's install path (``.../owner/name/version``) is itself a
+    symlink into the bundle tree; resolving it would classify the link under the
+    bundle's owner/name instead of the member's. Resolving only the *parent*
+    directories normalises the macOS ``/var`` -> ``/private/var`` prefix while
+    leaving the leaf (version) untouched (CAP-REC-D2)."""
+    root = packages.resolve()
+    parent_resolved = target.parent.resolve()
+    leaf = target.name
+    try:
+        rel = (parent_resolved / leaf).relative_to(root)
+    except ValueError:
+        return False, None, None
+    parts = rel.parts
+    if len(parts) >= 3:
+        return True, f"{parts[0]}/{parts[1]}", parts[2]
+    if len(parts) == 2:
+        return True, f"{parts[0]}/{parts[1]}", None
+    return False, None, None
+
+
+def _relink_link(link: Path, target: Optional[Path]) -> bool:
+    """Rewrite a harness symlink to *target*; a no-op when no target exists."""
+    import os
+
+    if target is None or not target.exists() or not link.is_symlink():
+        return False
+    os.unlink(link)
+    link.symlink_to(target, target_is_directory=True)
+    return True
