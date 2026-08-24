@@ -153,20 +153,25 @@ def _current_version(by_id: Dict[str, Dict[str, str]], cap_id: str) -> Optional[
 # Provenance (who wrote it)
 # ---------------------------------------------------------------------------
 
-def _provenance_owner_version(target: Path) -> Tuple[str, Optional[str], Optional[str]]:
+def _provenance_owner_version(target: Path, packages: Path) -> Tuple[str, Optional[str], Optional[str]]:
     """Read ``.cap-meta.json`` at *target*, returning (writer, owner, version).
 
-    ``writer`` is ``"capacium"`` when a Capacium-written metadata file exists,
-    ``"foreign"`` otherwise. Owner/version are the values Capacium recorded at
-    write time — the provenance a drift or death must be measured against.
+    ``writer`` is ``"capacium"`` when a Capacium-written metadata file exists;
+    ``"unknown"`` when no metadata file exists but *target* resolves inside the
+    package store (Capacium territory, provenance absent — the reconciled test
+    cannot call a correct state ``foreign``); and ``"foreign"`` only when the
+    path lies outside the store and carries no Capacium mark.
+
+    Owner/version are the values Capacium recorded at write time — the
+    provenance a drift or death must be measured against.
     """
     meta = target / ".cap-meta.json"
     if not meta.is_file():
-        return "foreign", None, None
+        return ("unknown" if _is_within(target, packages) else "foreign"), None, None
     try:
         data = json.loads(meta.read_text())
     except (OSError, json.JSONDecodeError):
-        return "foreign", None, None
+        return ("unknown" if _is_within(target, packages) else "foreign"), None, None
     return "capacium", data.get("owner"), data.get("version")
 
 
@@ -180,11 +185,14 @@ def _classify_entry(
     resolved: Path,
     view: Dict[str, Any],
     packages: Path,
+    nesting: Optional[str] = None,
 ) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "path": str(link),
         "target": str(literal),
     }
+    if nesting:
+        entry["nesting"] = nesting
 
     # Two-hop indirection (D12): the link's written target leaves the package
     # store through a second symlink hop — e.g. ``backup ->
@@ -194,7 +202,7 @@ def _classify_entry(
     # counts.
     indirect = literal.is_symlink() and not _literal_within(literal, packages)
 
-    writer, owner, version = _provenance_owner_version(literal)
+    writer, owner, version = _provenance_owner_version(literal, packages)
     entry["writer"] = writer
     entry["owner"] = owner
     entry["version"] = version
@@ -295,18 +303,45 @@ def _store_owner_version(target: Path, packages: Path) -> Tuple[Optional[str], O
 def _inventory_skills_entries(view: Dict[str, Any]) -> List[Dict[str, Any]]:
     packages = _packages_dir()
     entries: List[Dict[str, Any]] = []
+
+    def _is_bookkeeping(name: str) -> bool:
+        return name.startswith(".") and name not in (".sync-manifest.json",)
+
+    def _emit(child: Path, fw_id: str, nesting: Optional[str]) -> None:
+        literal = _resolve_target(child)
+        entry = _classify_entry(
+            child, literal, child.resolve(), view, packages, nesting=nesting
+        )
+        entry["framework"] = fw_id
+        entries.append(entry)
+
+    def _walk(skills_dir: Path, fw_id: str, nesting: Optional[str]) -> None:
+        for child in sorted(skills_dir.iterdir(), key=lambda p: p.name):
+            # Skip Capacium's own bookkeeping files, not capability entries.
+            if _is_bookkeeping(child.name):
+                continue
+            if child.is_symlink():
+                _emit(child, fw_id, nesting)
+            elif child.is_dir():
+                # A plain directory is either a nested owner directory
+                # re-exposing capabilities via symlinks into the store (D14) —
+                # traversed, its links reported as their own entries with the
+                # nesting named — or a foreign capability install holding real
+                # files (D11), reported as a single entry and not recursed.
+                links = [
+                    g for g in child.iterdir()
+                    if not _is_bookkeeping(g.name) and g.is_symlink()
+                ]
+                if links:
+                    nested = f"{nesting}/{child.name}" if nesting else child.name
+                    _walk(child, fw_id, nested)
+                else:
+                    _emit(child, fw_id, nesting)
+
     for fw_id, skills_dir in sorted(_all_skill_roots().items()):
         if not skills_dir.exists():
             continue
-        for child in sorted(skills_dir.iterdir(), key=lambda p: p.name):
-            # Skip Capacium's own bookkeeping files, not capability entries.
-            if child.name.startswith(".") and child.name not in (".sync-manifest.json",):
-                continue
-            if child.is_symlink() or child.is_dir():
-                literal = _resolve_target(child)
-                entry = _classify_entry(child, literal, child.resolve(), view, packages)
-                entry["framework"] = fw_id
-                entries.append(entry)
+        _walk(skills_dir, fw_id, None)
     return entries
 
 
@@ -344,6 +379,10 @@ def _inventory_mcp_entries(view: Dict[str, Any]) -> List[Dict[str, Any]]:
                     cap_id, version = _store_owner_version(target, packages)
                     rec["cap_id"] = cap_id
                     rec["version"] = version
+                    # In-store but no Capacium metadata at the install dir is
+                    # "unknown" provenance, never "foreign" — a correct state
+                    # must not drive a cleanup (DEFECT 2).
+                    rec["writer"] = _provenance_owner_version(target, packages)[0]
                     current = _current_version(view["by_id"], cap_id) if cap_id else None
                     if cap_id and version and version != current:
                         rec["state"] = "stale"
