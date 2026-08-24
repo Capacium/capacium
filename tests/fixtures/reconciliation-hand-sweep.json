@@ -109,6 +109,17 @@
     },
     {
       "framework": "opencode",
+      "liveness": "alive",
+      "owner": null,
+      "path": "<HOME>/.opencode/skills/SKILL.md",
+      "resolved": "<HOME>/.opencode/skills/SKILL.md",
+      "state": "foreign",
+      "target": "<HOME>/.opencode/skills/SKILL.md",
+      "version": null,
+      "writer": "foreign"
+    },
+    {
+      "framework": "opencode",
       "liveness": "dead",
       "owner": null,
       "path": "<HOME>/.opencode/skills/kind-skill",
@@ -129,14 +140,14 @@
     }
   ],
   "summary": {
-    "entries": 9,
+    "entries": 10,
     "mcp_entries": 1,
     "registry_rows": 5,
     "relocations": 1,
-    "skills_entries": 8,
+    "skills_entries": 9,
     "state_counts": {
       "dead": 3,
-      "foreign": 1,
+      "foreign": 2,
       "ok": 2,
       "phantom": 1,
       "relocation_gap": 1,

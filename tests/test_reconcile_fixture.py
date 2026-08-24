@@ -17,6 +17,7 @@ names:
 * a registered generation whose files are gone — a phantom (D01/D02),
 * an on-disk version with no registry row — unregistered (D21/D22),
 * a link into a foreign installer's tree (D11/D12),
+* a bare regular file dropped at a managed harness root (CAP-REC-B1),
 * and negative controls that are correct and must NOT be flagged.
 
 Build and teardown leave no trace outside the scratch ``HOME``; the whole
@@ -108,6 +109,12 @@ def build_fixture_state(home: Path) -> Path:
     # --- dead link into the "global" owner that was never installed (D06) ----
     global_kind_target = packages / "global" / "kind-skill" / "1.0.0"
     (opencode_skills / "kind-skill").symlink_to(global_kind_target)
+
+    # --- bare regular file at a managed harness root (CAP-REC-B1) ------------
+    # A plain file dropped directly under a skills dir — neither a symlink nor
+    # a directory. It must be reported as foreign, never silently omitted; the
+    # reconciler's docstring contract is "reported, never silently omitted".
+    (opencode_skills / "SKILL.md").write_text("---\nname: stray\n---\n")
 
     # --- nested owner dir re-exposing an older version (D14) -----------------
     # txtHumanizer has 0.0.2 (older, live) and 1.0.0 (current, registered).
@@ -255,6 +262,36 @@ def test_nested_owner_entry_is_named_in_sweep(tmp_home, monkeypatch):
         and e["path"].endswith("LangeVC/txtHumanizer")
     ]
     assert len(named) == 1, "nested owner entry missing from the committed sweep"
+
+
+def test_bare_file_at_root_is_reported_not_omitted(tmp_home, monkeypatch):
+    """Acceptance (CAP-REC-B1): a bare regular file at a managed harness root —
+    e.g. a ``SKILL.md`` dropped directly under a skills dir — is reported as a
+    foreign entry, never silently omitted. This is the falsifiable shape for
+    the walker's bare-file branch: without the fix, ``_walk`` matches neither
+    ``is_symlink()`` nor ``is_dir()`` and the file vanishes from the sweep."""
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    build_fixture_state(tmp_home)
+    report = reconcile()
+    normalised = _normalise(report)
+
+    bare = [
+        e
+        for e in normalised["skills"]
+        if e["path"].endswith("opencode/skills/SKILL.md")
+    ]
+    assert len(bare) == 1, "bare file at harness root was silently omitted"
+    assert bare[0]["state"] == "foreign"
+    assert bare[0]["writer"] == "foreign"
+    assert bare[0]["liveness"] == "alive"
+
+    expected = json.loads(HAND_SWEEP.read_text())
+    named = [
+        e
+        for e in expected["skills"]
+        if e["path"].endswith("opencode/skills/SKILL.md")
+    ]
+    assert len(named) == 1, "bare file entry missing from the committed sweep"
 
 
 class TestFixtureBuildsAndTearsDownTwice:
