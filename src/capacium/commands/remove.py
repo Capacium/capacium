@@ -6,6 +6,7 @@ from ..kinds import validate_kind
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
+from ..models import SKILL_LAYER_KIND_VALUES
 from ..adapters import get_adapter
 from ._resolve import resolve_cap_id
 
@@ -135,6 +136,45 @@ def _snapshot_cap_surfaces(snapshot: _RemovalSnapshot, cap_name: str,
                     snapshot.record_link(item / f"{cap_name}.md")
 
 
+def _iter_cap_link_paths(parent_dir: Path, cap_name: str):
+    """Yield the symlink paths (skill link + command link, plus any nested
+    owner-prefixed duplicates) an adapter may have written for ``cap_name``."""
+    yield parent_dir / cap_name
+    yield parent_dir / f"{cap_name}.md"
+    if parent_dir.is_dir():
+        for item in parent_dir.iterdir():
+            if item.is_dir() and not item.is_symlink():
+                yield item / cap_name
+                yield item / f"{cap_name}.md"
+
+
+def _harness_link_targets_version(cap_name: str, package_dir: Path) -> bool:
+    """Return True when any harness symlink for ``cap_name`` resolves into the
+    version directory ``package_dir``.
+
+    Deleting that directory would therefore orphan the harness link, which is
+    exactly the data loss CAP-REC-D1 guards against.
+    """
+    target = package_dir.resolve()
+    for parent_dir in _known_skill_paths():
+        for link in _iter_cap_link_paths(parent_dir, cap_name):
+            try:
+                if link.is_symlink() and link.resolve() == target:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _other_registered_versions(registry: Registry, owner: str, cap_name: str,
+                               version: str) -> set:
+    """Return the registered versions of ``owner/cap_name`` other than ``version``."""
+    return {
+        c.version for c in registry.list_capabilities()
+        if c.owner == owner and c.name == cap_name and c.version != version
+    }
+
+
 def remove_capability(cap_spec: str, force: bool = False) -> bool:
     cap_id = resolve_cap_id(cap_spec)
     spec = VersionManager.parse_version_spec(cap_id)
@@ -161,11 +201,45 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
         print(f"Capability {bare_id}@{version} not found.")
         return False
 
+    cap_kind = cap.kind.value if cap.kind else None
+    if not cap_kind or cap_kind == "unknown":
+        print(
+            f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
+            "Cannot dispatch to adapter without a valid Capacium Kind."
+        )
+        return False
+
+    # Version-precise removal (CAP-REC-D1): a harness link points at exactly
+    # one version directory. Deleting that directory orphans the harness, so
+    # refuse to remove the currently-linked version while other versions remain
+    # installed — the caller must remove a different version, relink first, or
+    # pass --force.
+    package_path = storage.get_package_path(cap_name, version, owner=owner)
+    is_skill_layer = cap_kind in SKILL_LAYER_KIND_VALUES
+    harness_target = (
+        is_skill_layer and _harness_link_targets_version(cap_name, package_path)
+    )
+    other_versions = _other_registered_versions(registry, owner, cap_name, version)
+
+    if harness_target and not force and other_versions:
+        print(
+            f"Refusing to remove {bare_id}@{version}: a harness symlink still "
+            f"links to this version. Remove a different version, relink "
+            f"{bare_id} to another version first, or pass --force to remove it "
+            f"anyway. Other installed versions: {', '.join(sorted(other_versions))}."
+        )
+        return False
+
     # Transactional remove (V14/STAB-002): snapshot every write surface
     # first, run all adapter steps, park the package tree, and only then
     # touch the registry. Any failure restores the full pre-remove state.
     snapshot = _RemovalSnapshot(registry)
     _snapshot_cap_surfaces(snapshot, cap_name, list(cap.frameworks or []))
+
+    # When removing a version the harness does not currently link to, leave
+    # the harness symlink (and its command link) intact — it points at a
+    # different, still-installed version.
+    should_unlink = harness_target or force
 
     try:
         _remove_sub_capabilities(cap, registry, force, snapshot=snapshot)
@@ -176,13 +250,8 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
                 adapter = get_adapter(fw_name)
             except ValueError:
                 continue
-            # Validate Kind before adapter dispatch — never pass "unknown"
-            cap_kind = cap.kind.value if cap.kind else None
-            if not cap_kind or cap_kind == "unknown":
-                raise ValueError(
-                    f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
-                    "Cannot dispatch to adapter without a valid Capacium Kind."
-                )
+            if is_skill_layer and not should_unlink:
+                continue
             adapter.remove_capability(
                 cap_name, owner=owner, kind=cap_kind
             )
