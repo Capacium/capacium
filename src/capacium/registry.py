@@ -601,6 +601,40 @@ class Registry:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def resolve_identity(self, cap_id: str) -> Dict[str, Any]:
+        """Resolve *cap_id* to its canonical ``owner/name``, following relocations.
+
+        A relocation is an event, not just a row that ``info`` consults: when a
+        capability moves, a ``capability_aliases`` row (old_id -> new_id) is
+        recorded, and every later reference to the old id must reach the new one.
+        This method walks that chain transitively so a bare name — which parses to
+        the ``global`` owner — or an explicit pre-relocation id resolves to the
+        current identity, and reports each alias it followed so the caller can name
+        it (FEAT-001).
+
+        Returns ``{"owner", "name", "canonical_id", "aliases"}`` where ``aliases``
+        is the ordered list of ``{"from", "to"}`` relocation rows followed. A
+        directly-registered id resolves to itself with an empty alias list.
+        """
+        owner, name = self.parse_cap_id(cap_id)
+        current = f"{owner}/{name}"
+        aliases: List[Dict[str, str]] = []
+        seen = {current}
+        while True:
+            nxt = self.get_relocation(current)
+            if nxt is None or nxt in seen:
+                break
+            aliases.append({"from": current, "to": nxt})
+            current = nxt
+            seen.add(nxt)
+        new_owner, new_name = self.parse_cap_id(current)
+        return {
+            "owner": new_owner,
+            "name": new_name,
+            "canonical_id": current,
+            "aliases": aliases,
+        }
+
     def get_reference_count(self, member_id: str) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()
