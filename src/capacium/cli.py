@@ -128,6 +128,12 @@ def main():
     info_parser.add_argument("--registry", help="Remote registry URL")
     info_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="Read-only provenance reconciliation across every harness",
+    )
+    reconcile_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     compare_parser = subparsers.add_parser("compare", help="Compare two capabilities side-by-side")
     compare_parser.add_argument("a", help="First capability (owner/name)")
     compare_parser.add_argument("b", help="Second capability (owner/name)")
@@ -606,6 +612,10 @@ def main():
         elif args.command == "compare":
             from .commands.compare import compare_cmd
             sys.exit(compare_cmd(args))
+
+        elif args.command == "reconcile":
+            from .commands.reconcile import reconcile_cmd
+            sys.exit(reconcile_cmd(args))
 
         elif args.command == "update-index":
             from .sync import update_cmd
