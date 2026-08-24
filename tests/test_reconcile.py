@@ -45,7 +45,8 @@ def _install_dir(home: Path, owner: str, name: str, version: str) -> Path:
 
 
 class TestHandSweepMatches:
-    def test_reconcile_matches_filesystem_and_mcp_sweep(self, tmp_home):
+    def test_reconcile_matches_filesystem_and_mcp_sweep(self, tmp_home, monkeypatch):
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
         home = tmp_home
         registry = Registry(home / ".capacium" / "registry.db")
 

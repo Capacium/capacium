@@ -30,7 +30,7 @@
       "state": "ok",
       "target": "<HOME>/.capacium/packages/elementeer/elementeer-mcp/2.4.2/mcp-server/dist/index.js",
       "version": "2.4.2",
-      "writer": "foreign"
+      "writer": "unknown"
     }
   ],
   "packages_root": "<HOME>/.capacium/packages",
@@ -47,15 +47,17 @@
       "writer": "foreign"
     },
     {
+      "cap_id": "LangeVC/txtHumanizer",
+      "current_version": "1.0.0",
       "framework": "antigravity-backup",
       "liveness": "alive",
-      "owner": null,
-      "path": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
-      "resolved": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
-      "state": "foreign",
-      "target": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
-      "version": null,
-      "writer": "foreign"
+      "nesting": "LangeVC",
+      "owner": "LangeVC",
+      "path": "<HOME>/.gemini/antigravity-backup/skills/LangeVC/txtHumanizer",
+      "state": "stale",
+      "target": "<HOME>/.capacium/packages/LangeVC/txtHumanizer/0.0.2/skills/txtHumanizer",
+      "version": "0.0.2",
+      "writer": "capacium"
     },
     {
       "cap_id": "global/elementeer-mcp",
@@ -70,7 +72,7 @@
       "state": "relocation_gap",
       "target": "<HOME>/.capacium/packages/global/elementeer-mcp/2.4.2",
       "version": "2.4.2",
-      "writer": "foreign"
+      "writer": "unknown"
     },
     {
       "cap_id": "LangeVC/txtHumanizer",
@@ -92,7 +94,7 @@
       "state": "dead",
       "target": "<HOME>/.capacium/packages/LangeVC/txtHumanizer/2.0.0",
       "version": null,
-      "writer": "foreign"
+      "writer": "unknown"
     },
     {
       "cap_id": "LangeVC/skillweave",
@@ -113,7 +115,7 @@
       "state": "dead",
       "target": "<HOME>/.capacium/packages/global/kind-skill/1.0.0",
       "version": null,
-      "writer": "foreign"
+      "writer": "unknown"
     },
     {
       "framework": "opencode",
@@ -123,7 +125,7 @@
       "state": "dead",
       "target": "<HOME>/.capacium/packages/cap/sub-skill/1.0.0",
       "version": null,
-      "writer": "foreign"
+      "writer": "unknown"
     }
   ],
   "summary": {
@@ -134,11 +136,11 @@
     "skills_entries": 8,
     "state_counts": {
       "dead": 3,
-      "foreign": 2,
+      "foreign": 1,
       "ok": 2,
       "phantom": 1,
       "relocation_gap": 1,
-      "stale": 1,
+      "stale": 2,
       "unregistered": 2
     }
   }

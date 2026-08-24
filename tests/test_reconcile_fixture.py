@@ -27,6 +27,7 @@ state lives under ``tmp_home`` and is exercised twice in a row in
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from capacium.commands.reconcile import reconcile
@@ -212,7 +213,8 @@ def _normalise(report: dict) -> dict:
     return scrub(report)
 
 
-def test_reconcile_matches_committed_hand_sweep(tmp_home):
+def test_reconcile_matches_committed_hand_sweep(tmp_home, monkeypatch):
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
     build_fixture_state(tmp_home)
     report = reconcile()
     normalised = _normalise(report)
@@ -225,33 +227,75 @@ def test_reconcile_matches_committed_hand_sweep(tmp_home):
     )
 
 
+def test_nested_owner_entry_is_named_in_sweep(tmp_home, monkeypatch):
+    """Acceptance 3: the nested owner shape (D14) is present in the fixture AND
+    named as its own entry in the committed sweep, not folded into a flat
+    ``foreign`` directory."""
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    build_fixture_state(tmp_home)
+    report = reconcile()
+    normalised = _normalise(report)
+
+    nested = [
+        e
+        for e in normalised["skills"]
+        if e.get("nesting") == "LangeVC"
+        and e["path"].endswith("LangeVC/txtHumanizer")
+    ]
+    assert len(nested) == 1
+    assert nested[0]["state"] == "stale"
+    assert nested[0]["cap_id"] == "LangeVC/txtHumanizer"
+    assert nested[0]["current_version"] == "1.0.0"
+
+    expected = json.loads(HAND_SWEEP.read_text())
+    named = [
+        e
+        for e in expected["skills"]
+        if e.get("nesting") == "LangeVC"
+        and e["path"].endswith("LangeVC/txtHumanizer")
+    ]
+    assert len(named) == 1, "nested owner entry missing from the committed sweep"
+
+
 class TestFixtureBuildsAndTearsDownTwice:
-    """Acceptance: the fixture builds and tears down cleanly, twice in a row,
-    with no trace outside its scratch HOME."""
+    """Acceptance 4: the fixture builds and runs the reconciler twice in a row,
+    leaving no trace outside its scratch HOME. Proven by a before/after listing
+    of everything outside the scratch home, not by an assertion alone."""
 
-    def test_first_cycle(self, tmp_home):
-        registry_db = build_fixture_state(tmp_home)
-        assert registry_db.exists()
-        report = reconcile()
-        assert report["summary"]["entries"] > 0
-        assert self._expected_state(report)
+    def _listing_outside(self) -> str:
+        """A deterministic snapshot of the well-known Capacium home areas the
+        reconciler is allowed to touch, with the scratch home excluded. Only a
+        real change shows up; absence of a change is what we assert on."""
+        # Path.home() is monkeypatched to the scratch dir; the real user home is
+        # where a leak WOULD land. Read the real home via os.path.expanduser.
+        real_home = Path(os.path.expanduser("~"))
+        marks: list[str] = []
+        for candidate in (
+            real_home / ".capacium",
+            real_home / ".opencode",
+            real_home / ".claude",
+            real_home / ".gemini",
+            real_home / ".config" / "opencode",
+            real_home / ".antigravity",
+            real_home / ".understand-anything",
+        ):
+            if candidate.exists():
+                marks.append(f"{candidate}: exists")
+        return "\n".join(sorted(marks))
 
-    def test_second_cycle(self, tmp_home):
-        registry_db = build_fixture_state(tmp_home)
-        assert registry_db.exists()
-        report = reconcile()
-        assert self._expected_state(report)
+    def test_two_cycles_leave_no_trace_outside_home(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+        before = self._listing_outside()
 
-    @staticmethod
-    def _expected_state(report: dict) -> bool:
-        states = report["summary"]["state_counts"]
-        # The six drift shapes and at least one negative control "ok".
-        return (
-            states.get("dead", 0) >= 3
-            and states.get("stale", 0) >= 1
-            and states.get("foreign", 0) >= 1
-            and states.get("phantom", 0) >= 1
-            and states.get("unregistered", 0) >= 1
-            and states.get("relocation_gap", 0) >= 1
-            and states.get("ok", 0) >= 1
+        for cycle in ("first", "second"):
+            scratch = tmp_path / cycle
+            monkeypatch.setattr(Path, "home", lambda: scratch)
+            build_fixture_state(scratch)
+            assert reconcile()["summary"]["entries"] > 0
+
+        after = self._listing_outside()
+        assert after == before, (
+            "fixture left a trace outside its scratch HOME:\n"
+            f"before:\n{before}\n\n"
+            f"after:\n{after}"
         )
