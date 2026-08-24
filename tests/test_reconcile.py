@@ -122,6 +122,26 @@ class TestForeignPathReported:
         assert entry["state"] == "foreign"
         assert entry["writer"] == "foreign"
 
+    def test_bare_file_at_root_reported_not_omitted(self, tmp_home):
+        home = tmp_home
+        Registry(home / ".capacium" / "registry.db")
+
+        # A bare regular file dropped directly at a managed harness root — the
+        # shape the reconciler used to silently drop (matches neither symlink
+        # nor directory branch). CAP-REC-B1: it must be reported as foreign.
+        opencode_skills = home / ".opencode" / "skills"
+        opencode_skills.mkdir(parents=True)
+        (opencode_skills / "SKILL.md").write_text("---\nname: stray\n---\n")
+
+        report = reconcile()
+
+        entry = next(
+            e for e in report["skills"] if e["path"].endswith("SKILL.md")
+        )
+        assert entry["state"] == "foreign"
+        assert entry["writer"] == "foreign"
+        assert entry["liveness"] == "alive"
+
 
 class TestDeadVsStale:
     def test_dead_and_stale_are_distinct_states(self, tmp_home):

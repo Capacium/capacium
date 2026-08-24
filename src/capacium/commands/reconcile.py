@@ -337,6 +337,14 @@ def _inventory_skills_entries(view: Dict[str, Any]) -> List[Dict[str, Any]]:
                     _walk(child, fw_id, nested)
                 else:
                     _emit(child, fw_id, nesting)
+            else:
+                # A bare regular file at a managed harness root — e.g. a
+                # ``SKILL.md`` dropped directly under a skills dir — is neither
+                # a Capacium link nor a directory. It must still be reported,
+                # never silently omitted: silence here reads as "nothing else
+                # is there", the exact failure this reconciler exists to close
+                # (CAP-REC-B1).
+                _emit(child, fw_id, nesting)
 
     for fw_id, skills_dir in sorted(_all_skill_roots().items()):
         if not skills_dir.exists():
