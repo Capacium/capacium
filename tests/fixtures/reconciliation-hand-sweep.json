@@ -1,0 +1,145 @@
+{
+  "findings": [
+    {
+      "capability": "LangeVC/skillweave-blueprint@1.3.0",
+      "install_path": "<HOME>/.capacium/packages/LangeVC/skillweave-blueprint/1.3.0",
+      "kind": "phantom",
+      "reason": "install_path does not exist on disk"
+    },
+    {
+      "capability": "MemPalace/mempalace@0.10.13",
+      "kind": "unregistered",
+      "path": "<HOME>/.capacium/packages/MemPalace/mempalace/0.10.13",
+      "reason": "on-disk install has no registry row"
+    },
+    {
+      "capability": "global/elementeer-mcp@2.4.2",
+      "kind": "unregistered",
+      "path": "<HOME>/.capacium/packages/global/elementeer-mcp/2.4.2",
+      "reason": "on-disk install has no registry row"
+    }
+  ],
+  "mcp": [
+    {
+      "cap_id": "elementeer/elementeer-mcp",
+      "framework": "opencode",
+      "liveness": "alive",
+      "path": "<HOME>/.config/opencode/opencode.json:mcp.elementeer-mcp",
+      "section": "mcp",
+      "server_key": "elementeer-mcp",
+      "state": "ok",
+      "target": "<HOME>/.capacium/packages/elementeer/elementeer-mcp/2.4.2/mcp-server/dist/index.js",
+      "version": "2.4.2",
+      "writer": "foreign"
+    }
+  ],
+  "packages_root": "<HOME>/.capacium/packages",
+  "skills": [
+    {
+      "framework": "antigravity",
+      "liveness": "alive",
+      "owner": null,
+      "path": "<HOME>/.gemini/config/skills/rtk",
+      "resolved": "<HOME>/.rtk/antigravity/skills/rtk",
+      "state": "foreign",
+      "target": "<HOME>/.rtk/antigravity/skills/rtk",
+      "version": null,
+      "writer": "foreign"
+    },
+    {
+      "framework": "antigravity-backup",
+      "liveness": "alive",
+      "owner": null,
+      "path": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
+      "resolved": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
+      "state": "foreign",
+      "target": "<HOME>/.gemini/antigravity-backup/skills/LangeVC",
+      "version": null,
+      "writer": "foreign"
+    },
+    {
+      "cap_id": "global/elementeer-mcp",
+      "framework": "antigravity-backup",
+      "liveness": "alive",
+      "owner": "global",
+      "path": "<HOME>/.gemini/antigravity-backup/skills/elementeer-mcp",
+      "relocation": {
+        "from": "global/elementeer-mcp",
+        "to": "elementeer/elementeer-mcp"
+      },
+      "state": "relocation_gap",
+      "target": "<HOME>/.capacium/packages/global/elementeer-mcp/2.4.2",
+      "version": "2.4.2",
+      "writer": "foreign"
+    },
+    {
+      "cap_id": "LangeVC/txtHumanizer",
+      "current_version": "1.0.0",
+      "framework": "antigravity-backup",
+      "liveness": "alive",
+      "owner": "LangeVC",
+      "path": "<HOME>/.gemini/antigravity-backup/skills/txtHumanizer",
+      "state": "stale",
+      "target": "<HOME>/.capacium/packages/LangeVC/txtHumanizer/0.0.2/skills/txtHumanizer",
+      "version": "0.0.2",
+      "writer": "capacium"
+    },
+    {
+      "framework": "antigravity-backup",
+      "liveness": "dead",
+      "owner": null,
+      "path": "<HOME>/.gemini/antigravity-backup/skills/txtHumanizer-dead",
+      "state": "dead",
+      "target": "<HOME>/.capacium/packages/LangeVC/txtHumanizer/2.0.0",
+      "version": null,
+      "writer": "foreign"
+    },
+    {
+      "cap_id": "LangeVC/skillweave",
+      "framework": "claude-code",
+      "liveness": "alive",
+      "owner": "LangeVC",
+      "path": "<HOME>/.claude/skills/skillweave-council",
+      "state": "ok",
+      "target": "<HOME>/.capacium/packages/LangeVC/skillweave/1.3.7/skills/skillweave-council",
+      "version": "1.3.7",
+      "writer": "capacium"
+    },
+    {
+      "framework": "opencode",
+      "liveness": "dead",
+      "owner": null,
+      "path": "<HOME>/.opencode/skills/kind-skill",
+      "state": "dead",
+      "target": "<HOME>/.capacium/packages/global/kind-skill/1.0.0",
+      "version": null,
+      "writer": "foreign"
+    },
+    {
+      "framework": "opencode",
+      "liveness": "dead",
+      "owner": null,
+      "path": "<HOME>/.opencode/skills/sub-skill",
+      "state": "dead",
+      "target": "<HOME>/.capacium/packages/cap/sub-skill/1.0.0",
+      "version": null,
+      "writer": "foreign"
+    }
+  ],
+  "summary": {
+    "entries": 9,
+    "mcp_entries": 1,
+    "registry_rows": 5,
+    "relocations": 1,
+    "skills_entries": 8,
+    "state_counts": {
+      "dead": 3,
+      "foreign": 2,
+      "ok": 2,
+      "phantom": 1,
+      "relocation_gap": 1,
+      "stale": 1,
+      "unregistered": 2
+    }
+  }
+}
