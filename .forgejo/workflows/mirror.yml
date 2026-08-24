@@ -213,8 +213,50 @@ jobs:
           echo "decision=FAIL" >> "$GITHUB_OUTPUT"
           exit 1
 
+  # --- Version gate (BUG-010): the mirror used to race the release-tag version
+  # check. validate-release-tag.yml lived in a separate workflow, and Forgejo
+  # has no cross-workflow needs:, so a v* tag whose pyproject.toml version
+  # disagreed with the tag reached GitHub regardless. The check now lives INSIDE
+  # this workflow and is ordered ahead of the mirror job via needs: — the only
+  # ordering Forgejo honours across a gate and a push. This keeps ADR-0001's
+  # single mirror file. ---
+  version-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      - uses: https://github.com/actions/setup-python@v5
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        with:
+          python-version: "3.12"
+      - name: Gate — release tag version matches pyproject.toml (source of truth)
+        env:
+          GH_EVENT: ${{ github.event_name }}
+          GH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # Only a push of a v* tag carries a release version to verify. Branch
+          # pushes and workflow_dispatch pass through — there is no release tag
+          # on those paths, and the break-glass dispatch re-pushes an operator-
+          # chosen ref that already exists on canonical.
+          case "${GH_EVENT}:${GH_REF}" in
+            push:refs/tags/v*) : ;;
+            *)
+              echo "version-gate: not a v* tag push; no release version to verify"
+              exit 0
+              ;;
+          esac
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PYPROJ_VERSION="$(python3 -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")"
+          if [ "${PYPROJ_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "ERROR: pyproject.toml version is ${PYPROJ_VERSION}, but tag is v${TAG_VERSION}."
+            echo "  Bump pyproject.toml to ${TAG_VERSION} before tagging; this tag will NOT be mirrored."
+            exit 1
+          fi
+          echo "version-gate PASS: pyproject.toml version (${PYPROJ_VERSION}) matches tag v${TAG_VERSION}."
+
   mirror:
-    needs: visibility-gate
+    needs: [visibility-gate, version-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the triggering ref (needed for the event-path push)

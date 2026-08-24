@@ -52,18 +52,9 @@ jobs:
           fi
           echo "README documents the pushed image name '${IMAGE_LINE}'."
 
-  # Only mirrors the tag after validation is green. This is the single tag
-  # mirror path; mirror.yml no longer mirrors v* tags.
-  mirror:
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: https://github.com/actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Push tag to GitHub mirror
-        env:
-          GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
-        run: |
-          remote="https://x-access-token:${GH_MIRROR_TOKEN}@github.com/Capacium/capacium.git"
-          git push --force "$remote" "+${GITHUB_REF}:${GITHUB_REF}"
+  # BUG-010: the mirror job that lived here has moved into mirror.yml. It used
+  # to depend on validate via needs:, but Forgejo has no cross-workflow needs:,
+  # so a mismatched v* tag raced this workflow and reached GitHub. The
+  # version-gate now lives INSIDE mirror.yml and the mirror job there depends on
+  # it directly — the only ordering Forgejo honours across a gate and a push,
+  # per ADR-0001 (a single mirror file).
