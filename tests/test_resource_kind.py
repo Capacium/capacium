@@ -1,5 +1,6 @@
 """Tests for the resource kind (CAP-001 + CAP-002)."""
 
+import sys
 from pathlib import Path
 
 from capacium.manifest import Manifest
@@ -226,7 +227,7 @@ class TestCapInitKindResource:
         import subprocess
         result = subprocess.run(
             [
-                "python3", "-m", "capacium.cli", "init",
+                sys.executable, "-m", "capacium.cli", "init",
                 "--name", "test-init-res",
                 "--kind", "resource",
                 "--version", "1.0.0",

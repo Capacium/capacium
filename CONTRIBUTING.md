@@ -33,12 +33,19 @@ spawn `python -m capacium.cli` as a subprocess and fail with
 `ModuleNotFoundError: No module named 'capacium'` when the package is only on
 `PYTHONPATH` or not installed at all.
 
-Two pre-existing failures are expected and are not caused by your checkout:
+The result is deterministic whether or not `.venv` is activated: the
+subprocess-spawning tests invoke `sys.executable` (the interpreter running
+pytest), never a `python3` resolved from `PATH`.
 
-- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard (CAP-OPS-A5).
-- `tests/test_resource_kind.py::TestCapInitKindResource::test_cap_init_kind_resource_produces_valid_manifest` — the test spawns `python3` (resolved from `PATH`, not the venv) so `capacium.cli` is not importable (CAP-OPS-A5).
+Three failures have existed across recent releases and are not caused by your
+checkout:
 
-Expected result: `2 failed, 2068 passed`.
+- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard (CAP-OPS-A5); still failing.
+- `tests/test_resource_kind.py::TestCapInitKindResource::test_cap_init_kind_resource_produces_valid_manifest` — formerly spawned `python3` from `PATH` and so failed outside an activated venv; it now uses `sys.executable` and passes.
+- `tests/test_integration_phase0.py::TestP0006BackfillMigrationLogic::test_migration_file_exists` — asserts `capacium-exchange/migrations/0004_backfill_kind_source.sql` exists as a sibling checkout, so it fails in a fresh clone; it is excluded by `--ignore=tests/test_integration_phase0.py` above.
+
+Expected result: `1 failed, 2069 passed` (the single failure is the
+`test_p01k_hermeticity` test above), with or without `source .venv/bin/activate`.
 
 ## Linting
 
