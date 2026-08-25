@@ -555,3 +555,55 @@ def test_resolve_identity_follows_transitive_chain(tmp_home, monkeypatch):
         {"from": "global/skillweave", "to": "LangeVC/skillweave"},
         {"from": "LangeVC/skillweave", "to": "LangeVC/skillweave-bundle"},
     ]
+
+
+def test_resolve_identity_refuses_two_node_cycle(tmp_home, monkeypatch):
+    """A two-node relocation cycle resolves to a WRONG owner silently today; it
+    must be refused with a diagnosis naming both aliases."""
+    from capacium.registry import Registry, RelocationCycleError
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
+    registry.relocate_capability("LangeVC/skillweave", "global/skillweave")
+
+    with pytest.raises(RelocationCycleError) as excinfo:
+        registry.resolve_identity("global/skillweave")
+
+    message = str(excinfo.value)
+    assert "global/skillweave" in message
+    assert "LangeVC/skillweave" in message
+
+
+def test_resolve_identity_refuses_self_loop(tmp_home, monkeypatch):
+    """A self-loop (old_id == new_id) is detected and refused."""
+    from capacium.registry import Registry, RelocationCycleError
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave")
+
+    with pytest.raises(RelocationCycleError) as excinfo:
+        registry.resolve_identity("LangeVC/skillweave")
+
+    message = str(excinfo.value)
+    assert "LangeVC/skillweave" in message
+
+
+def test_resolve_identity_acyclic_chain_still_resolves(tmp_home, monkeypatch):
+    """A legitimate transitive chain (A -> B -> C) still resolves to C and names
+    the chain (regression guard for the cycle detection)."""
+    from capacium.registry import Registry
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
+    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave-bundle")
+
+    resolved = registry.resolve_identity("global/skillweave")
+
+    assert resolved["canonical_id"] == "LangeVC/skillweave-bundle"
+    assert resolved["aliases"] == [
+        {"from": "global/skillweave", "to": "LangeVC/skillweave"},
+        {"from": "LangeVC/skillweave", "to": "LangeVC/skillweave-bundle"},
+    ]
