@@ -34,31 +34,21 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..framework_detector import framework_skills_dirs
+from ..framework_detector import harness_link_roots
 from ..registry import Registry
-
-# Harness skill roots beyond the framework detector's canonical set. These
-# directories are where a recorded relocation left dead links, or where a
-# foreign installer's tree was fanned out — the paths the reconciliator must
-# cover even though Capacium did not write them (FEAT-002): silence here reads
-# as "nothing else is there" and was wrong on 2026-08-16 and 2026-08-22.
-def _extra_skill_roots() -> Dict[str, Path]:
-    # Must stay a function (V3): import-time resolution freezes the real home
-    # and silently ignores sandbox HOME overrides.
-    return {
-        "antigravity-twohop": Path.home() / ".antigravity" / "skills",
-        "antigravity-backup": Path.home() / ".gemini" / "antigravity-backup" / "skills",
-        "understand-anything": Path.home() / ".understand-anything",
-    }
 
 
 def _all_skill_roots() -> Dict[str, Path]:
-    """Every skill-bearing harness root the reconciler sweeps, canonical
-    framework dirs first, then the extra Capacium-adjacent roots."""
-    roots: Dict[str, Path] = dict(framework_skills_dirs())
-    for fw_id, path in _extra_skill_roots().items():
-        roots[fw_id] = path
-    return roots
+    """Every skill-bearing harness root the reconciler sweeps.
+
+    This is the SAME list ``cap remove`` walks (``_known_skill_paths``), both
+    derived from ``framework_detector.harness_link_roots`` — one list, not two
+    (CAP-REC-ONELIST). A link location the remove command protects is therefore
+    always among the roots this reconciler sweeps, so ``live_linked_store_paths``
+    never misses a live ``~/.agents`` / ``~/.cursor`` link the way the
+    CAP-REC-001 version-prune door did.
+    """
+    return harness_link_roots()
 
 
 # ---------------------------------------------------------------------------

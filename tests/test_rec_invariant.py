@@ -52,7 +52,11 @@ def _cap(home: Path, *args: str) -> subprocess.CompletedProcess:
 def _link_snapshot(home: Path) -> dict:
     """Map every harness symlink path -> resolved target, for a survives check."""
     out = {}
-    for base in (home / ".opencode", home / ".claude", home / ".gemini"):
+    for base in (
+        home / ".opencode", home / ".claude", home / ".gemini",
+        home / ".agents", home / ".cursor", home / ".config",
+        home / ".codex", home / ".continue", home / ".qwen",
+    ):
         if not base.exists():
             continue
         for child in base.rglob("*"):
@@ -78,12 +82,18 @@ def _write_meta(home: Path, owner: str, name: str, version: str, path: Path) -> 
     )
 
 
-def _build_shape(home: Path, *, payload: bool) -> tuple[Path, Path]:
+def _build_shape(home: Path, *, payload: bool, link_root: Path = Path(".opencode/skills")) -> tuple[Path, Path]:
     """Build the payload-bearing or empty live-linked install shape.
 
     Returns (install_dir, link_path). The payload shape carries a registry row
     and a real file (SKILL.md); the empty shape is a bare empty tree with a
     live link — the exact R6 shape.
+
+    ``link_root`` is the harness directory the live link is written into,
+    relative to ``home`` — so the invariant can build the link in MORE than one
+    root (CAP-REC-ONELIST acceptance 4): the CAP-REC-001 door stayed open
+    because the table only ever built ``.opencode/skills`` links, while a live
+    ``~/.agents`` / ``~/.cursor`` link was invisible to the reconcile-fed guard.
     """
     packages = home / ".capacium" / "packages"
     install_dir = packages / "foo" / "bar" / "1.0.0"
@@ -91,14 +101,14 @@ def _build_shape(home: Path, *, payload: bool) -> tuple[Path, Path]:
     if payload:
         (install_dir / "SKILL.md").write_text("---\nname: bar\n---\n")
         _write_meta(home, "foo", "bar", "1.0.0", install_dir)
-    skills_dir = home / ".opencode" / "skills"
+    skills_dir = home / link_root
     skills_dir.mkdir(parents=True)
     link = skills_dir / "bar"
     link.symlink_to(install_dir, target_is_directory=True)
     return install_dir, link
 
 
-def _build_remove_shape(home: Path) -> tuple[Path, Path]:
+def _build_remove_shape(home: Path, link_root: Path = Path(".opencode/skills")) -> tuple[Path, Path]:
     """The CAP-REC-D1 remove shape: two registered versions, the live link on
     the linked one, so ``remove foo/bar@1.0.0`` must be REFUSED — the dir a
     live link resolves into survives, and the link still resolves afterwards."""
@@ -110,7 +120,7 @@ def _build_remove_shape(home: Path) -> tuple[Path, Path]:
         (d / "SKILL.md").write_text("---\nname: bar\n---\n")
     _write_meta(home, "foo", "bar", "1.0.0", linked)
     _write_meta(home, "foo", "bar", "2.0.0", other)
-    skills_dir = home / ".opencode" / "skills"
+    skills_dir = home / link_root
     skills_dir.mkdir(parents=True)
     link = skills_dir / "bar"
     link.symlink_to(linked, target_is_directory=True)
@@ -182,6 +192,73 @@ def test_live_linked_store_dir_survives_every_deleting_command(tmp_path):
             )
             _assert_survives(command, install_dir, link, home, result,
                              payload=payload)
+
+
+# The harness roots the CAP-REC-ONELIST door proved reachable: ``~/.agents`` and
+# ``~/.cursor`` were in remove's known-skill-paths list but NOT in the
+# reconcile-fed guard's roots, so ``cap gc``'s version-prune dangled a live link
+# at either location. These are now part of the single ``harness_link_roots``
+# list, and the invariant must prove a live link at EVERY one of them survives
+# — not only ``.opencode/skills`` (the shape that stayed green while the door
+# was open).
+MULTI_ROOT_SHAPE_COMMANDS = ["gc", "gc --force", "repair --yes"]
+
+MULTI_ROOT_LINKS = [
+    Path(".opencode/skills"),
+    Path(".agents/skills"),
+    Path(".cursor/skills"),
+    Path(".claude/skills"),
+    Path(".codex/skills"),
+]
+
+
+def test_live_linked_dir_survives_across_multiple_harness_roots(tmp_path):
+    """Acceptance 2/4: a live link built in MORE than one harness root — the
+    CAP-REC-ONELIST door — survives every homogeneous deleting command.
+
+    The single list means ``~/.agents`` and ``~/.cursor`` links are protected
+    exactly like ``~/.opencode`` links, and the version-prune path
+    (``_apply_entries``) consults the shared guard instead of deleting a still
+    live-linked generation.
+    """
+    from capacium.framework_detector import harness_link_roots
+
+    # Sanity: the single list actually contains the door roots the review named.
+    single_list_paths = {str(p) for p in harness_link_roots().values()}
+    for lr in MULTI_ROOT_LINKS:
+        assert any(str(p).endswith(str(lr)) for p in single_list_paths), (
+            f"{lr} missing from harness_link_roots"
+        )
+
+    for link_root in MULTI_ROOT_LINKS:
+        for command in MULTI_ROOT_SHAPE_COMMANDS:
+            home = tmp_path / f"{'-'.join(link_root.parts)}-{command.replace(' ', '-')}"
+            install_dir, link = _build_shape(home, payload=True, link_root=link_root)
+
+            result = _apply(command, home)
+            assert result.returncode == 0, (
+                f"{command} (link_root={link_root}) returned {result.returncode}:\n"
+                f"stdout={result.stdout}\nstderr={result.stderr}"
+            )
+            _assert_survives(command, install_dir, link, home, result, payload=True)
+
+
+def test_remove_of_live_linked_version_refused_across_multiple_roots(tmp_path):
+    """``remove foo/bar@1.0.0`` refuses to orphan a live link no matter which
+    harness root carries it — the remove command and the guard read the SAME
+    list, so a ``~/.agents`` or ``~/.cursor`` linked version is refused just
+    like an ``~/.opencode`` one."""
+    for link_root in MULTI_ROOT_LINKS:
+        home = tmp_path / f"remove-{'-'.join(link_root.parts)}"
+        install_dir, link = _build_remove_shape(home, link_root=link_root)
+
+        result = _apply(REMOVE_COMMAND, home)
+        assert result.returncode != 0, (
+            f"remove (link_root={link_root}) should refuse, got rc "
+            f"{result.returncode}:\n{result.stdout}"
+        )
+        _assert_survives(REMOVE_COMMAND, install_dir, link, home, result,
+                         payload=True)
 
 
 def test_remove_of_live_linked_version_is_refused(tmp_path):
@@ -269,4 +346,58 @@ def test_install_prune_end_to_end_keeps_current_linked_dir(tmp_path):
     assert str(link.resolve()) == str(v2_dir.resolve()), (
         f"live link no longer resolves to current dir: {link.resolve()} "
         f"!= {v2_dir.resolve()}"
+    )
+
+
+def test_version_prune_apply_entries_consults_the_shared_guard(tmp_path, monkeypatch):
+    """Acceptance 3: the version-prune path (``_apply_entries``) consults the
+    SHARED live-linked guard, not only the indirect ``_is_active`` mechanism.
+
+    This is a library-level pin of the R7 fourth door: a live link at a harness
+    root that was historically invisible to the guard (``~/.agents``) resolves
+    into a store version that ``_plan_entries`` would otherwise put in the prune
+    candidate set. ``_apply_entries`` must skip it because the SHARED guard —
+    the same ``live_linked_store_paths`` the empty-stub prune consults — names
+    it, not because ``_is_active`` happened to.
+    """
+    from capacium.commands.gc import (
+        _apply_entries,
+        live_linked_store_paths,
+        GCEntry,
+    )
+    from capacium.registry import Registry
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # A payload-bearing install at .agents, two versions, live link on 1.0.0.
+    install_dir, link = _build_remove_shape(tmp_path, link_root=Path(".agents/skills"))
+    registry = Registry(tmp_path / ".capacium" / "registry.db")
+
+    # The shared guard must name the linked version's directory.
+    live_linked = live_linked_store_paths()
+    assert install_dir.resolve() in live_linked, (
+        "shared guard does not see the ~/.agents live link"
+    )
+
+    stub = GCEntry(ref="foo/bar@1.0.0", path=install_dir, size_bytes=0)
+
+    # Without the guard the entry IS removed; with it, the guard skips it.
+    removed_no_guard = _apply_entries([stub], registry, protected=set())
+    assert removed_no_guard == ["foo/bar@1.0.0"], "baseline: unguarded prune removes"
+    assert not install_dir.exists()
+
+    # Rebuild the shape in a FRESH home and prune with the guard in place.
+    home2 = tmp_path / "guarded"
+    monkeypatch.setattr(Path, "home", lambda: home2)
+    install_dir, link = _build_remove_shape(home2, link_root=Path(".agents/skills"))
+    registry = Registry(home2 / ".capacium" / "registry.db")
+    live_linked = live_linked_store_paths()
+    stub = GCEntry(ref="foo/bar@1.0.0", path=install_dir, size_bytes=0)
+    removed_guarded = _apply_entries([stub], registry, protected=live_linked)
+    assert removed_guarded == [], (
+        "guarded version-prune removed a live-linked generation"
+    )
+    assert install_dir.exists(), "guarded prune deleted the ~/.agents linked dir"
+    assert link.is_symlink() and link.resolve().exists(), (
+        "guarded prune left the live link dangling"
     )

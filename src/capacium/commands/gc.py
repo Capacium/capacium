@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from ..framework_detector import framework_skills_dirs
 from ..models import Capability, Kind
 from ..registry import Registry
 from ..storage import StorageManager
@@ -541,15 +540,9 @@ def _path_size(path: Path) -> int:
 
 
 def _client_link_candidates(cap_name: str) -> Iterable[Path]:
-    roots = set(framework_skills_dirs().values())
-    roots.update(
-        {
-            Path.home() / ".config" / "opencode" / "commands",
-            Path.home() / ".claude" / "commands",
-            Path.home() / ".gemini" / "commands",
-            Path.home() / ".qwen" / "commands",
-        }
-    )
+    from ..framework_detector import harness_link_roots
+
+    roots = set(harness_link_roots().values())
     for root in roots:
         yield root / cap_name
         yield root / f"{cap_name}.md"
@@ -707,9 +700,30 @@ def _plan_entries(
     return candidates, protected
 
 
-def _apply_entries(entries: Iterable[GCEntry], registry: Registry) -> List[str]:
+def _apply_entries(
+    entries: Iterable[GCEntry],
+    registry: Registry,
+    protected: Optional[Set[Path]] = None,
+) -> List[str]:
+    """Remove superseded-version store dirs, honouring the shared live-linked guard.
+
+    ``protected`` is the authoritative ``live_linked_store_paths`` set. Every
+    entry whose store path resolves into that set (or into an ancestor of one)
+    is skipped — the version-prune is the FOURTH door CAP-REC-001 found, and this
+    is the fix: the same single guard ``gc``'s empty-stub prune, ``install
+    --prune`` and ``repair`` consult is now consulted here too. A version a live
+    harness link resolves into can never be pruned, no matter where the link
+    lives.
+    """
+    protected = set(protected or ())
     removed = []
     for entry in entries:
+        if _is_harness_linked(entry.path, protected):
+            print(
+                f"  keeping    {entry.ref} — a live harness link resolves into "
+                f"{entry.path}; the version-prune refuses to sever it"
+            )
+            continue
         cap_id, version = entry.ref.rsplit("@", 1)
         registry.remove_bundle_references(entry.ref)
         if not registry.remove_capability(cap_id, version):
@@ -754,7 +768,7 @@ def garbage_collect(keep: Optional[int] = None, dry_run: bool = False) -> GCRepo
         print(f"  {'Would prune' if dry_run else 'Pruning'} empty stub — {path}")
 
     if not dry_run:
-        report.removed = _apply_entries(entries, registry)
+        report.removed = _apply_entries(entries, registry, protected=live_linked)
         report.pruned_stubs = storage.prune_empty_package_stubs(protected=live_linked)
     print(
         f"  {'Reclaimable' if dry_run else 'Reclaimed'}: "
@@ -810,7 +824,7 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
         entries=[e for e in entries if e.ref not in disagreeing],
         protected=protected,
     )
-    report.removed = _apply_entries(report.entries, registry)
+    report.removed = _apply_entries(report.entries, registry, protected=refused_paths)
     if report.removed:
         print(
             f"  Pruned {len(report.removed)} superseded version(s) "

@@ -279,29 +279,24 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
 
 
 def _known_skill_paths() -> List[Path]:
-    """Skills/command directories any adapter may have written links into."""
-    return [
-        Path.home() / ".opencode" / "skills",
-        Path.home() / ".config" / "opencode" / "commands",
-        Path.home() / ".opencode" / "mcp",
-        Path.home() / ".claude" / "skills",
-        Path.home() / ".claude" / "commands",
-        Path.home() / ".gemini" / "skills",
-        Path.home() / ".gemini" / "commands",
-        Path.home() / ".gemini" / "config" / "skills",
-        Path.home() / ".gemini" / "antigravity" / "skills",
-        Path.home() / ".gemini" / "antigravity" / "commands",
-        Path.home() / ".cursor" / "skills",
-        Path.home() / ".cursor" / "commands",
-        Path.home() / ".continue" / "skills",
-        Path.home() / ".continue" / "commands",
-        Path.home() / ".codex" / "skills",
-        Path.home() / ".codex" / "commands",
-        Path.home() / ".qwen" / "skills",
-        Path.home() / ".qwen" / "commands",
-        Path.home() / ".agents" / "skills",
-        Path.home() / ".agents" / "commands",
-    ]
+    """Skills/command directories any adapter may have written links into.
+
+    Derived from ``framework_detector.harness_link_roots`` — the SAME single
+    list the reconciler sweeps via ``_all_skill_roots`` (CAP-REC-ONELIST). One
+    list, not two: a location ``remove`` protects is by construction a location
+    the reconcile-fed guard also sees, so the split-brain that dangled a live
+    ``~/.agents`` link under ``cap gc`` cannot reproduce.
+    """
+    from ..framework_detector import harness_link_roots
+
+    seen = set()
+    paths: List[Path] = []
+    for location in harness_link_roots().values():
+        key = str(Path(location))
+        if key not in seen:
+            seen.add(key)
+            paths.append(Path(location))
+    return paths
 
 
 def _purge_all_adapter_symlinks(cap_name: str) -> None:
