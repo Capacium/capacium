@@ -5,24 +5,45 @@ Thanks for your interest. Contributions are welcome.
 ## Development Setup
 
 ```bash
-git clone https://github.com/Capacium/capacium.git capacium
+git clone https://git.langevc.com/capacium/capacium.git capacium
 cd capacium
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install --upgrade pip
+pip install pyyaml cryptography pytest pytest-cov ruff
+pip install git+https://github.com/Capacium/capacium-models.git
+pip install -e ".[trust]"
 ```
+
+These install steps match `.forgejo/workflows/ci.yml` exactly. Do not use
+`pip install -e ".[dev]"` — that extra is missing `pyyaml`, `cryptography`,
+`pytest-cov`, `ruff`, `trust` (PyNaCl) and `capacium-models`, so the test
+suite fails to collect (`ModuleNotFoundError: No module named 'nacl'`).
 
 ## Running Tests
 
 ```bash
-pytest tests/ -v
-pytest --cov=capacium tests/
+python -m pytest tests/ -v --tb=short --cov=src/capacium \
+  --ignore=tests/test_signing.py \
+  --ignore=tests/test_integration_phase0.py
 ```
+
+This is the exact command CI runs (`ci.yml` "Test with pytest"). It must be
+run from a real install (`pip install -e ".[trust]"` above): several tests
+spawn `python -m capacium.cli` as a subprocess and fail with
+`ModuleNotFoundError: No module named 'capacium'` when the package is only on
+`PYTHONPATH` or not installed at all.
+
+Two pre-existing failures are expected and are not caused by your checkout:
+
+- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard (CAP-OPS-A5).
+- `tests/test_resource_kind.py::TestCapInitKindResource::test_cap_init_kind_resource_produces_valid_manifest` — the test spawns `python3` (resolved from `PATH`, not the venv) so `capacium.cli` is not importable (CAP-OPS-A5).
+
+Expected result: `2 failed, 2068 passed`.
 
 ## Linting
 
 ```bash
-ruff check .
-ruff format --check .
+python -m ruff check .
 ```
 
 ## Adding a New Capability Kind
@@ -44,7 +65,7 @@ ruff format --check .
 1. Fork the repo
 2. Create a `feature/<topic>` branch
 3. Add tests for new functionality
-4. Ensure `pytest` and `ruff` pass
+4. Ensure `python -m pytest tests/ ...` and `python -m ruff check .` pass (see `Running Tests` above)
 5. Open a PR with a clear description
 
 ## Community And Security
