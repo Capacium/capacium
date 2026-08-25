@@ -1,5 +1,49 @@
 # Changelog
 
+## Capacium v0.18.0 — One decision about what may be removed (2026-08-25)
+
+Four review rounds each found the next unguarded way to delete something a
+harness was still using. This release replaces them with one guard and one
+statement of the property.
+
+### Reconciliation
+
+- **A provenance reconciler.** Every harness entry is attributed: who wrote it,
+  against which owner and version, and whether its target still exists. Paths
+  Capacium did not write are reported rather than omitted — silence about a
+  directory it did not create had twice been read as "nothing else is there".
+- **A relocation now reaches the links already written.** Recording
+  `old/name -> new/name` used to change only what `info` resolved; links written
+  under the old owner were left dangling with nothing reporting them. An alias
+  cycle is refused with a diagnosis instead of resolving to a wrong owner
+  silently.
+- **Removal is version-precise.** Removing one version leaves every sibling
+  version and every harness link of that package intact, and removing the only
+  version a harness still links is refused rather than silently performed.
+- **One list of harness link roots.** `reconcile` and `remove` had maintained
+  two different ideas of where harness links live, and the guard used the
+  narrower one; a live link under a root only the other list knew was invisible
+  to every guard. Both now read the same source, and the version prune consults
+  it too.
+- **The property is now a test, not a review activity.** A table-driven
+  invariant states that a store directory a live harness link resolves into
+  survives every deleting command, while a genuinely orphaned stub is still
+  removed.
+
+### Release integrity
+
+- **The mirror no longer races the version gate.** `mirror.yml` triggers on
+  `v*` tags and force-pushes the triggering ref; its version check lived in a
+  separate workflow, and Forgejo has no cross-workflow `needs:`. A tag whose
+  version disagreed with `pyproject.toml` reached the public mirror regardless.
+  The check now lives in the same workflow, ordered ahead of the mirror job.
+
+### Note on 0.17.0 and 0.17.1
+
+Both shipped without a CHANGELOG entry. They are not reconstructed here; this
+entry starts from 0.18.0 and the gap is recorded rather than filled in after
+the fact.
+
 All notable changes to this project will be documented in this file.
 
 ## Capacium v0.16.0 — Exact provenance, safe storage & repair (2026-07-16)
