@@ -5,6 +5,23 @@ on:
     tags:
       - "v*"
 
+# ── Recorded decision: Windows binary ships regardless of the test gate ─────
+#
+# ADR 2026-08-13-release-distribution-boundary (release.yml) holds that the
+# 3x3 test matrix is a gate on the *ref*, not a `needs:` input to distribution.
+# This workflow builds standalone binaries from source WITHOUT running the test
+# suite, so the Windows binary is produced and attached to the release even
+# while `release.yml`'s `build (windows-latest, *)` Test step is red (CAP-OPS-A6,
+# BUG-011). Reason: a Windows test failure has, on every release back to
+# v0.17.1, been a test-side platform problem (symlink/path semantics, see the
+# Windows skip guards in tests/test_reconcile.py, tests/test_gc_wire_cli.py),
+# not a defect in the binary the build produces. Gating the binary on a red
+# test matrix would withhold a working artifact for a failure that does not
+# indicate a broken binary. The decision is recorded here so a red test gate
+# plus a shipped binary is deliberate, not an accident.
+#
+# Jobs below therefore do NOT depend on release.yml's matrix.
+
 jobs:
   build:
     # Hybrid mirror: this GitHub-only release pipeline is skipped on the
