@@ -302,3 +302,291 @@ def test_install_prune_runs_only_after_successful_explicit_opt_in(
         ("acme", "member", "1.0.0"),
         ("acme", "widget", "1.0.0"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# CAP-REC-D2 — cleanup plan: adopt / relink / quarantine / delete per entry
+# ---------------------------------------------------------------------------
+
+
+def _plan_for(tmp_home, monkeypatch):
+    """Build the reconciler fixture state and return the cleanup plan."""
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    from tests.test_reconcile_fixture import build_fixture_state
+    from capacium.commands.gc import build_cleanup_plan
+
+    build_fixture_state(tmp_home)
+    return build_cleanup_plan()
+
+
+def test_cleanup_plan_names_each_action_with_reason(tmp_home, monkeypatch):
+    """Acceptance 3: the plan emits adopt/relink/quarantine/delete per entry,
+    and every action carries a non-empty reason — never a bare action name."""
+    from capacium.commands.gc import CleanupAction
+
+    actions = _plan_for(tmp_home, monkeypatch)
+
+    # All dispositions appear, including the deliberate non-mutation "refuse"
+    # a linked-but-unregistered install must be refused rather than moved.
+    by_action = {}
+    for action in actions:
+        by_action.setdefault(action.action, []).append(action)
+    assert set(by_action) <= {"adopt", "relink", "quarantine", "delete", "refuse"}
+    assert "delete" in by_action
+    assert "quarantine" in by_action
+    assert "relink" in by_action
+    assert "adopt" in by_action
+    assert "refuse" in by_action
+
+    for action in actions:
+        assert isinstance(action, CleanupAction)
+        assert action.reason, "a cleanup action must carry a per-entry reason"
+
+    # Dead links map to delete.
+    dead = {str(a.target) for a in by_action["delete"]}
+    assert any("sub-skill" in p for p in dead)
+    assert any("kind-skill" in p for p in dead)
+
+    # Foreign entries (rtk symlink, stray SKILL.md) map to adopt.
+    adopted = {str(a.target) for a in by_action["adopt"]}
+    assert any("rtk" in p for p in adopted)
+    assert any("SKILL.md" in p for p in adopted)
+
+
+def test_cleanup_plan_distinguishes_stale_from_dead(tmp_home, monkeypatch):
+    """The 2026-08-16 guard: look-alike links with different purposes are never
+    collapsed. The stale txtHumanizer links are relinked, the dead
+    txtHumanizer-dead link is deleted — two distinct dispositions."""
+    actions = _plan_for(tmp_home, monkeypatch)
+
+    relinked = {str(a.target) for a in actions if a.action == "relink"}
+    deleted = {str(a.target) for a in actions if a.action == "delete"}
+
+    assert any("txtHumanizer" in p and "dead" not in p for p in relinked)
+    assert any("txtHumanizer-dead" in p for p in deleted)
+
+    # The stale link carries the superseded version and the current version in
+    # its reason, proving the disposition is entry-specific.
+    stale = next(
+        a for a in actions
+        if a.action == "relink" and "txtHumanizer" in str(a.target) and "dead" not in str(a.target)
+    )
+    assert "0.0.2" in stale.reason
+    assert "1.0.0" in stale.reason
+
+
+def test_cleanup_plan_quarantines_unregistered_and_deletes_phantom(tmp_home, monkeypatch):
+    """Acceptance 2 half: an unregistered install (no registry row) is
+    quarantined, never deleted; a phantom registered row (no files) is deleted."""
+    actions = _plan_for(tmp_home, monkeypatch)
+
+    quarantined = {str(a.target) for a in actions if a.action == "quarantine"}
+    assert any("mempalace" in p for p in quarantined)
+    # global/elementeer-mcp old-owner copy is on disk but unregistered. It is
+    # also the target of a live harness link (antigravity-backup -> old owner),
+    # so it MUST be refused, never quarantined — quarantining it would sever
+    # the live link (CAP-REC-D2 blocker). The genuinely unlinked mempalace is
+    # still quarantined above.
+    refused = {str(a.target) for a in actions if a.action == "refuse"}
+    assert any("global/elementeer-mcp" in p for p in refused)
+    assert not any("global/elementeer-mcp" in p for p in quarantined)
+
+    deleted = {
+        a.ref: a for a in actions if a.action == "delete" and a.ref
+    }
+    assert any(
+        ref and "skillweave-blueprint@1.3.0" in ref for ref in deleted
+    )
+
+
+def test_apply_cleanup_dry_run_mutates_nothing(tmp_home, monkeypatch, capsys):
+    """Dry-run prints the plan but leaves the filesystem untouched."""
+    from tests.test_reconcile_fixture import build_fixture_state
+    from capacium.commands.gc import build_cleanup_plan, apply_cleanup
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    build_fixture_state(tmp_home)
+
+    dead_link = tmp_home / ".gemini" / "antigravity-backup" / "skills" / "txtHumanizer-dead"
+    assert dead_link.is_symlink()
+
+    actions = build_cleanup_plan()
+    report = apply_cleanup(actions, dry_run=True)
+
+    assert report.applied == []
+    assert report.quarantined == []
+    assert dead_link.is_symlink(), "dry-run must not delete a dead link"
+
+    out = capsys.readouterr().out
+    assert "delete" in out
+    assert "relink" in out
+    assert "quarantine" in out
+
+
+def test_apply_cleanup_relinks_stale_and_deletes_dead(tmp_home, monkeypatch):
+    """Real apply: a stale link is rewritten to the current generation, a dead
+    link is removed, and the current generation is left registered (criterion 1 + 2)."""
+    from tests.test_reconcile_fixture import build_fixture_state
+    from capacium.commands.gc import build_cleanup_plan, apply_cleanup
+    from capacium.registry import Registry
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    build_fixture_state(tmp_home)
+    registry = Registry()
+
+    dead_link = tmp_home / ".gemini" / "antigravity-backup" / "skills" / "txtHumanizer-dead"
+    assert dead_link.is_symlink()
+
+    apply_cleanup(build_cleanup_plan(registry=registry), dry_run=False, registry=registry)
+
+    assert not dead_link.is_symlink(), "dead link should be removed after apply"
+
+    # The stale top-level txtHumanizer link now points at the current 1.0.0.
+    stale_link = tmp_home / ".gemini" / "antigravity-backup" / "skills" / "txtHumanizer"
+    assert stale_link.is_symlink()
+    assert "1.0.0" in str(stale_link.resolve())
+
+    # The current generation is still registered.
+    assert registry.get_capability("LangeVC/txtHumanizer", "1.0.0") is not None
+
+
+def test_prune_superseded_relinks_stale_harness_link(tmp_home, monkeypatch):
+    """Criterion 1: after a superseding install, a harness link still pointing at
+    the old generation is relinked to the new one — no harness exposes two
+    versions at once (the measured 2026-08-22 `install --prune` removed nothing)."""
+    from capacium.commands.gc import prune_superseded_versions
+
+    registry = Registry()
+    old = _add_capability(tmp_home, registry, "1.0.0")
+    _add_capability(tmp_home, registry, "2.0.0")
+
+    skills_dir = tmp_home / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    link = skills_dir / "widget"
+    link.symlink_to(old.install_path, target_is_directory=True)
+
+    prune_superseded_versions("acme", "widget", "2.0.0")
+
+    assert link.is_symlink()
+    assert str(link.resolve()).endswith("2.0.0"), "stale link was not relinked to the new generation"
+    assert registry.get_capability("acme/widget", "2.0.0") is not None
+
+
+def test_prune_superseded_leaves_linked_version_alone(tmp_home, monkeypatch):
+    """Criterion 2: a generation a harness still links to is never removed while
+    linked, even when it is not the newest."""
+    from capacium.commands.gc import prune_superseded_versions
+
+    registry = Registry()
+    old = _add_capability(tmp_home, registry, "1.0.0")
+    _add_capability(tmp_home, registry, "2.0.0")
+
+    skills_dir = tmp_home / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    link = skills_dir / "widget"
+    link.symlink_to(old.install_path, target_is_directory=True)
+
+    prune_superseded_versions("acme", "widget", "2.0.0")
+
+    # The old generation directory survives (registry-linked), and its files exist.
+    assert old.install_path.exists()
+    assert registry.get_capability("acme/widget", "1.0.0") is not None
+
+
+def test_cleanup_refuses_quarantine_for_a_live_harness_link(tmp_home, monkeypatch, capsys):
+    """The adversarial-reviewer reproduction, acceptance 1 + 3: an on-disk install
+    with no registry row that a live harness link resolves into must be refused,
+    never quarantined — quarantining it would sever the link the reconciler just
+    classified ok/alive. Dry-run must name the conflict, not print a benign move."""
+    from capacium.commands.gc import build_cleanup_plan, apply_cleanup
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    packages = tmp_home / ".capacium" / "packages"
+    install_dir = packages / "foo" / "bar" / "1.0.0"
+    install_dir.mkdir(parents=True)
+    (install_dir / "SKILL.md").write_text("---\nname: bar\n---\n")
+
+    skills_dir = tmp_home / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "bar").symlink_to(install_dir, target_is_directory=True)
+
+    actions = build_cleanup_plan()
+
+    by_action = {}
+    for a in actions:
+        by_action.setdefault(a.action, []).append(a)
+    assert "refuse" in by_action
+    quarantined = {str(a.target) for a in actions if a.action == "quarantine"}
+    refused = {str(a.target) for a in actions if a.action == "refuse"}
+    assert str(install_dir.resolve()) in refused
+    assert not any("foo/bar" in p for p in quarantined)
+
+    # The directory and the live link are untouched after a real apply.
+    apply_cleanup(actions, dry_run=False)
+    assert install_dir.exists()
+    assert (skills_dir / "bar").is_symlink()
+
+    # Dry-run names the conflict, not a benign move.
+    out = capsys.readouterr().out
+    assert "refuse" in out
+    assert "live harness link" in out or "linked" in out
+
+
+def test_adopt_writes_real_provenance_not_placeholder(tmp_home, monkeypatch):
+    """R4-A LOW-1: adopt derives owner/name/version/kind/fingerprint from the
+    adopted directory's own manifest, never a hardcoded global/0.0.0 placeholder."""
+    import json as _json
+
+    from capacium.commands.gc import _apply_cleanup_action, CleanupAction
+    from capacium.registry import Registry
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    foreign = tmp_home / "custom-skill"
+    foreign.mkdir(parents=True)
+    (foreign / "capability.yaml").write_text(
+        "kind: skill\nname: custom-skill\nversion: 2.3.4\ndescription: adopted\n"
+    )
+    (foreign / "SKILL.md").write_text("---\nname: custom-skill\n---\n")
+
+    registry = Registry()
+    action = CleanupAction(
+        action="adopt",
+        target=foreign,
+        reason="foreign entry is not managed by Capacium",
+        ref=str(foreign),
+    )
+    assert _apply_cleanup_action(action, registry, tmp_home / "q")
+
+    meta = _json.loads((foreign / ".cap-meta.json").read_text())
+    assert meta["name"] == "custom-skill"
+    assert meta["version"] == "2.3.4"
+    assert meta["kind"] == "skill"
+    assert meta["fingerprint"] and meta["fingerprint"] != "f" * 64
+
+
+def test_hold_drift_emits_no_empty_target_relink(tmp_home, monkeypatch):
+    """R4-A LOW-2: a hold_drift finding with no matching harness link emits no
+    relink action carrying an empty target=Path()."""
+    import json as _json
+
+    from capacium.commands.gc import build_cleanup_plan
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    registry = Registry()
+    _add_capability(tmp_home, registry, "1.0.0", owner="acme", name="held-cap")
+
+    holds_path = tmp_home / ".capacium" / "holds.json"
+    holds_path.write_text(
+        _json.dumps({"acme/held-cap": {"version": "0.9.0", "reason": "patched"}})
+    )
+
+    actions = build_cleanup_plan()
+
+    hold_relinks = [a for a in actions if a.action == "relink" and a.ref == "acme/held-cap"]
+    for a in hold_relinks:
+        assert str(a.target), "hold_drift must never emit an empty relink target"
+    empty_targets = [a for a in actions if a.action == "relink" and not str(a.target)]
+    assert empty_targets == []

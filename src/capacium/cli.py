@@ -128,6 +128,12 @@ def main():
     info_parser.add_argument("--registry", help="Remote registry URL")
     info_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="Read-only provenance reconciliation across every harness",
+    )
+    reconcile_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
     compare_parser = subparsers.add_parser("compare", help="Compare two capabilities side-by-side")
     compare_parser.add_argument("a", help="First capability (owner/name)")
     compare_parser.add_argument("b", help="Second capability (owner/name)")
@@ -270,7 +276,8 @@ def main():
 
     gc_parser = subparsers.add_parser(
         "gc",
-        help="Prune superseded package versions and empty package stubs",
+        help="Prune superseded package versions and clean up drift "
+             "(adopt/relink/quarantine/delete/refuse)",
     )
     gc_parser.add_argument(
         "--keep",
@@ -281,7 +288,13 @@ def main():
     gc_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="List reclaimable versions and bytes without changing anything",
+        help="List reclaimable versions and cleanup actions without changing anything",
+    )
+    gc_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force removal of superseded versions (never bypasses refuse of a "
+             "live-linked install)",
     )
 
     runtimes_parser = subparsers.add_parser(
@@ -607,6 +620,10 @@ def main():
             from .commands.compare import compare_cmd
             sys.exit(compare_cmd(args))
 
+        elif args.command == "reconcile":
+            from .commands.reconcile import reconcile_cmd
+            sys.exit(reconcile_cmd(args))
+
         elif args.command == "update-index":
             from .sync import update_cmd
             sys.exit(update_cmd(args))
@@ -712,8 +729,11 @@ def main():
             sys.exit(0 if success else 1)
 
         elif args.command == "gc":
-            from .commands.gc import garbage_collect
+            from .commands.gc import garbage_collect, cleanup
 
+            # CAP-REC-D2: ``cap gc`` consults the cleanup plan (adopt/relink/
+            # quarantine/delete/refuse per entry), not only the version prune.
+            cleanup(dry_run=args.dry_run, force=args.force)
             garbage_collect(keep=args.keep, dry_run=args.dry_run)
             sys.exit(0)
 

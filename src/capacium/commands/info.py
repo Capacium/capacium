@@ -9,7 +9,7 @@ import select
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import termios
@@ -114,6 +114,7 @@ def _to_info_json(detail: Dict[str, Any]) -> str:
             "source_commit": detail.get("source_commit", ""),
             "publisher": detail.get("publisher", ""),
             "updated_at": detail.get("updated_at", ""),
+            "aliases": detail.get("aliases", []),
         },
         indent=2,
         default=str,
@@ -247,23 +248,41 @@ def _detail_from_registry_detail(detail: RegistryDetail) -> Dict[str, Any]:
 
 
 def _resolve_detail(cap_spec: str, registry_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    # A relocation reaches every reference to the old identity, including the
+    # links already written under it (FEAT-001). Resolve the requested id to its
+    # canonical owner/name through the alias chain before looking anything up, so
+    # a bare name resolves to the relocated owner and never to an unrelated
+    # listing still published under the old name.
+    from ..registry import Registry
+
+    registry = Registry()
+    namespace_version = None
+    namespace = cap_spec
+    if "@" in cap_spec:
+        namespace, namespace_version = cap_spec.rsplit("@", 1)
+    resolved_identity = registry.resolve_identity(namespace)
+    canonical_namespace = resolved_identity["canonical_id"]
+    if namespace_version is not None:
+        canonical_namespace = f"{canonical_namespace}@{namespace_version}"
+
     if _has_local_index():
         try:
             idx = Index(db_path=_SEARCH_INDEX_PATH)
-            local = idx.get(cap_spec)
+            local = idx.get(canonical_namespace)
             if local:
+                _attach_aliases(local, resolved_identity["aliases"])
                 return local
         except Exception:
             pass
 
-    local = _resolve_from_local_registry(cap_spec)
+    local = _resolve_from_local_registry(canonical_namespace, namespace_version, resolved_identity["aliases"])
     if local:
         return local
 
     client = RegistryClient()
     effective_url = registry_url or get_registry_url()
     try:
-        detail = client.get_detail(cap_spec, registry_url=effective_url)
+        detail = client.get_detail(canonical_namespace, registry_url=effective_url)
     except RegistryClientError as e:
         print(f"⚠️  Exchange not reachable ({e})")
         return None
@@ -274,21 +293,37 @@ def _resolve_detail(cap_spec: str, registry_url: Optional[str] = None) -> Option
     return _detail_from_registry_detail(detail)
 
 
-def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
+def _attach_aliases(detail: Dict[str, Any], aliases: List[Dict[str, str]]) -> None:
+    """Record the relocation chain an identity resolved through, so the caller
+    can name the alias it followed (acceptance criterion 3)."""
+    if aliases:
+        detail["aliases"] = aliases
+
+
+def _resolve_from_local_registry(
+    cap_spec: str,
+    version_spec_override: Optional[str] = None,
+    aliases: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Dict[str, Any]]:
     from ..registry import Registry
     from ..versioning import VersionManager
 
     spec = VersionManager.parse_version_spec(cap_spec)
     owner = spec["owner"]
     name = spec["skill"]
-    version_spec = spec["version"]
+    version_spec = version_spec_override if version_spec_override is not None else spec["version"]
+
+    # A version-less request carries the "latest" sentinel; the registry's
+    # get_capability treats a version argument literally, so translate the
+    # sentinel back to "no version filter" to reach the newest installed row.
+    lookup_version = None if version_spec in ("latest", "stable", "") else version_spec
 
     registry = Registry()
-    cap = registry.get_capability(f"{owner}/{name}", version_spec)
+    cap = registry.get_capability(f"{owner}/{name}", lookup_version)
     if cap is None:
         return None
 
-    return {
+    result = {
         "name": cap.name,
         "owner": cap.owner,
         "kind": cap.kind.value if cap.kind else "unknown",
@@ -310,6 +345,9 @@ def _resolve_from_local_registry(cap_spec: str) -> Optional[Dict[str, Any]]:
         "publisher": "",
         "updated_at": cap.installed_at.isoformat() if cap.installed_at else "",
     }
+    if aliases:
+        result["aliases"] = aliases
+    return result
 
 
 def cap_info(cap_spec: str, registry_url: Optional[str] = None, json_output: bool = False):

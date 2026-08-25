@@ -35,6 +35,49 @@ def framework_skills_dirs() -> Dict[str, Path]:
     return dirs
 
 
+def harness_link_roots() -> Dict[str, Path]:
+    """Every directory a harness adapter can write a live capability link into,
+    keyed by a stable location id.
+
+    This is the SINGLE source of truth for "where do harness links live". Every
+    consumer that must know a link location — the reconciler's sweep roots, the
+    remove command's known skill paths, and gc's client-link candidates — reads
+    from here, so a location one path knows about is known to all of them. The
+    split-brain that bit CAP-REC-001 (``remove`` knew ``~/.agents`` and
+    ``~/.cursor`` while the reconcile-fed guard did not, so ``cap gc``'s
+    version-prune dangled a live ``~/.agents/skills/<name>`` link) cannot
+    reproduce when there is one list and not two.
+
+    ``framework_skills_dirs()`` supplies the canonical skills roots; this adds
+    the command/MCP dirs and the Capacium-adjacent extras the reconciler and the
+    remove command must also sweep (CAP-REC-ONELIST).
+    """
+    roots: Dict[str, Path] = dict(framework_skills_dirs())
+    home = Path.home()
+    roots.update(
+        {
+            # Command directories — harnesses write ``<name>.md`` command links.
+            "opencode-commands": home / ".config" / "opencode" / "commands",
+            "opencode-mcp": home / ".opencode" / "mcp",
+            "claude-commands": home / ".claude" / "commands",
+            "gemini-commands": home / ".gemini" / "commands",
+            "antigravity-commands": home / ".gemini" / "antigravity" / "commands",
+            "cursor-skills": home / ".cursor" / "skills",
+            "cursor-commands": home / ".cursor" / "commands",
+            "continue-commands": home / ".continue" / "commands",
+            "codex-commands": home / ".codex" / "commands",
+            "qwen-commands": home / ".qwen" / "commands",
+            "agents-skills": home / ".agents" / "skills",
+            "agents-commands": home / ".agents" / "commands",
+            # Capacium-adjacent roots the reconciler must not be silent about.
+            "antigravity-twohop": home / ".antigravity" / "skills",
+            "antigravity-backup": home / ".gemini" / "antigravity-backup" / "skills",
+            "understand-anything": home / ".understand-anything",
+        }
+    )
+    return roots
+
+
 # Backward-compatible snapshot (import-time HOME). Prefer the function above.
 FRAMEWORK_SKILLS_DIRS: Dict[str, Path] = framework_skills_dirs()
 

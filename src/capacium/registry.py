@@ -6,6 +6,17 @@ from typing import Optional, List, Dict, Any, Tuple
 from .models import Capability, Kind, AdapterStatus
 
 
+class RelocationCycleError(Exception):
+    """A relocation alias chain closes on itself instead of terminating.
+
+    Raised by :meth:`Registry.resolve_identity` when following ``old_id -> new_id``
+    aliases revisits a node already in the chain (a two-node ``A -> B -> A`` loop
+    or a self-loop ``A -> A``). Resolving such a chain to any owner would be a
+    wrong-but-silent result, so it is refused and the message names the aliases
+    that close the loop.
+    """
+
+
 class Registry:
 
     def __init__(self, db_path: Optional[Path] = None):
@@ -600,6 +611,62 @@ class Registry:
                 "FROM capability_aliases ORDER BY old_id"
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def resolve_identity(self, cap_id: str) -> Dict[str, Any]:
+        """Resolve *cap_id* to its canonical ``owner/name``, following relocations.
+
+        A relocation is an event, not just a row that ``info`` consults: when a
+        capability moves, a ``capability_aliases`` row (old_id -> new_id) is
+        recorded, and every later reference to the old id must reach the new one.
+        This method walks that chain transitively so a bare name — which parses to
+        the ``global`` owner — or an explicit pre-relocation id resolves to the
+        current identity, and reports each alias it followed so the caller can name
+        it (FEAT-001).
+
+        A relocation cycle (a self-loop ``old_id == new_id`` or a multi-node loop
+        such as ``A -> B -> A``) is never resolved to a "wrong but silent" owner:
+        every later step inherits the wrong identity and cannot tell. Such a chain
+        is refused with a :class:`RelocationCycleError` whose message names every
+        alias that closes the loop, so a caller can diagnose the corruption instead
+        of acting on it.
+
+        Returns ``{"owner", "name", "canonical_id", "aliases"}`` where ``aliases``
+        is the ordered list of ``{"from", "to"}`` relocation rows followed. A
+        directly-registered id resolves to itself with an empty alias list.
+
+        Raises:
+            RelocationCycleError: if the relocation chain contains a cycle.
+        """
+        owner, name = self.parse_cap_id(cap_id)
+        current = f"{owner}/{name}"
+        aliases: List[Dict[str, str]] = []
+        seen = {current}
+        while True:
+            nxt = self.get_relocation(current)
+            if nxt is None:
+                break
+            if nxt == current:
+                raise RelocationCycleError(
+                    f"relocation self-loop: {current} -> {current}"
+                )
+            if nxt in seen:
+                cycle = aliases + [{"from": current, "to": nxt}]
+                chain = " -> ".join(
+                    [step["from"] for step in cycle] + [nxt]
+                )
+                raise RelocationCycleError(
+                    f"relocation cycle detected: {chain}"
+                )
+            aliases.append({"from": current, "to": nxt})
+            current = nxt
+            seen.add(nxt)
+        new_owner, new_name = self.parse_cap_id(current)
+        return {
+            "owner": new_owner,
+            "name": new_name,
+            "canonical_id": current,
+            "aliases": aliases,
+        }
 
     def get_reference_count(self, member_id: str) -> int:
         with self._get_connection() as conn:

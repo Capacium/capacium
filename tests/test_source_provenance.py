@@ -462,3 +462,148 @@ def test_latest_auto_accepts_and_list_shows_real_version(
     output = capsys.readouterr().out
     assert "acme/provenance-cap@2.0.0" in output
     assert "acme/provenance-cap@1.0.0" not in output
+
+
+
+# --- CAP-REC-C1: relocation reaches the links already written (FEAT-001) -----
+
+
+def _install_skillweave_under_old_owner(tmp_home, monkeypatch, version="0.8.5"):
+    """Install a skillweave capability under its pre-relocation owner so the
+    relocate step records a global/skillweave -> LangeVC/skillweave alias."""
+    from capacium.commands.install import install_capability
+
+    source = tmp_home / "skillweave-source"
+    source.mkdir()
+    (source / "capability.yaml").write_text(
+        json.dumps({"name": "skillweave", "version": version, "kind": "skill"})
+    )
+    (source / "SKILL.md").write_text("# skillweave\n")
+
+    result = install_capability(
+        "global/skillweave",
+        source_dir=source,
+        no_lock=True,
+        skip_runtime_check=True,
+        framework="claude-code",
+        yes=True,
+    )
+    assert result is True
+    return source
+
+
+def test_relocated_bare_name_resolves_to_new_owner_via_alias(
+    tmp_home, monkeypatch, capsys
+):
+    """Criterion 2 + 3: a bare name resolves to the relocated owner, never to an
+    unrelated listing under the old name, and the alias it followed is named."""
+    from capacium.commands.info import cap_info
+    from capacium.registry import Registry
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    Registry().relocate_capability("global/skillweave", "LangeVC/skillweave")
+
+    capsys.readouterr()
+    cap_info("skillweave", json_output=True)
+    detail = json.loads(capsys.readouterr().out)
+
+    assert detail["owner"] == "LangeVC"
+    assert detail["name"] == "skillweave"
+    assert detail["aliases"] == [
+        {"from": "global/skillweave", "to": "LangeVC/skillweave"}
+    ]
+
+
+def test_relocated_identity_returns_repairable_entries(tmp_home, monkeypatch):
+    """Criterion 1: the reconciler reports links under a relocated owner as
+    relocatable and repairable without hand editing."""
+    from capacium.commands.reconcile import reconcile
+    from capacium.registry import Registry
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    Registry().relocate_capability("global/skillweave", "LangeVC/skillweave")
+
+    report = reconcile()
+
+    relocatable = [
+        e
+        for e in report["skills"]
+        if e.get("state") == "relocation_gap"
+        and (e.get("relocation") or {}).get("to") == "LangeVC/skillweave"
+    ]
+    assert relocatable, (
+        "expected at least one relocation_gap entry for the relocated owner"
+    )
+    for entry in relocatable:
+        assert entry["relocation"]["from"] == "global/skillweave"
+        assert entry["relocation"]["to"] == "LangeVC/skillweave"
+
+
+def test_resolve_identity_follows_transitive_chain(tmp_home, monkeypatch):
+    """The alias chain is resolved transitively and reported in order."""
+    from capacium.registry import Registry
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
+    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave-bundle")
+
+    resolved = registry.resolve_identity("global/skillweave")
+
+    assert resolved["canonical_id"] == "LangeVC/skillweave-bundle"
+    assert resolved["aliases"] == [
+        {"from": "global/skillweave", "to": "LangeVC/skillweave"},
+        {"from": "LangeVC/skillweave", "to": "LangeVC/skillweave-bundle"},
+    ]
+
+
+def test_resolve_identity_refuses_two_node_cycle(tmp_home, monkeypatch):
+    """A two-node relocation cycle resolves to a WRONG owner silently today; it
+    must be refused with a diagnosis naming both aliases."""
+    from capacium.registry import Registry, RelocationCycleError
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
+    registry.relocate_capability("LangeVC/skillweave", "global/skillweave")
+
+    with pytest.raises(RelocationCycleError) as excinfo:
+        registry.resolve_identity("global/skillweave")
+
+    message = str(excinfo.value)
+    assert "global/skillweave" in message
+    assert "LangeVC/skillweave" in message
+
+
+def test_resolve_identity_refuses_self_loop(tmp_home, monkeypatch):
+    """A self-loop (old_id == new_id) is detected and refused."""
+    from capacium.registry import Registry, RelocationCycleError
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave")
+
+    with pytest.raises(RelocationCycleError) as excinfo:
+        registry.resolve_identity("LangeVC/skillweave")
+
+    message = str(excinfo.value)
+    assert "LangeVC/skillweave" in message
+
+
+def test_resolve_identity_acyclic_chain_still_resolves(tmp_home, monkeypatch):
+    """A legitimate transitive chain (A -> B -> C) still resolves to C and names
+    the chain (regression guard for the cycle detection)."""
+    from capacium.registry import Registry
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
+    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave-bundle")
+
+    resolved = registry.resolve_identity("global/skillweave")
+
+    assert resolved["canonical_id"] == "LangeVC/skillweave-bundle"
+    assert resolved["aliases"] == [
+        {"from": "global/skillweave", "to": "LangeVC/skillweave"},
+        {"from": "LangeVC/skillweave", "to": "LangeVC/skillweave-bundle"},
+    ]
