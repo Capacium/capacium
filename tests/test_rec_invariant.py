@@ -36,6 +36,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+# Windows resolves symlink targets to 8.3 short paths (e.g. C:\Users\RUNNER~1)
+# while Capacium builds sandboxed CAPACIUM_PROJECT_ROOT/HOME trees, so the
+# reconcile-fed live-linked guard (``live_linked_store_paths``) classifies every
+# Capacium-written test link as ``foreign`` instead of naming its store target.
+# The invariant's every shape is a real harness symlink whose *survival* is the
+# property under test, so the whole table is skipped on Windows with that stated
+# reason — matching the sibling pattern in test_reconcile.py / test_gc_wire_cli.py.
+WIN_SYMLINK_CLASSIFY = sys.platform == "win32"
+_WIN_REASON = (
+    "harness-symlink survival depends on symlink target classification that "
+    "differs on Windows (8.3 short paths); covered on macOS/Linux"
+)
+
 
 def _cap(home: Path, *args: str) -> subprocess.CompletedProcess:
     """Run the real CLI as a subprocess under a sandboxed HOME."""
@@ -177,6 +193,7 @@ def _assert_survives(command: str, install_dir: Path, link: Path, home: Path,
     )
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_live_linked_store_dir_survives_every_deleting_command(tmp_path):
     """Acceptance 1: the invariant holds for every homogeneous deleting command
     in the table, on both the payload-bearing and the empty (R6) shape."""
@@ -212,6 +229,7 @@ MULTI_ROOT_LINKS = [
 ]
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_live_linked_dir_survives_across_multiple_harness_roots(tmp_path):
     """Acceptance 2/4: a live link built in MORE than one harness root — the
     CAP-REC-ONELIST door — survives every homogeneous deleting command.
@@ -243,6 +261,7 @@ def test_live_linked_dir_survives_across_multiple_harness_roots(tmp_path):
             _assert_survives(command, install_dir, link, home, result, payload=True)
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_remove_of_live_linked_version_refused_across_multiple_roots(tmp_path):
     """``remove foo/bar@1.0.0`` refuses to orphan a live link no matter which
     harness root carries it — the remove command and the guard read the SAME
@@ -261,6 +280,7 @@ def test_remove_of_live_linked_version_refused_across_multiple_roots(tmp_path):
                          payload=True)
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_remove_of_live_linked_version_is_refused(tmp_path):
     """``remove <name>@<linked-version>`` (CAP-REC-D1) is refused while another
     version remains: the dir a live link resolves into survives, and the link
@@ -277,6 +297,7 @@ def test_remove_of_live_linked_version_is_refused(tmp_path):
                      payload=True)
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_gc_dry_run_never_contradicts_itself_for_one_linked_path(tmp_path):
     """``gc --dry-run`` never emits BOTH a refuse AND a prune for the SAME empty
     live-linked directory."""
@@ -308,6 +329,7 @@ def test_orphaned_empty_stub_is_still_removed(tmp_path):
     )
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_install_prune_end_to_end_keeps_current_linked_dir(tmp_path):
     """``install --prune`` end-to-end: a real two-version install prunes the
     superseded generation while the live-linked current dir survives.
@@ -349,6 +371,7 @@ def test_install_prune_end_to_end_keeps_current_linked_dir(tmp_path):
     )
 
 
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
 def test_version_prune_apply_entries_consults_the_shared_guard(tmp_path, monkeypatch):
     """Acceptance 3: the version-prune path (``_apply_entries``) consults the
     SHARED live-linked guard, not only the indirect ``_is_active`` mechanism.
@@ -400,4 +423,65 @@ def test_version_prune_apply_entries_consults_the_shared_guard(tmp_path, monkeyp
     assert install_dir.exists(), "guarded prune deleted the ~/.agents linked dir"
     assert link.is_symlink() and link.resolve().exists(), (
         "guarded prune left the live link dangling"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CAP-OPS-A2 — install-driven deletion and the explicit-override boundary.
+#
+# CAP-REC-001 ended with ONE guard over one list, consulted by every deleting
+# path it reached (gc's empty-stub prune, repair's empty-stub repair, gc's
+# version-prune, and install --prune's ``prune_superseded_versions`` — all pinned
+# by the tests above). R8 named four install.py sites that guard does NOT reach:
+# the bundle-member reinstall, the conflicting-link force-remove, the relink
+# migration, and the tarball materialization. Each is an *explicit* operator
+# override (``--force`` / a named tarball) that severs a link by design — the
+# same kind of deliberate removal as ``remove --force`` — or a cache/temp cleanup
+# whose live-link question is the reconciler/gc lane's. The boundary is recorded
+# in install.py next to each site, not silently resolved here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
+def test_install_driven_autonomous_deletion_is_guarded(tmp_path):
+    """Acceptance 1: the one *autonomous* install-driven deletion — ``install
+    --prune`` — keeps the current live-linked generation while removing the
+    superseded one, through the SHARED ``live_linked_store_paths`` guard (not by
+    accident of ``_is_active``). The explicitly overridden reinstall sites are the
+    boundary documented in install.py, not part of this survival table.
+
+    This is the end-to-end CLI form: a real two-version install where the
+    superseded generation is orphaned (its link moved to the new version by the
+    install's own relink) and the current generation stays live-linked."""
+    home = tmp_path / "guarded-prune"
+
+    def _src(version: str) -> Path:
+        s = tmp_path / f"src-{version}"
+        s.mkdir()
+        (s / "capability.yaml").write_text(
+            f"kind: skill\nname: guarded\nversion: {version}\n"
+            f"description: guard probe\nframeworks:\n- opencode\n"
+        )
+        (s / "SKILL.md").write_text("---\nname: guarded\n---\n")
+        return s
+
+    r1 = _cap(home, "install", "--source", str(_src("1.0.0")),
+              "guarded", "--version", "1.0.0",
+              "--framework", "opencode", "--no-lock", "--yes")
+    assert r1.returncode == 0, f"install v1 failed:\n{r1.stdout}\n{r1.stderr}"
+
+    r2 = _cap(home, "install", "--source", str(_src("2.0.0")),
+              "guarded", "--version", "2.0.0",
+              "--framework", "opencode", "--no-lock", "--yes", "--prune")
+    assert r2.returncode == 0, f"install v2 --prune failed:\n{r2.stdout}\n{r2.stderr}"
+
+    cur = home / ".capacium" / "packages" / "global" / "guarded" / "2.0.0"
+    old = home / ".capacium" / "packages" / "global" / "guarded" / "1.0.0"
+    assert cur.exists(), f"current generation was pruned:\n{r2.stdout}"
+    assert not old.exists(), (
+        f"superseded generation was NOT pruned — prune is broken (not just guarded):\n{r2.stdout}"
+    )
+    link = home / ".opencode" / "skills" / "guarded"
+    assert link.is_symlink() and link.resolve() == cur.resolve(), (
+        "current live link no longer resolves to the kept generation"
     )

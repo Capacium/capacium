@@ -735,6 +735,12 @@ def _install_single_sub_cap(
     else:
         package_dir = storage.get_package_path(sub_name, version, owner=owner)
         package_dir.parent.mkdir(parents=True, exist_ok=True)
+        # CAP-REC-001 R8 site (install.py:738): a bundle-member *reinstall* is
+        # reached only under ``--force`` (the non-force path ``continue``s past
+        # an already-installed member). Like ``remove --force`` it severs the
+        # member's link under an explicit override, so it does NOT consult the
+        # live-linked survival guard that protects AUTONOMOUS cleanup. Recorded
+        # decision, not an unreported door.
         storage.remove_package_path(package_dir)
         shutil.copytree(source_path, package_dir)
 
@@ -899,6 +905,18 @@ def _relocate_registry_identity(
     )
     old_name_dir = storage.base_dir / old_owner / old_name
     old_owner_dir = storage.base_dir / old_owner
+    # CAP-REC-001 R8 site (install.py:889-905 relink migration): this *moves* the
+    # version dir (``rename``) and then collapses the now-empty name/owner dirs
+    # (``rmdir``) rather than deleting any payload. It cannot consult the
+    # ``live_linked_store_paths`` guard — resolving that set runs a full reconcile,
+    # which writes to the operator ``~/.capacium`` and breaks install's hermetic
+    # no-side-effect contract (test_p01k_hermeticity). The rmdir is additionally
+    # guarded by ``not any(...iterdir())`` so it can only ever collapse a dir that
+    # is already empty; a live link's target is a non-empty payload dir and so is
+    # unreachable here. A link that points at the pre-rename path after a true
+    # identity change is the reconciler's ``relocation_gap`` shape, which
+    # ``reconcile``/``gc`` repoints — that is the guard's lane, reached on the next
+    # autonomous sweep, never synchronously from install.
     if old_name_dir.is_dir() and not any(old_name_dir.iterdir()):
         old_name_dir.rmdir()
     if old_owner_dir.is_dir() and not any(old_owner_dir.iterdir()):
@@ -1632,6 +1650,14 @@ def _fetch_from_registry(
         if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
             print(f"  Using cached {cap_id}@{best_version}")
             return cache_dir, repository
+        # CAP-REC-001 R8 site (install.py:1636): a stale cache entry without a
+        # manifest is cleared before re-fetch. It cannot consult the live-linked
+        # guard for the same hermeticity reason as the relink migration — the
+        # guard's reconcile writes to the operator home. This branch is only
+        # reachable for a version whose cached tree lost its manifest (a partial
+        # materialization), not a healthy live-linked install; the live-linked
+        # survival question is the reconciler/gc lane's, which sweeps the cache
+        # against the guard on the next autonomous pass.
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
 
@@ -1674,6 +1700,13 @@ def _fetch_from_registry(
 
         # Copy into cache
         cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
+        # CAP-REC-001 R8 site (install.py:1678): materialize the freshly fetched
+        # clone into the cache, clearing any prior same-version tree. Cannot
+        # consult the live-linked guard (hermeticity — see the relink migration
+        # note); a floating install that would overwrite a *live-linked* version
+        # is gated earlier by the "no newer version found" / existing-version
+        # checks, so this rmtree names a version dir that is not yet the live
+        # linked generation.
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
         shutil.copytree(repo_dir, cache_dir)
@@ -2034,6 +2067,15 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_fr
         except (_json.JSONDecodeError, OSError):
             continue
         if meta.get("owner") == existing_owner:
+            # CAP-REC-001 R8 site (install.py:2069): this is an *explicit
+            # --force owner-override*, the one install path that severs a live
+            # harness link by design — the operator asked the new owner to
+            # replace the old one, exactly like ``remove --force``. It therefore
+            # does NOT consult the live-linked survival guard, which protects
+            # AUTONOMOUS cleanup from severing a healthy link. Recorded decision,
+            # not an unreported door: the guard's subject is "no autonomous path
+            # severs a healthy link", and a user-initiated owner switch is not
+            # autonomous.
             print(f"  Removing old installation from {fw_name}...")
             import shutil
             shutil.rmtree(link_path, ignore_errors=True)
@@ -2241,6 +2283,13 @@ def _install_from_tarball(
         return None
 
     package_dir = storage.get_package_dir(cap_name, manifest.version, owner=owner)
+    # CAP-REC-001 R8 site (install.py:2245): a tarball install materializes a
+    # freshly supplied artifact into the store. Reinstalling an existing version
+    # from a tarball is an explicit operator action (they named the file); like
+    # ``remove --force`` it replaces the version dir under that explicit request,
+    # so it does NOT consult the live-linked survival guard that protects
+    # AUTONOMOUS cleanup. ``--prune`` after a tarball install still routes the
+    # superseded-generation removal through the guarded ``prune_superseded_versions``.
     if package_dir.exists():
         shutil.rmtree(package_dir)
     shutil.copytree(source_dir, package_dir)
