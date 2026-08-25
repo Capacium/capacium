@@ -180,7 +180,7 @@ def _relink_target_for_entry(entry: Dict[str, object], registry: Registry) -> Op
     return None
 
 
-def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registry] = None) -> List[CleanupAction]:
+def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registry] = None, include_findings: bool = True) -> List[CleanupAction]:
     """Turn a reconciler report into a per-entry cleanup plan.
 
     Reads the reconciler output once (running it when ``report`` is not given)
@@ -254,7 +254,7 @@ def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registr
                 ref=str(path),
             ))
 
-    for finding in report.get("findings", []):
+    for finding in report.get("findings", []) if include_findings else []:
         kind = finding.get("kind")
         capability = str(finding.get("capability", ""))
         if kind == "phantom":
@@ -321,11 +321,25 @@ def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registr
     return actions
 
 
+def _is_real_target(path: Path) -> bool:
+    """True when *path* names a concrete, non-cwd location.
+
+    ``Path("")`` and ``Path()`` both collapse to ``.``, so a naive ``str(target)``
+    truthiness check treats the current directory as a real target and would let a
+    phantom-with-no-install-path delete/quarantine ``.``. This guard rejects that.
+    """
+    return bool(str(path)) and str(path) not in ("", ".") and path != Path(".")
+
+
 def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_root: Path) -> bool:
     """Perform a single cleanup action. Returns True when the path was mutated."""
     target = action.target
     if action.action == "delete":
-        if str(target) and (target.exists() or target.is_symlink()):
+        # A phantom with no install_path is built with an empty target
+        # (``Path("")`` collapses to ``.``) — the current directory must never be
+        # rmtree'd. Only mutate the filesystem when the target names a real path.
+        real_target = _is_real_target(target)
+        if real_target and (target.exists() or target.is_symlink()):
             StorageManager.remove_package_path(target)
             if action.ref:
                 # Delete also removes the registry row for a phantom capability.
@@ -339,7 +353,7 @@ def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_
             return registry.remove_capability(cap_id, version)
         return False
     if action.action == "quarantine":
-        if not str(target) or not (target.exists() or target.is_symlink()):
+        if not _is_real_target(target) or not (target.exists() or target.is_symlink()):
             return False
         destination = quarantine_root / target.name
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -364,7 +378,7 @@ def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_
         # Capacium-managed. Only a real directory is adoptable: a bare file or a
         # symlink is left alone rather than risk clobbering a look-alike entry
         # (CAP-REC-D2, 2026-08-16).
-        if not str(target) or not target.is_dir() or target.is_symlink():
+        if not _is_real_target(target) or not target.is_dir() or target.is_symlink():
             return False
         from ..framework_detector import write_meta_at_target, resolve_frameworks
         from ..fingerprint import compute_fingerprint
@@ -415,8 +429,14 @@ def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_
     return False
 
 
-def apply_cleanup(actions: Iterable[CleanupAction], *, dry_run: bool = False, registry: Optional[Registry] = None) -> CleanupReport:
-    """Apply a cleanup plan, or print what it would do when ``dry_run``."""
+def apply_cleanup(actions: Iterable[CleanupAction], *, dry_run: bool = False, registry: Optional[Registry] = None, force: bool = False) -> CleanupReport:
+    """Apply a cleanup plan, or print what it would do when ``dry_run``.
+
+    ``force`` is accepted for CLI parity but deliberately does NOT bypass a
+    ``refuse`` disposition: a package directory a live harness link resolves
+    into is never quarantined or deleted (CAP-REC-D2 R4 blocker;
+    ``_apply_cleanup_action`` returns False for ``refuse`` unconditionally).
+    """
     registry = registry or Registry()
     quarantine_root = _quarantine_root()
     report = CleanupReport(actions=list(actions))
@@ -440,6 +460,41 @@ def apply_cleanup(actions: Iterable[CleanupAction], *, dry_run: bool = False, re
         except OSError:
             continue
     report.refused = [str(a.target) for a in report.actions if a.action == "refuse"]
+    return report
+
+
+def cleanup(dry_run: bool = False, force: bool = False, registry: Optional[Registry] = None, include_findings: bool = True) -> CleanupReport:
+    """Build the drift-cleanup plan and apply (or print) it.
+
+    This is the CLI-facing half of the D2 pair: the reconciler detects drift,
+    ``cleanup`` turns that into adopt/relink/quarantine/delete/refuse
+    dispositions and acts on them. ``force`` does not bypass ``refuse`` — see
+    ``apply_cleanup``.
+
+    ``include_findings=False`` restricts the plan to the harness-link drift
+    (adopt/relink/delete of stale/dead/relocation-gap/foreign links) and skips
+    the store-findings dispositions (quarantine/refuse/phantom/vestigial) — the
+    subset the ``repair`` path needs for dead relocation links without taking
+    over ``gc``'s store quarantine.
+    """
+    registry = registry or Registry()
+    report = apply_cleanup(
+        build_cleanup_plan(registry=registry, include_findings=include_findings),
+        dry_run=dry_run,
+        registry=registry,
+        force=force,
+    )
+    if dry_run:
+        refusals = [str(a.target) for a in report.actions if a.action == "refuse"]
+        print(
+            f"  Cleanup plan: {len(report.actions)} action(s) "
+            f"({report.counts}); would refuse {len(refusals)} linked install(s)."
+        )
+    else:
+        print(
+            f"  Cleanup applied: {len(report.applied)} action(s), "
+            f"{len(report.quarantined)} quarantined, {len(report.refused)} refused."
+        )
     return report
 
 
@@ -691,6 +746,18 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
     registry = Registry()
     storage = StorageManager()
     keep_ref = f"{owner}/{name}@{keep_version}"
+
+    # CAP-REC-D2: ``install --prune`` and the cleanup plan must agree on what may
+    # be removed. The plan's refuse disposition guards a package directory a live
+    # harness link resolves into; the prune path consults the same guard and, on
+    # disagreement, the safer side (refuse) wins — the entry is kept and the
+    # disagreement is reported, never silently resolved.
+    refused_paths = {
+        a.target.resolve()
+        for a in build_cleanup_plan(registry=registry)
+        if a.action == "refuse" and str(a.target)
+    }
+
     entries, protected = _plan_entries(
         registry,
         storage,
@@ -698,8 +765,32 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
         always_keep={keep_ref},
         limit_groups={(owner, name)},
     )
-    report = GCReport(entries=entries, protected=protected)
-    report.removed = _apply_entries(entries, registry)
+
+    disagreeing = []
+    for entry in entries:
+        try:
+            resolved = entry.path.resolve()
+        except (OSError, RuntimeError):
+            resolved = entry.path
+        if any(
+            resolved == refused or resolved in refused.parents
+            for refused in refused_paths
+        ):
+            disagreeing.append(entry.ref)
+            protected[entry.ref] = "refused by cleanup plan (live-linked)"
+
+    for ref in disagreeing:
+        print(
+            f"  keeping    {ref} — the cleanup plan refuses this path "
+            f"(a live harness link resolves into it); prune and plan disagree, "
+            f"the safer side wins"
+        )
+
+    report = GCReport(
+        entries=[e for e in entries if e.ref not in disagreeing],
+        protected=protected,
+    )
+    report.removed = _apply_entries(report.entries, registry)
     if report.removed:
         print(
             f"  Pruned {len(report.removed)} superseded version(s) "

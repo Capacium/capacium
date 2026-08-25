@@ -276,7 +276,8 @@ def main():
 
     gc_parser = subparsers.add_parser(
         "gc",
-        help="Prune superseded package versions and empty package stubs",
+        help="Prune superseded package versions and clean up drift "
+             "(adopt/relink/quarantine/delete/refuse)",
     )
     gc_parser.add_argument(
         "--keep",
@@ -287,7 +288,13 @@ def main():
     gc_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="List reclaimable versions and bytes without changing anything",
+        help="List reclaimable versions and cleanup actions without changing anything",
+    )
+    gc_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force removal of superseded versions (never bypasses refuse of a "
+             "live-linked install)",
     )
 
     runtimes_parser = subparsers.add_parser(
@@ -722,8 +729,11 @@ def main():
             sys.exit(0 if success else 1)
 
         elif args.command == "gc":
-            from .commands.gc import garbage_collect
+            from .commands.gc import garbage_collect, cleanup
 
+            # CAP-REC-D2: ``cap gc`` consults the cleanup plan (adopt/relink/
+            # quarantine/delete/refuse per entry), not only the version prune.
+            cleanup(dry_run=args.dry_run, force=args.force)
             garbage_collect(keep=args.keep, dry_run=args.dry_run)
             sys.exit(0)
 

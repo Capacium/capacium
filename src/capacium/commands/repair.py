@@ -665,4 +665,13 @@ def repair(args) -> bool:
         _repair_empty_package_stubs(
             stubs, dry_run=dry_run, auto_yes=auto_yes
         )
+        # CAP-REC-D2: the repair path drives the same cleanup plan the gc command
+        # consults, limited to the harness-link drift (dead/stale/relocation
+        # gaps) so the 13-dead-relocation-link shape is repaired through the CLI
+        # rather than by hand editing. Store quarantine stays gc's concern, and
+        # ``refuse`` is not reachable here (include_findings=False) but remains
+        # non-bypassable in the gc path.
+        from .gc import cleanup as cleanup_plan
+
+        cleanup_plan(dry_run=dry_run, include_findings=False)
     return True
