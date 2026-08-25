@@ -326,15 +326,17 @@ def test_cleanup_plan_names_each_action_with_reason(tmp_home, monkeypatch):
 
     actions = _plan_for(tmp_home, monkeypatch)
 
-    # All four dispositions appear.
+    # All dispositions appear, including the deliberate non-mutation "refuse"
+    # a linked-but-unregistered install must be refused rather than moved.
     by_action = {}
     for action in actions:
         by_action.setdefault(action.action, []).append(action)
-    assert set(by_action) <= {"adopt", "relink", "quarantine", "delete"}
+    assert set(by_action) <= {"adopt", "relink", "quarantine", "delete", "refuse"}
     assert "delete" in by_action
     assert "quarantine" in by_action
     assert "relink" in by_action
     assert "adopt" in by_action
+    assert "refuse" in by_action
 
     for action in actions:
         assert isinstance(action, CleanupAction)
@@ -380,8 +382,14 @@ def test_cleanup_plan_quarantines_unregistered_and_deletes_phantom(tmp_home, mon
 
     quarantined = {str(a.target) for a in actions if a.action == "quarantine"}
     assert any("mempalace" in p for p in quarantined)
-    # global/elementeer-mcp old-owner copy is on disk but unregistered -> quarantine.
-    assert any("global/elementeer-mcp" in p for p in quarantined)
+    # global/elementeer-mcp old-owner copy is on disk but unregistered. It is
+    # also the target of a live harness link (antigravity-backup -> old owner),
+    # so it MUST be refused, never quarantined — quarantining it would sever
+    # the live link (CAP-REC-D2 blocker). The genuinely unlinked mempalace is
+    # still quarantined above.
+    refused = {str(a.target) for a in actions if a.action == "refuse"}
+    assert any("global/elementeer-mcp" in p for p in refused)
+    assert not any("global/elementeer-mcp" in p for p in quarantined)
 
     deleted = {
         a.ref: a for a in actions if a.action == "delete" and a.ref
@@ -483,3 +491,102 @@ def test_prune_superseded_leaves_linked_version_alone(tmp_home, monkeypatch):
     # The old generation directory survives (registry-linked), and its files exist.
     assert old.install_path.exists()
     assert registry.get_capability("acme/widget", "1.0.0") is not None
+
+
+def test_cleanup_refuses_quarantine_for_a_live_harness_link(tmp_home, monkeypatch, capsys):
+    """The adversarial-reviewer reproduction, acceptance 1 + 3: an on-disk install
+    with no registry row that a live harness link resolves into must be refused,
+    never quarantined — quarantining it would sever the link the reconciler just
+    classified ok/alive. Dry-run must name the conflict, not print a benign move."""
+    from capacium.commands.gc import build_cleanup_plan, apply_cleanup
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    packages = tmp_home / ".capacium" / "packages"
+    install_dir = packages / "foo" / "bar" / "1.0.0"
+    install_dir.mkdir(parents=True)
+    (install_dir / "SKILL.md").write_text("---\nname: bar\n---\n")
+
+    skills_dir = tmp_home / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "bar").symlink_to(install_dir, target_is_directory=True)
+
+    actions = build_cleanup_plan()
+
+    by_action = {}
+    for a in actions:
+        by_action.setdefault(a.action, []).append(a)
+    assert "refuse" in by_action
+    quarantined = {str(a.target) for a in actions if a.action == "quarantine"}
+    refused = {str(a.target) for a in actions if a.action == "refuse"}
+    assert str(install_dir.resolve()) in refused
+    assert not any("foo/bar" in p for p in quarantined)
+
+    # The directory and the live link are untouched after a real apply.
+    apply_cleanup(actions, dry_run=False)
+    assert install_dir.exists()
+    assert (skills_dir / "bar").is_symlink()
+
+    # Dry-run names the conflict, not a benign move.
+    out = capsys.readouterr().out
+    assert "refuse" in out
+    assert "live harness link" in out or "linked" in out
+
+
+def test_adopt_writes_real_provenance_not_placeholder(tmp_home, monkeypatch):
+    """R4-A LOW-1: adopt derives owner/name/version/kind/fingerprint from the
+    adopted directory's own manifest, never a hardcoded global/0.0.0 placeholder."""
+    import json as _json
+
+    from capacium.commands.gc import _apply_cleanup_action, CleanupAction
+    from capacium.registry import Registry
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    foreign = tmp_home / "custom-skill"
+    foreign.mkdir(parents=True)
+    (foreign / "capability.yaml").write_text(
+        "kind: skill\nname: custom-skill\nversion: 2.3.4\ndescription: adopted\n"
+    )
+    (foreign / "SKILL.md").write_text("---\nname: custom-skill\n---\n")
+
+    registry = Registry()
+    action = CleanupAction(
+        action="adopt",
+        target=foreign,
+        reason="foreign entry is not managed by Capacium",
+        ref=str(foreign),
+    )
+    assert _apply_cleanup_action(action, registry, tmp_home / "q")
+
+    meta = _json.loads((foreign / ".cap-meta.json").read_text())
+    assert meta["name"] == "custom-skill"
+    assert meta["version"] == "2.3.4"
+    assert meta["kind"] == "skill"
+    assert meta["fingerprint"] and meta["fingerprint"] != "f" * 64
+
+
+def test_hold_drift_emits_no_empty_target_relink(tmp_home, monkeypatch):
+    """R4-A LOW-2: a hold_drift finding with no matching harness link emits no
+    relink action carrying an empty target=Path()."""
+    import json as _json
+
+    from capacium.commands.gc import build_cleanup_plan
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+
+    registry = Registry()
+    _add_capability(tmp_home, registry, "1.0.0", owner="acme", name="held-cap")
+
+    holds_path = tmp_home / ".capacium" / "holds.json"
+    holds_path.write_text(
+        _json.dumps({"acme/held-cap": {"version": "0.9.0", "reason": "patched"}})
+    )
+
+    actions = build_cleanup_plan()
+
+    hold_relinks = [a for a in actions if a.action == "relink" and a.ref == "acme/held-cap"]
+    for a in hold_relinks:
+        assert str(a.target), "hold_drift must never emit an empty relink target"
+    empty_targets = [a for a in actions if a.action == "relink" and not str(a.target)]
+    assert empty_targets == []

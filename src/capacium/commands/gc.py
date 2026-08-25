@@ -71,6 +71,7 @@ class CleanupReport:
     actions: List[CleanupAction] = field(default_factory=list)
     applied: List[str] = field(default_factory=list)
     quarantined: List[str] = field(default_factory=list)
+    refused: List[str] = field(default_factory=list)
 
     @property
     def counts(self) -> Dict[str, int]:
@@ -95,6 +96,66 @@ def _registry_for_install_path(registry: Registry, cap_id: str, version: str) ->
     if cap is None or not cap.install_path:
         return None
     return Path(cap.install_path)
+
+
+def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
+    """The set of package-store paths a *live* harness entry resolves into.
+
+    A reconciler report is layered: the ``skills``/``mcp`` lists describe the
+    harness's view (a link resolving into the store, state ``ok``/``stale``/
+    ``indirect``/``relocation_gap`` carries ``liveness`` ``alive``) and the
+    ``findings`` list describes the store's view (an ``unregistered`` install is
+    a directory on disk with no registry row). Both can name the same physical
+    directory — a healthy link into a never-registered install. A cleanup that
+    quarantines that directory severs the very link the reconciler just called
+    healthy, which is the failure this ticket exists to prevent (CAP-REC-D2:
+    2026-08-16 collapsed removal, 2026-08-22 `cap remove` destroyed a live
+    install).
+
+    Returns, for every alive entry, its resolved target as well as every
+    ancestor directory beneath the package store, so a quarantine/delete of an
+    ancestor can never be emitted while a live link resolves into it.
+    """
+    from .reconcile import _packages_dir
+
+    packages = _packages_dir()
+    live: Set[Path] = set()
+    for entry in list(report.get("skills", [])) + list(report.get("mcp", [])):
+        if entry.get("liveness") != "alive":
+            continue
+        # A live link names its store target through ``resolved`` (final resolved
+        # path) where the reconciler set one, and through ``target`` (the literal
+        # written target) otherwise — e.g. a relocation_gap entry carries only
+        # ``target`` and no ``resolved``. Both name a directory the link serves.
+        resolved = entry.get("resolved") or entry.get("target")
+        if not resolved:
+            continue
+        target = Path(str(resolved)).resolve()
+        try:
+            target.relative_to(packages.resolve())
+        except ValueError:
+            continue
+        parent = target
+        while True:
+            live.add(parent)
+            if parent == packages.resolve():
+                break
+            parent = parent.parent
+            try:
+                parent.relative_to(packages.resolve())
+            except ValueError:
+                break
+    return live
+
+
+def _is_harness_linked(path: Path, live_linked: Set[Path]) -> bool:
+    """True when *path* is a store directory a live harness link resolves into,
+    or is an ancestor of one. A cleanup must never quarantine or delete such a
+    path: the link it serves would be left dangling."""
+    return any(
+        path.resolve() == live or path.resolve() in live.parents
+        for live in live_linked
+    )
 
 
 def _relink_target_for_entry(entry: Dict[str, object], registry: Registry) -> Optional[Path]:
@@ -143,6 +204,11 @@ def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registr
         from .reconcile import reconcile
 
         report = reconcile()
+
+    # A package directory a live harness link resolves into must never be
+    # quarantined or deleted, even when the store's own inventory reports it
+    # unregistered — the two views can name the same physical dir (CAP-REC-D2).
+    live_linked = _live_linked_store_paths(report)
 
     actions: List[CleanupAction] = []
 
@@ -200,25 +266,44 @@ def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registr
             ))
         elif kind == "unregistered":
             target = Path(str(finding.get("path", "")))
-            actions.append(CleanupAction(
-                action="quarantine", target=target,
-                reason="on-disk install has no registry row",
-                ref=capability,
-            ))
+            if _is_harness_linked(target, live_linked):
+                actions.append(CleanupAction(
+                    action="refuse", target=target,
+                    reason=(
+                        "on-disk install has no registry row, but a live harness "
+                        "link resolves into it — refusing to quarantine a linked install"
+                    ),
+                    ref=capability,
+                ))
+            else:
+                actions.append(CleanupAction(
+                    action="quarantine", target=target,
+                    reason="on-disk install has no registry row",
+                    ref=capability,
+                ))
         elif kind == "vestigial":
             target = Path(str(finding.get("path", "")))
-            actions.append(CleanupAction(
-                action="delete", target=target,
-                reason="empty owner directory",
-                ref=str(target),
-            ))
+            if _is_harness_linked(target, live_linked):
+                actions.append(CleanupAction(
+                    action="refuse", target=target,
+                    reason=(
+                        "empty owner directory is a live harness link parent — "
+                        "refusing to delete a linked path"
+                    ),
+                    ref=str(target),
+                ))
+            else:
+                actions.append(CleanupAction(
+                    action="delete", target=target,
+                    reason="empty owner directory",
+                    ref=str(target),
+                ))
         elif kind == "hold_drift":
             held = finding.get("held_version")
             # Relink every harness link that resolves to the capability's store
             # path back to the held version.
             cap_id = str(finding.get("capability", ""))
             held_path = _registry_for_install_path(registry, cap_id, str(held))
-            link_acted = False
             for entry in report.get("skills", []):
                 if entry.get("cap_id") != cap_id:
                     continue
@@ -229,13 +314,9 @@ def build_cleanup_plan(report: Optional[dict] = None, registry: Optional[Registr
                     to=(held_path if held_path and held_path.exists() else None),
                     ref=cap_id,
                 ))
-                link_acted = True
-            if not link_acted:
-                actions.append(CleanupAction(
-                    action="relink", target=Path(),
-                    reason=f"held version {held} is not what harness links resolve to",
-                    to=held_path, ref=cap_id,
-                ))
+            # No empty-target action: a hold-drift finding with no matching
+            # harness link is not actionable, and emitting a relink to Path()
+            # produced a dead no-op action that misled the dry-run (R4-A LOW).
 
     return actions
 
@@ -285,21 +366,52 @@ def _apply_cleanup_action(action: CleanupAction, registry: Registry, quarantine_
         # (CAP-REC-D2, 2026-08-16).
         if not str(target) or not target.is_dir() or target.is_symlink():
             return False
-        from ..framework_detector import write_meta_at_target
+        from ..framework_detector import write_meta_at_target, resolve_frameworks
+        from ..fingerprint import compute_fingerprint
+        from ..manifest import Manifest
+        from ..versioning import VersionManager
 
-        owner = "global"
-        name = target.name
-        version = "0.0.0"
+        # Derive provenance from the adopted directory's own content instead of a
+        # hardcoded placeholder (R4-A LOW: owner='global', version='0.0.0',
+        # fingerprint='f'*64). The legacy-compatible reader supplies a real
+        # owner/name/version/kind; a directory that yields none is left alone
+        # rather than branded with a fabricated Kind.
+        try:
+            manifest = Manifest.detect_from_directory(target)
+        except (OSError, ValueError):
+            return False
+        name = manifest.name or target.name
+        owner = manifest.owner or "global"
+        version = manifest.version
+        if not version or version in ("", "latest", "stable"):
+            version = VersionManager.detect_version(target)
+        kind = manifest.kind
+        try:
+            frameworks = resolve_frameworks(
+                manifest.get_target_frameworks() or None,
+                all_frameworks=False,
+                kind=kind,
+            )
+        except Exception:
+            frameworks = []
+        fingerprint = compute_fingerprint(
+            target,
+            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".cap-meta.json"],
+        )
         write_meta_at_target(
             target_dir=target,
             cap_name=name,
             owner=owner,
             version=version,
-            kind="skill",
-            fingerprint="f" * 64,
-            frameworks=[],
+            kind=kind,
+            fingerprint=fingerprint,
+            frameworks=frameworks,
         )
         return True
+    if action.action == "refuse":
+        # A refused disposition is deliberate non-mutation: the plan already
+        # explains why the entry must not be touched. Nothing changes on disk.
+        return False
     return False
 
 
@@ -327,6 +439,7 @@ def apply_cleanup(actions: Iterable[CleanupAction], *, dry_run: bool = False, re
                     report.applied.append(str(action.target))
         except OSError:
             continue
+    report.refused = [str(a.target) for a in report.actions if a.action == "refuse"]
     return report
 
 
