@@ -148,6 +148,23 @@ def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
     return live
 
 
+def live_linked_store_paths() -> Set[Path]:
+    """The authoritative set of store paths a live harness link resolves into.
+
+    This is the single source of truth every store-mutating path must consult
+    before removing a store directory (CAP-REC-D2 one-phase fix). ``gc``'s empty
+    stub prune, ``repair``'s empty-stub repair, and ``install --prune`` all
+    resolve the SAME set here, so two paths can never reach opposite answers for
+    the identical shape: the guard is one decision, not three reimplemented
+    ones. A disagreement between paths is a bug to surface, not a race the
+    unsafe side wins.
+    """
+    from .reconcile import reconcile
+
+    report = reconcile()
+    return _live_linked_store_paths(report)
+
+
 def _is_harness_linked(path: Path, live_linked: Set[Path]) -> bool:
     """True when *path* is a store directory a live harness link resolves into,
     or is an ancestor of one. A cleanup must never quarantine or delete such a
@@ -717,7 +734,12 @@ def garbage_collect(keep: Optional[int] = None, dry_run: bool = False) -> GCRepo
     entries, protected = _plan_entries(
         registry, storage, keep=keep_count
     )
-    empty_stubs = storage.find_empty_package_stubs()
+    # CAP-REC-D2 one-phase: resolve the authoritative live-linked set ONCE,
+    # before any mutation, and reuse it for both the dry-run listing and the
+    # apply-time prune so the guard is a single decision, not two re-evaluated
+    # ones (a second reconcile after _apply_entries would see a mutated store).
+    live_linked = live_linked_store_paths()
+    empty_stubs = storage.find_empty_package_stubs(protected=live_linked)
     report = GCReport(entries=entries, protected=protected, empty_stubs=empty_stubs)
 
     action = "Would remove" if dry_run else "Removing"
@@ -733,7 +755,7 @@ def garbage_collect(keep: Optional[int] = None, dry_run: bool = False) -> GCRepo
 
     if not dry_run:
         report.removed = _apply_entries(entries, registry)
-        report.pruned_stubs = storage.prune_empty_package_stubs()
+        report.pruned_stubs = storage.prune_empty_package_stubs(protected=live_linked)
     print(
         f"  {'Reclaimable' if dry_run else 'Reclaimed'}: "
         f"{report.reclaimed_bytes} bytes"
@@ -747,16 +769,14 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
     storage = StorageManager()
     keep_ref = f"{owner}/{name}@{keep_version}"
 
-    # CAP-REC-D2: ``install --prune`` and the cleanup plan must agree on what may
-    # be removed. The plan's refuse disposition guards a package directory a live
-    # harness link resolves into; the prune path consults the same guard and, on
-    # disagreement, the safer side (refuse) wins — the entry is kept and the
-    # disagreement is reported, never silently resolved.
-    refused_paths = {
-        a.target.resolve()
-        for a in build_cleanup_plan(registry=registry)
-        if a.action == "refuse" and str(a.target)
-    }
+    # CAP-REC-D2 one-phase: ``install --prune`` and ``cap gc`` must reach the
+    # SAME answer for the identical shape. Both consult the authoritative
+    # ``live_linked_store_paths`` set — the one decision about what a live
+    # harness link resolves into, shared with gc's empty-stub prune and
+    # repair's empty-stub repair. A path in this set is never removed; a
+    # disagreement between the prune and the plan is surfaced, not silently
+    # resolved.
+    refused_paths = live_linked_store_paths()
 
     entries, protected = _plan_entries(
         registry,

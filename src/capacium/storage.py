@@ -201,8 +201,17 @@ class StorageManager:
                 if not any(owner_dir.iterdir()):
                     owner_dir.rmdir()
 
-    def find_empty_package_stubs(self) -> List[Path]:
-        """Return owner/name trees that contain directories but no payload."""
+    def find_empty_package_stubs(self, protected: Optional[set] = None) -> List[Path]:
+        """Return owner/name trees that contain directories but no payload.
+
+        ``protected`` (optional) is a set of resolved store paths a live harness
+        link resolves into (CAP-REC-D2). A stub that *is* such a path — or whose
+        parent is one — is excluded, because pruning it would sever the live
+        link. This is the single, authoritative guard every store-mutating path
+        must consult before removing a payload-free owner/name tree: a stub that
+        a live link depends on is never a removable stub.
+        """
+        protected = set(protected or ())
         stubs = []
         for owner_dir in self.base_dir.iterdir():
             if not owner_dir.is_dir() or owner_dir.is_symlink():
@@ -214,13 +223,31 @@ class StorageManager:
                     child.is_file() or child.is_symlink()
                     for child in cap_dir.rglob("*")
                 )
-                if not has_payload:
-                    stubs.append(cap_dir)
+                if has_payload:
+                    continue
+                if self._is_protected_stub(cap_dir, protected):
+                    continue
+                stubs.append(cap_dir)
         return sorted(stubs)
 
-    def prune_empty_package_stubs(self) -> List[Path]:
-        """Remove payload-free owner/name trees and newly empty owners."""
-        stubs = self.find_empty_package_stubs()
+    @staticmethod
+    def _is_protected_stub(stub: Path, protected: set) -> bool:
+        """True when *stub* (or any parent up to the store) is a live-linked
+        store path — a directory some live harness link still resolves into."""
+        resolved = stub.resolve()
+        for p in protected:
+            p = Path(p).resolve()
+            try:
+                if resolved == p or resolved in p.parents or p in resolved.parents:
+                    return True
+            except (OSError, RuntimeError):
+                continue
+        return False
+
+    def prune_empty_package_stubs(self, protected: Optional[set] = None) -> List[Path]:
+        """Remove payload-free owner/name trees and newly empty owners, honouring
+        the ``protected`` live-linked set so a linked dir is never severed."""
+        stubs = self.find_empty_package_stubs(protected=protected)
         for stub in stubs:
             shutil.rmtree(stub)
         for owner_dir in list(self.base_dir.iterdir()):

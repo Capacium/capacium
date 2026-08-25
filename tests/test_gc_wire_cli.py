@@ -171,3 +171,107 @@ def test_relocation_dead_links_repairable_via_cli(tmp_path):
     # Every dead relocation link is removed (delete) via the CLI-driven plan.
     remaining = [lnk for lnk in dead_links if lnk.is_symlink()]
     assert remaining == [], f"{len(remaining)} dead links survived repair"
+
+
+# ---------------------------------------------------------------------------
+# CAP-REC-D2 one-phase: a live-linked payload-free install dir must survive
+# every store-mutating path, and the empty-stub prune must consult the same
+# authoritative guard as the cleanup plan's refuse disposition.
+# ---------------------------------------------------------------------------
+
+
+def _empty_live_linked_shape(tmp_path: Path) -> Path:
+    """Build the blocker shape: an empty (payload-free), live-linked install dir.
+
+    ``packages/foo/bar/1.0.0`` is a real directory with no files/symlinks
+    inside, and ``~/.opencode/skills/bar`` is a live harness symlink resolving
+    into it. This is the exact shape R6-A/R6-B reproduced as a dangling live
+    link when ``cap gc`` ran its second, unguarded empty-stub prune.
+    """
+    packages = tmp_path / ".capacium" / "packages"
+    install_dir = packages / "foo" / "bar" / "1.0.0"
+    install_dir.mkdir(parents=True)
+    skills_dir = tmp_path / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "bar").symlink_to(install_dir, target_is_directory=True)
+    return install_dir
+
+
+def test_empty_live_linked_dir_survives_gc_force_repair_and_prune(tmp_path):
+    """Acceptance 1: the empty, payload-free, live-linked install dir survives
+    ``cap gc``, ``cap gc --force``, ``cap repair --yes`` and ``install --prune``.
+
+    Each run is a fresh shape (or gated so the earlier run leaves the dir
+    intact) and asserts the dir + live link are untouched afterwards."""
+    for extra in ((), ("--force",)):
+        shape = Path(str(tmp_path)) if not extra else tmp_path / "forced"
+        install_dir = _empty_live_linked_shape(shape)
+        skills_dir = shape / ".opencode" / "skills"
+        res = _cap(shape, "gc", *extra)
+        assert res.returncode == 0, res.stderr
+        assert install_dir.exists(), f"gc {extra} deleted the live-linked dir"
+        assert (skills_dir / "bar").is_symlink()
+
+    shape = tmp_path / "repair"
+    install_dir = _empty_live_linked_shape(shape)
+    res = _cap(shape, "repair", "--yes")
+    assert res.returncode == 0, res.stderr
+    assert install_dir.exists(), "repair --yes deleted the live-linked dir"
+    assert (shape / ".opencode" / "skills" / "bar").is_symlink()
+
+    # install --prune runs prune_superseded_versions, which consults the same
+    # live-linked guard and must keep the empty live-linked dir.
+    shape = tmp_path / "installprune"
+    install_dir = _empty_live_linked_shape(shape)
+    from capacium.commands.gc import prune_superseded_versions
+    from capacium.registry import Registry
+    from capacium.models import Capability
+    from capacium.kinds import CapaciumKind
+    registry = Registry(shape / ".capacium" / "registry.db")
+    # A newer generation is registered so the prune path has a "superseded"
+    # candidate to consider; the linked, empty dir has no registry row at all.
+    newer = shape / ".capacium" / "packages" / "foo" / "bar" / "2.0.0"
+    newer.mkdir(parents=True)
+    (newer / "SKILL.md").write_text("---\nname: bar\n---\n")
+    registry.add_capability(Capability(
+        owner="foo", name="bar", version="2.0.0",
+        kind=CapaciumKind.SKILL, fingerprint="f" * 64, install_path=newer,
+    ))
+    prune_superseded_versions("foo", "bar", "2.0.0")
+    assert install_dir.exists(), "install --prune deleted the live-linked dir"
+
+
+def test_gc_dry_run_never_prints_two_contradicting_dispositions(tmp_path):
+    """Acceptance 2: ``cap gc --dry-run`` never prints BOTH a refusal and a
+    prune for the SAME empty live-linked directory."""
+    install_dir = _empty_live_linked_shape(tmp_path)
+    assert install_dir.exists()
+    res = _cap(tmp_path, "gc", "--dry-run")
+    assert res.returncode == 0, res.stderr
+    out = res.stdout
+    # The live-linked install is refused (cleanup phase), and there must be no
+    # "Would prune empty stub" line naming that same directory tree.
+    assert "refuse" in out
+    target_tail = "packages/foo/bar"
+    prune_lines = [
+        line for line in out.splitlines()
+        if "prune empty stub" in line and target_tail in line
+    ]
+    assert prune_lines == [], (
+        f"dry-run printed a contradicting prune for a refused path:\n{out}"
+    )
+
+
+def test_orphaned_empty_stub_is_still_pruned(tmp_path):
+    """Acceptance 3: a genuinely orphaned empty stub (no live link) is still
+    pruned — the guard must not freeze cleanup into never converging."""
+    packages = tmp_path / ".capacium" / "packages"
+    orphan = packages / "orphan" / "empty"
+    (orphan / "1.0.0").mkdir(parents=True)
+
+    res = _cap(tmp_path, "gc")
+    assert res.returncode == 0, res.stderr
+    assert not (packages / "orphan").exists(), (
+        "orphaned empty stub was not pruned"
+    )
+

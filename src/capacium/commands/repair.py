@@ -151,8 +151,15 @@ def _repair_empty_package_stubs(
     stubs: List[Path],
     dry_run: bool = False,
     auto_yes: bool = False,
+    protected: Optional[set] = None,
 ) -> int:
-    """Offer removal of payload-free owner/name package trees."""
+    """Offer removal of payload-free owner/name package trees.
+
+    ``protected`` is the authoritative live-linked set (CAP-REC-D2 one-phase
+    fix): a payload-free directory a live harness link resolves into is never
+    a removable stub, so repair consults the same guard as ``gc`` and
+    ``install --prune`` rather than reimplementing its own.
+    """
     if not stubs:
         return 0
     for path in stubs:
@@ -177,7 +184,7 @@ def _repair_empty_package_stubs(
             print("Aborted.")
             return 0
 
-    removed = StorageManager().prune_empty_package_stubs()
+    removed = StorageManager().prune_empty_package_stubs(protected=protected)
     print(f"\nRemoved {len(removed)}/{len(stubs)} empty package stub(s).")
     return len(removed)
 
@@ -661,9 +668,16 @@ def repair(args) -> bool:
         backups = _find_excess_backups()
         _repair_backups(backups, dry_run=dry_run, auto_yes=auto_yes)
         storage = StorageManager(migrate=not dry_run)
-        stubs = storage.find_empty_package_stubs()
+        # CAP-REC-D2 one-phase: repair resolves the SAME live-linked guard that
+        # gc and install --prune consult before removing an empty package stub,
+        # so the unsafe side can never win on the repair path. See
+        # live_linked_store_paths in gc.py — the single authoritative decision.
+        from .gc import live_linked_store_paths
+
+        protected = live_linked_store_paths()
+        stubs = storage.find_empty_package_stubs(protected=protected)
         _repair_empty_package_stubs(
-            stubs, dry_run=dry_run, auto_yes=auto_yes
+            stubs, dry_run=dry_run, auto_yes=auto_yes, protected=protected
         )
         # CAP-REC-D2: the repair path drives the same cleanup plan the gc command
         # consults, limited to the harness-link drift (dead/stale/relocation
