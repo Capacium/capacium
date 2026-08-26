@@ -412,11 +412,18 @@ class TestP0006BackfillMigrationLogic:
         )
         # Accept either same-repo or sibling-repo layout
         alt_path = Path(__file__).parents[3] / "capacium-exchange" / "migrations" / "0004_backfill_kind_source.sql"
-        found = migration_path.exists() or alt_path.exists()
-        if not found:
+        sibling_repo_present = (
+            migration_path.parents[1].exists() or alt_path.parents[1].exists()
+        )
+        if not sibling_repo_present:
             pytest.skip(
                 "capacium-exchange sibling checkout not present; "
                 "0004_backfill_kind_source.sql lives in that repository, "
                 "not in capacium"
             )
-        assert found, f"Migration file not found at {migration_path} or {alt_path}"
+        found = migration_path.exists() or alt_path.exists()
+        assert found, (
+            "capacium-exchange sibling checkout is present but the migration "
+            f"file is missing: expected 0004_backfill_kind_source.sql at "
+            f"{migration_path} or {alt_path}"
+        )
