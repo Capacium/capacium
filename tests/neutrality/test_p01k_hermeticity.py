@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,20 +53,58 @@ def _snapshot(root: Path) -> dict:
 
 
 def _run_probe(pytest_args: list) -> dict:
+    env = dict(os.environ)
+    # The probe must be hermetic to the operator's Capacium home, but must not
+    # accidentally re-root the runtime temp directory. Stripping TMPDIR made
+    # pytest fall back to /tmp, where a stray pyproject.toml + tests/ (from
+    # unrelated work) caused _resolve_project_root to falsely resolve the scan
+    # root and fail a downstream P01 test. Forward the parent environment and
+    # override only what the guard actually needs.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
     proc = subprocess.run(
         [sys.executable, str(PROBE), *pytest_args],
         cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=900,
-        env={"PYTHONDONTWRITEBYTECODE": "1", "PATH": "/usr/bin:/bin",
-             "HOME": str(Path.home())},
+        env=env,
     )
     for line in reversed(proc.stdout.splitlines()):
         line = line.strip()
         if line.startswith("{") and '"exit_code"' in line:
-            return json.loads(line)
+            return {
+                "report": json.loads(line),
+                "downstream_failures": _downstream_failures(proc.stdout),
+            }
     raise AssertionError(
         f"probe produced no report\nstdout tail:\n{proc.stdout[-3000:]}\n"
         f"stderr tail:\n{proc.stderr[-2000:]}"
     )
+
+
+def _downstream_failures(probe_stdout: str) -> str:
+    """Extract the pytest failure-summary lines from a probe run.
+
+    When the P01 suite fails beneath the guard, the failure belongs to the
+    suite, not to this meta-test. The probe's -q output ends with a
+    ``short test summary info`` block naming each failed test; surface those
+    verbatim so a reader can tell a downstream finding from a hermetility
+    assertion without re-running anything.
+    """
+    lines = probe_stdout.splitlines()
+    idx = -1
+    for i, ln in enumerate(lines):
+        if "short test summary info" in ln:
+            idx = i
+            break
+    if idx == -1:
+        return ""
+    summary = []
+    for ln in lines[idx + 1:]:
+        s = ln.strip()
+        if s.startswith(("FAILED", "ERROR")):
+            summary.append(s)
+        elif "failed" in s or "error" in s:
+            summary.append(s)
+    return "\n".join(summary)
 
 
 # ── Negative control: the guard must actually catch operator access ──────
@@ -84,7 +123,7 @@ def test_guard_detects_a_write_to_operator_home(tmp_path):
         "    except Exception:\n"
         "        pass\n"
     )
-    report = _run_probe(["-q", "-p", "no:cacheprovider", str(canary)])
+    report = _run_probe(["-q", "-p", "no:cacheprovider", str(canary)])["report"]
     assert report["writes"], (
         "guard failed to record a builtin open() write to the operator home"
     )
@@ -98,7 +137,7 @@ def test_guard_detects_a_read_of_operator_home(tmp_path):
         "def test_canary_reads_operator_state():\n"
         "    (Path.home() / '.capacium').exists()\n"
     )
-    report = _run_probe(["-q", "-p", "no:cacheprovider", str(canary)])
+    report = _run_probe(["-q", "-p", "no:cacheprovider", str(canary)])["report"]
     assert report["reads"], "guard failed to record a read of the operator home"
 
 
@@ -124,16 +163,21 @@ def p01_run():
     selection = [f for f in P01_TEST_FILES
                  if not f.endswith("test_p01k_hermeticity.py")]
     before = _snapshot(CAP_HOME)
-    report = _run_probe(["-q", "-p", "no:cacheprovider", *selection])
+    proc = _run_probe(["-q", "-p", "no:cacheprovider", *selection])
     after = _snapshot(CAP_HOME)
-    return {"report": report, "before": before, "after": after,
+    return {"report": proc["report"], "downstream_failures": proc["downstream_failures"],
+            "before": before, "after": after,
             "selection": selection}
 
 
 def test_p01_suite_passes_under_the_access_guard(p01_run):
-    assert p01_run["report"]["exit_code"] == 0, (
+    report = p01_run["report"]
+    downstream = p01_run["downstream_failures"]
+    assert report["exit_code"] == 0, (
         f"P01 suite failed under the access guard "
-        f"(exit {p01_run['report']['exit_code']})"
+        f"(exit {report['exit_code']}). This is a DOWNSTREAM failure "
+        f"in the guarded P01 selection, not an assertion of this meta-test:\n"
+        f"{downstream or '(no summary captured; re-run the P01 selection directly)'}"
     )
 
 

@@ -166,7 +166,113 @@ jobs:
           echo "Release title: ${EXPECTED}"
 
   # ═══════════════════════════════════════════
-  # Stage 3: winget — the single owner, no duplicate workflow
+  # Stage 3: Verify distribution channels surface in the release itself
+  # ═══════════════════════════════════════════
+  #
+  # CAP-OPS-A7: on v0.18.0 the Homebrew tap bump failed on an expired
+  # HOMEBREW_TAP_TOKEN and NOTHING reported it — PyPI, Docker and the binaries
+  # published while the tap silently stayed at v0.17.1. A `brew upgrade` handed
+  # out the previous version with no signal anywhere. Each distribution channel
+  # is a separate workflow (bump-tap.yml, publish.yml, docker.yml, binaries.yml)
+  # and Forgejo/GitHub has no cross-workflow `needs:`, so a lone red row in the
+  # workflow list was invisible to whoever judged the release. This job runs
+  # after create-release, re-reads each channel's live public state, and writes a
+  # "Distribution channels" table INTO the release body — the one place a release
+  # reader looks — then fails the job if any channel did not actually publish the
+  # release tag. The failure surfaces here AND in the release body, not merely as
+  # one more red workflow row.
+  verify-channels:
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify every distribution channel published this tag
+        id: channels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          # The Docker image tag carries the leading 'v' (docker/metadata-action
+          # type=ref,event=tag); the PyPI/Homebrew identifiers do not.
+          DOCKER_TAG="${TAG}"
+          TAP_NEEDLE="refs/tags/${TAG}.tar.gz"
+          API="https://api.github.com/repos/${{ github.repository }}"
+
+          pass="## Distribution channels\n\n| Channel | Published | Version |\n|---|---|---|\n"
+          failed=0
+
+          # --- PyPI ---
+          pypi_ver=$(curl -sSf "https://pypi.org/pypi/capacium/json" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["version"])')
+          if [ "${pypi_ver}" = "${VERSION}" ]; then
+            pass="${pass}| PyPI | :white_check_mark: | ${pypi_ver} |\n"
+          else
+            failed=$((failed + 1))
+            pass="${pass}| PyPI | :x: | ${pypi_ver} (expected ${VERSION}) |\n"
+          fi
+
+          # --- Docker (GHCR) ---
+          # Uses the anonymous pull token, not secrets.GITHUB_TOKEN, so a public
+          # image verifies without auth (matches a real `docker pull`).
+          tkn=$(curl -sSf "https://ghcr.io/token?scope=repository:capacium/cap:pull" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          docker_code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${tkn}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/capacium/cap/manifests/${DOCKER_TAG}")
+          if [ "${docker_code}" = "200" ]; then
+            pass="${pass}| Docker (GHCR) | :white_check_mark: | ${DOCKER_TAG} |\n"
+          else
+            failed=$((failed + 1))
+            pass="${pass}| Docker (GHCR) | :x: | no manifest for ${DOCKER_TAG} (HTTP ${docker_code}) |\n"
+          fi
+
+          # --- Homebrew tap ---
+          tap_url="https://raw.githubusercontent.com/Capacium/homebrew-tap/main/Formula/capacium.rb"
+          if tap_body=$(curl -sSf "${tap_url}" 2>/dev/null) && echo "${tap_body}" | grep -qF "${TAP_NEEDLE}"; then
+            pass="${pass}| Homebrew tap | :white_check_mark: | ${TAG} |\n"
+          else
+            failed=$((failed + 1))
+            pass="${pass}| Homebrew tap | :x: | formula does not reference ${TAP_NEEDLE} |\n"
+          fi
+
+          # --- Standalone binaries (release assets) ---
+          asset_count=$(curl -sSf "${API}/releases/tags/${TAG}" \
+            | python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("assets",[])))' 2>/dev/null || echo 0)
+          if [ "${asset_count}" -gt 0 ]; then
+            pass="${pass}| Standalone binaries | :white_check_mark: | ${asset_count} assets attached |\n"
+          else
+            failed=$((failed + 1))
+            pass="${pass}| Standalone binaries | :x: | 0 assets attached |\n"
+          fi
+
+          # --- winget ---
+          pass="${pass}| winget | :grey_question: | manual (see update-winget) |\n"
+
+          # Surface: append the table to the release body regardless of outcome,
+          # so a stale channel is visible where the release is judged.
+          OLD_BODY=$(gh release view "${TAG}" --repo "${{ github.repository }}" --json body --jq '.body // ""' 2>/dev/null || echo "")
+          printf -v BODY '%b' "${OLD_BODY}\n\n${pass}\n"
+          gh release edit "${TAG}" --repo "${{ github.repository }}" --notes "${BODY}" >/dev/null
+
+          echo "----- channel report -----"
+          printf '%b' "${pass}"
+          echo "failed=${failed}" >> "${GITHUB_OUTPUT}"
+          echo "::group::channel-report"
+          printf '%b' "${pass}"
+          echo "::endgroup::"
+
+          if [ "${failed}" -gt 0 ]; then
+            echo "::error::${failed} distribution channel(s) did not publish ${TAG} — see the Distribution channels table on the release."
+            exit 1
+          fi
+
+  # ═══════════════════════════════════════════
+  # Stage 4: winget — the single owner, no duplicate workflow
   # ═══════════════════════════════════════════
   #
   # winget has no standalone workflow, so this job remains here. It runs after
