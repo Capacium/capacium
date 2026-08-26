@@ -37,15 +37,23 @@ The result is deterministic whether or not `.venv` is activated: the
 subprocess-spawning tests invoke `sys.executable` (the interpreter running
 pytest), never a `python3` resolved from `PATH`.
 
-Three failures have existed across recent releases and are not caused by your
-checkout:
+The command runs green: `0 failed, N passed`, where `N` is the number of tests
+collected (2071 at `1ce0a9d`). The failure count — the number CI actually gates
+on — is the invariant; the pass count rises as passing tests are added and is a
+snapshot, not a promise. A reader expects `0 failed`; recompute `N` with
+`python -m pytest tests/ --collect-only -q --ignore=tests/test_signing.py
+--ignore=tests/test_integration_phase0.py` if you need the current figure.
 
-- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard (CAP-OPS-A5); still failing.
+Three tests that once failed are now green, or excluded, and are not caused by
+your checkout:
+
+- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard; repaired by `3592d3c` (forward the parent env so `TMPDIR` survives and surface the downstream failure in the assertion), so it now passes.
 - `tests/test_resource_kind.py::TestCapInitKindResource::test_cap_init_kind_resource_produces_valid_manifest` — formerly spawned `python3` from `PATH` and so failed outside an activated venv; it now uses `sys.executable` and passes.
-- `tests/test_integration_phase0.py::TestP0006BackfillMigrationLogic::test_migration_file_exists` — asserts `capacium-exchange/migrations/0004_backfill_kind_source.sql` exists as a sibling checkout, so it fails in a fresh clone; it is excluded by `--ignore=tests/test_integration_phase0.py` above.
+- `tests/test_integration_phase0.py::TestP0006BackfillMigrationLogic::test_migration_file_exists` — asserts `capacium-exchange/migrations/0004_backfill_kind_source.sql` exists as a sibling checkout, so it relates to a repo that is not this one. Since `4d56764` it is a `skip` when the sibling checkout is absent and fails only when the sibling is present but the migration file is missing; either way it is excluded by `--ignore=tests/test_integration_phase0.py` above.
 
-Expected result: `1 failed, 2069 passed` (the single failure is the
-`test_p01k_hermeticity` test above), with or without `source .venv/bin/activate`.
+Expected result: `0 failed, 2071 passed` at `1ce0a9d` (31 warnings), with or
+without `source .venv/bin/activate`; the `N passed` figure moves as tests are
+added.
 
 ## Linting
 
