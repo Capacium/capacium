@@ -33,27 +33,18 @@ spawn `python -m capacium.cli` as a subprocess and fail with
 `ModuleNotFoundError: No module named 'capacium'` when the package is only on
 `PYTHONPATH` or not installed at all.
 
-The result is deterministic whether or not `.venv` is activated: the
-subprocess-spawning tests invoke `sys.executable` (the interpreter running
-pytest), never a `python3` resolved from `PATH`.
+The command runs green. The failure count — the number CI actually gates on — is
+the invariant: `0 failed`. The `S passed` and `N skipped` figures are not a
+promise; they move as tests are added or skipped and are a snapshot, not an
+invariant. In particular `S passed` is not the collected count: a skipped test
+is collected but not passed, so `S passed` equals the collected count only while
+nothing skips. Do not recompute the pass figure with `--collect-only` and expect
+it to match a run that skips.
 
-The command runs green: `0 failed, N passed`, where `N` is the number of tests
-collected (2071 at `1ce0a9d`). The failure count — the number CI actually gates
-on — is the invariant; the pass count rises as passing tests are added and is a
-snapshot, not a promise. A reader expects `0 failed`; recompute `N` with
-`python -m pytest tests/ --collect-only -q --ignore=tests/test_signing.py
---ignore=tests/test_integration_phase0.py` if you need the current figure.
-
-Three tests that once failed are now green, or excluded, and are not caused by
-your checkout:
-
-- `tests/neutrality/test_p01k_hermeticity.py::test_p01_suite_passes_under_the_access_guard` — the P01 suite exits 1 under the hermeticity access guard; repaired by `3592d3c` (forward the parent env so `TMPDIR` survives and surface the downstream failure in the assertion), so it now passes.
-- `tests/test_resource_kind.py::TestCapInitKindResource::test_cap_init_kind_resource_produces_valid_manifest` — formerly spawned `python3` from `PATH` and so failed outside an activated venv; it now uses `sys.executable` and passes.
-- `tests/test_integration_phase0.py::TestP0006BackfillMigrationLogic::test_migration_file_exists` — asserts `capacium-exchange/migrations/0004_backfill_kind_source.sql` exists as a sibling checkout, so it relates to a repo that is not this one. Since `4d56764` it is a `skip` when the sibling checkout is absent and fails only when the sibling is present but the migration file is missing; either way it is excluded by `--ignore=tests/test_integration_phase0.py` above.
-
-Expected result: `0 failed, 2071 passed` at `1ce0a9d` (31 warnings), with or
-without `source .venv/bin/activate`; the `N passed` figure moves as tests are
-added.
+Expected result at `1ce0a9d`: `0 failed, 2071 passed, 0 skipped` (31 warnings),
+with or without `source .venv/bin/activate`. The result is identical either way
+because the subprocess-spawning tests invoke `sys.executable` (the interpreter
+running pytest), never a `python3` resolved from `PATH`.
 
 ## Linting
 
