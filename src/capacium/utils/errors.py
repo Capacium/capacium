@@ -20,3 +20,7 @@ class FingerprintMismatchError(CapaciumError):
 
 class FrameworkNotSupportedError(CapaciumError):
     pass
+
+
+class TargetExistsError(CapaciumError):
+    pass
