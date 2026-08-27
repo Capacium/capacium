@@ -196,9 +196,11 @@ jobs:
           set -euo pipefail
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
-          # The Docker image tag carries the leading 'v' (docker/metadata-action
-          # type=ref,event=tag); the PyPI/Homebrew identifiers do not.
-          DOCKER_TAG="${TAG}"
+          # ADR 2026-08-13 (decision 3): the Docker image tag is the numeric
+          # version WITHOUT a leading `v` (docker.yml `type=semver`), matching
+          # the README, validate-release-tag.yml, and ci.yml. The PyPI and
+          # Homebrew identifiers also omit the `v`.
+          DOCKER_TAG="${VERSION}"
           TAP_NEEDLE="refs/tags/${TAG}.tar.gz"
           API="https://api.github.com/repos/${{ github.repository }}"
 

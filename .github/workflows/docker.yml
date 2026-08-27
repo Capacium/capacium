@@ -35,6 +35,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # ADR 2026-08-13-release-distribution-boundary (decision 3): the tag
+          # is the numeric version WITHOUT a leading `v` (0.18.0, not v0.18.0),
+          # matching the README, validate-release-tag.yml, and ci.yml. The
+          # default `type=ref,event=tag` would keep the `v` prefix; type=semver
+          # strips it to {{version}}. `latest` must also be produced so the
+          # documented short name stays pullable with a stable pointer.
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
