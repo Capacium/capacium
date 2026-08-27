@@ -471,12 +471,29 @@ def _inventory_registry_findings(view: Dict[str, Any]) -> List[Dict[str, Any]]:
         for owner_dir in sorted(packages.iterdir()):
             if not owner_dir.is_dir():
                 continue
-            for name_dir in sorted(owner_dir.iterdir()):
-                if not name_dir.is_dir():
-                    continue
+            
+            name_dirs = [d for d in sorted(owner_dir.iterdir()) if d.is_dir()]
+            if not name_dirs:
+                findings.append({
+                    "kind": "orphaned_dir",
+                    "path": str(owner_dir),
+                    "reason": "empty owner directory",
+                })
+                continue
+                
+            for name_dir in name_dirs:
                 cap_id = f"{owner_dir.name}/{name_dir.name}"
                 # A bundle root has no version subdirectory; treat version dirs.
                 version_dirs = [d for d in sorted(name_dir.iterdir()) if d.is_dir()]
+                
+                if not version_dirs:
+                    findings.append({
+                        "kind": "orphaned_dir",
+                        "path": str(name_dir),
+                        "reason": "capability directory without versions",
+                    })
+                    continue
+                    
                 for version_dir in version_dirs:
                     registered = view["by_id"].get(cap_id, {}).get(version_dir.name)
                     if registered is None:
@@ -627,3 +644,14 @@ def _print_human(report: Dict[str, Any]) -> None:
         print("findings:")
         for f in report["findings"]:
             print(f"  * {f['kind']:<14} {f.get('capability', f.get('path', ''))}")
+
+def show_reconcile_summary() -> None:
+    try:
+        report = reconcile()
+        num_findings = len(report.get("findings", []))
+        if num_findings > 0:
+            print(f"\n[reconcile] {num_findings} finding(s) detected. Run `cap repair` to resolve.")
+        else:
+            print("\n[reconcile] no findings")
+    except Exception:
+        print("\n[reconcile] unchecked")

@@ -563,6 +563,9 @@ def main():
                 registry_url=getattr(args, "registry", None),
                 project=getattr(args, "project", None),
             )
+            if success:
+                from .commands.reconcile import show_reconcile_summary
+                show_reconcile_summary()
             sys.exit(0 if success else 1)
 
         elif args.command == "update":
