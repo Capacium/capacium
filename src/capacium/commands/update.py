@@ -124,6 +124,10 @@ def update_capability(
         print("  Skipping update. Release with 'cap unhold' or use --force.")
         return True
 
+    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+    remove_git_metadata(cap.install_path)
+    ensure_execution_permissions(cap.install_path)
+
     current_fingerprint = compute_fingerprint(
         cap.install_path,
         exclude_patterns=FINGERPRINT_EXCLUDES,

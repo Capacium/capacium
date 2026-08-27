@@ -100,11 +100,17 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
 
     valid_capabilities = []
     for cap in capabilities:
+        # Only filter out true phantom entries: no install_path at all, or
+        # install_path not set but directory also doesn't exist.
+        # Do NOT filter on fingerprint/installed_at alone — blocked or
+        # legacy capabilities may deliberately lack those fields.
         if cap.install_path and not Path(cap.install_path).exists():
-            continue
-        valid_fws = _get_valid_frameworks(cap)
+            continue  # directory gone from disk → phantom
+        # Enrich frameworks from real symlinks but fall back to DB value
+        valid_fws = _get_valid_frameworks(cap) if cap.install_path else []
         if valid_fws:
             cap.frameworks = valid_fws
+        # else: keep cap.frameworks as-is from DB
         valid_capabilities.append(cap)
     capabilities = valid_capabilities
 
