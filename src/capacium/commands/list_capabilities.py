@@ -119,6 +119,8 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
             print("[]")
         else:
             print("No capabilities installed.")
+            from .reconcile import show_reconcile_summary
+            show_reconcile_summary()
         return
 
     if json_output:
