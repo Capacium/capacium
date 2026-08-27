@@ -141,14 +141,29 @@ class VersionManager:
             return None
 
         if alias == "latest":
-            def version_key(v):
-                parts = []
-                for part in v.split("."):
-                    if part.isdigit():
-                        parts.append(int(part))
-                    else:
-                        parts.append(part)
-                return parts
+
+            def version_key(v: str) -> tuple:
+                """Build a precedence key from a possibly pre-release SemVer string.
+
+                ``1.2.1-alpha`` and ``1.2.1`` must compare without a TypeError:
+                the core numeric segments are compared numerically, and the
+                optional pre-release/build suffix compares lexicographically on
+                a per-character (-/digits/letters) basis. A release with no
+                suffix outranks its own pre-release.
+                """
+                import re
+
+                prefix = re.split(r"[-+]", v)[0]
+                suffix_match = re.search(r"[-+](.+)$", v)
+                core = tuple(int(part) for part in prefix.split("."))
+                if suffix_match is None:
+                    return (core, (2, 0, ""))
+                suffix = suffix_match.group(1)
+                typed = tuple(
+                    (1, i, int(ch)) if ch.isdigit() else (0, i, ch)
+                    for i, ch in enumerate(suffix)
+                )
+                return (core, (1, 0, typed))
 
             return max(available_versions, key=version_key)
 

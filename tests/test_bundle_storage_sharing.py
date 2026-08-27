@@ -1,31 +1,31 @@
 from pathlib import Path
 
 
-def _write_bundle(root: Path, *, members=("alpha", "beta")) -> Path:
-    bundle_dir = root / "toolkit-source"
+def _write_bundle(root: Path, *, members=("alpha", "beta"), name: str = "toolkit") -> Path:
+    bundle_dir = root / f"{name}-source"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     capability_entries = []
-    for name in members:
-        member_dir = bundle_dir / "skills" / name
+    for member in members:
+        member_dir = bundle_dir / "skills" / member
         member_dir.mkdir(parents=True, exist_ok=True)
         (member_dir / "capability.yaml").write_text(
             "\n".join(
                 [
                     "kind: skill",
-                    f"name: {name}",
+                    f"name: {member}",
                     "version: 1.0.0",
-                    f"description: {name} fixture",
+                    f"description: {member} fixture",
                     "frameworks:",
                     "- opencode",
                     "",
                 ]
             )
         )
-        (member_dir / "SKILL.md").write_text(f"# {name}\n" + (name * 256))
+        (member_dir / "SKILL.md").write_text(f"# {member}\n" + (member * 256))
         capability_entries.extend(
             [
-                f"- name: {name}",
-                f"  source: ./skills/{name}",
+                f"- name: {member}",
+                f"  source: ./skills/{member}",
                 "  version: 1.0.0",
             ]
         )
@@ -34,7 +34,7 @@ def _write_bundle(root: Path, *, members=("alpha", "beta")) -> Path:
         "\n".join(
             [
                 "kind: bundle",
-                "name: toolkit",
+                f"name: {name}",
                 "version: 1.0.0",
                 "description: Bundle storage fixture",
                 "frameworks:",
@@ -184,3 +184,43 @@ def test_removing_bundle_cleans_shared_member_references(tmp_home, tmp_path):
         assert not member_path.exists()
         assert not member_path.is_symlink()
         assert not any(member_path.parent.glob("1.0.0.removing*"))
+
+
+def test_shared_member_fingerprint_is_included_for_verify(tmp_home, tmp_path):
+    """P6-007: a bundle whose member is already owned by another bundle must
+    still include that member's fingerprint in its stored hash, so 'cap verify'
+    recomputes the same value instead of reporting a false TAMPERED."""
+    from capacium.commands.install import install_capability
+    from capacium.commands.verify import _verify_bundle
+    from capacium.registry import Registry
+
+    bundle_a = _write_bundle(tmp_path / "a", members=("alpha", "beta"), name="toolkit-a")
+    bundle_b = _write_bundle(tmp_path / "b", members=("alpha", "gamma"), name="toolkit-b")
+
+    assert install_capability(
+        "acme/toolkit-a@1.0.0",
+        source_dir=bundle_a,
+        no_lock=True,
+        skip_runtime_check=True,
+        yes=True,
+    )
+
+    registry = Registry()
+    bundle_b_install = install_capability(
+        "acme/toolkit-b@1.0.0",
+        source_dir=bundle_b,
+        no_lock=True,
+        skip_runtime_check=True,
+        yes=True,
+    )
+    assert bundle_b_install is True
+
+    # alpha is shared between both bundles, not stolen from the first.
+    assert registry.get_reference_count("acme/alpha@1.0.0") == 2
+
+    # The stored fingerprint and the live recomputation must agree for BOTH
+    # bundles (a single shared install must not make either report TAMPERED).
+    for bundle_name in ("toolkit-a", "toolkit-b"):
+        bundle = registry.get_capability(f"acme/{bundle_name}", "1.0.0")
+        assert bundle is not None, bundle_name
+        assert _verify_bundle(bundle, registry) is True, bundle_name

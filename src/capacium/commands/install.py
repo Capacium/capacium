@@ -677,8 +677,17 @@ def _install_bundle_members(
                     print(f"    --force: reassigning {sub_cap_id} from '{bundle_conflict}' to '{bundle_id}'")
                     registry.remove_bundle_references(f"{sub_cap_id}@{sub_version}")
                 else:
-                    print(f"    Sub-capability {sub_cap_id}@{sub_version} is already a member of bundle '{bundle_conflict}'.")
-                    print(f"    Use --force to reassign to '{bundle_id}'.")
+                    # P6-007: a shared member is already owned by another bundle,
+                    # but its bytes are a genuine, already-installed dependency of
+                    # this bundle too. It must still contribute its fingerprint to
+                    # the bundle hash and be tracked as a member of this bundle;
+                    # skipping it here makes 'cap verify' recompute a different
+                    # fingerprint and falsely report TAMPERED once the physical
+                    # install actually happens.
+                    print(f"    Sub-capability {sub_cap_id}@{sub_version} is shared with bundle '{bundle_conflict}'.")
+                    print(f"    Reusing the shared install for '{bundle_id}'.")
+                    sub_fingerprints.append(existing.fingerprint)
+                    registry.add_bundle_member(f"{bundle_id}", f"{sub_cap_id}@{sub_version}")
                     continue
             elif force:
                 print(f"    --force: reinstalling {sub_cap_id}@{sub_version}")
