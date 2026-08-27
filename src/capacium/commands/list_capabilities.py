@@ -43,6 +43,35 @@ def _get_valid_frameworks(cap) -> list:
     return valid_fws
 
 
+def _is_invalid_or_test_fingerprint(fp: Optional[str]) -> bool:
+    if not fp:
+        return True
+    cleaned = str(fp).strip().lower()
+    if cleaned in ("", "unknown", "none", "null", "undefined", "deadbeef", "badfp"):
+        return True
+    if cleaned.startswith("ffffffff"):
+        return True
+    if len(cleaned) >= 8 and set(cleaned) <= {"f"}:
+        return True
+    return False
+
+
+def _has_unknown_or_invalid_status(cap, registry: Optional[Registry] = None) -> bool:
+    if not cap.installed_at or str(cap.installed_at).strip().lower() == "unknown":
+        return True
+    if not cap.kind or str(cap.kind.value).strip().lower() == "unknown":
+        return True
+    if registry:
+        statuses = registry.get_adapter_statuses(cap.id, cap.version)
+        if statuses:
+            valid_statuses = {"installed", "verified", "blocked", "stale", "error"}
+            if not any(s.status in valid_statuses for s in statuses.values()):
+                return True
+            if all(s.status in ("unknown", "not-installed") for s in statuses.values()):
+                return True
+    return False
+
+
 def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = None,
                       json_output: bool = False, details: bool = False):
     registry = Registry()
@@ -50,7 +79,9 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
     if framework:
         capabilities = registry.get_by_framework(framework)
         if not capabilities:
-            if not json_output:
+            if json_output:
+                print("[]")
+            else:
                 print(f"No capabilities installed for framework '{framework}'.")
             return
         label = f" ({framework})"
@@ -71,19 +102,23 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
     for cap in capabilities:
         if cap.install_path and not Path(cap.install_path).exists():
             continue
-        fws = _get_valid_frameworks(cap)
-        if fws:
-            cap.frameworks = fws
+        valid_fws = _get_valid_frameworks(cap)
+        if valid_fws:
+            cap.frameworks = valid_fws
         valid_capabilities.append(cap)
     capabilities = valid_capabilities
+
+    if not capabilities:
+        if json_output:
+            print("[]")
+        else:
+            print("No capabilities installed.")
+        return
 
     if json_output:
         _print_capabilities_json(capabilities, registry)
     else:
-        if not capabilities:
-            print("No capabilities installed.")
-        else:
-            _print_capabilities(capabilities, label, details, registry)
+        _print_capabilities(capabilities, label, details, registry)
         from .reconcile import show_reconcile_summary
         show_reconcile_summary()
 
@@ -168,7 +203,8 @@ def _print_capabilities(capabilities, label: str, details: bool = False, registr
 def _print_adapter_statuses(cap, registry) -> None:
     statuses = registry.get_adapter_statuses(cap.id, cap.version)
     print("    Frameworks:")
-    for fw in sorted(cap.frameworks if cap.frameworks else []):
+    all_frameworks = cap.frameworks if cap.frameworks else ([cap.framework] if cap.framework else [])
+    for fw in sorted(all_frameworks):
         s = statuses.get(fw)
         if s is None:
             symbol = STATUS_SYMBOLS["not-installed"]

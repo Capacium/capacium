@@ -1,16 +1,54 @@
+import builtins
 import gc
+import os
 import shutil
+import sqlite3
 import sys
-import time
-
-import pytest
 import tempfile
+import time
 from pathlib import Path
 
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC_DIR = str(_REPO_ROOT / "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+if "PYTHONPATH" in os.environ:
+    if _SRC_DIR not in os.environ["PYTHONPATH"].split(os.pathsep):
+        os.environ["PYTHONPATH"] = f"{_SRC_DIR}{os.pathsep}{os.environ['PYTHONPATH']}"
+else:
+    os.environ["PYTHONPATH"] = _SRC_DIR
+
+# Store real production paths without executing stat/lstat syscalls
+_REAL_PROD_HOME = Path(os.path.abspath(os.path.expanduser("~")))
+_REAL_PROD_CAPACIUM = _REAL_PROD_HOME / ".capacium"
+_REAL_PROD_CAPACIUM_STR = str(_REAL_PROD_CAPACIUM)
+_REAL_PROD_CAPACIUM_SEP = _REAL_PROD_CAPACIUM_STR + os.sep
 
 # Reference to the real rmtree, patched out at the end of the session on
 # Windows only (see _patch_rmtree_for_windows below).
 _real_rmtree = shutil.rmtree
+
+
+def _is_real_capacium_write(p) -> bool:
+    if not p:
+        return False
+    try:
+        raw = os.fspath(p)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        if not raw:
+            return False
+        # Do not use .resolve() here: resolve() executes lstat/stat syscalls,
+        # which triggers the hermeticity probe's read guard.
+        raw = os.path.expanduser(raw)
+        if not os.path.isabs(raw):
+            raw = os.path.join(os.getcwd(), raw)
+        norm = os.path.normpath(raw)
+        return norm == _REAL_PROD_CAPACIUM_STR or norm.startswith(_REAL_PROD_CAPACIUM_SEP)
+    except Exception:
+        return False
 
 
 def _rmtree_retry(path, attempts: int = 5, delay: float = 0.25) -> None:
@@ -49,6 +87,130 @@ def _patch_rmtree_for_windows():
         shutil.rmtree = _real_rmtree
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _guard_production_capacium():
+    """Fail immediately if any test code attempts to write to real ~/.capacium."""
+    real_open = builtins.open
+    real_sqlite_connect = sqlite3.connect
+    real_path_mkdir = Path.mkdir
+    real_os_mkdir = os.mkdir
+    real_os_makedirs = os.makedirs
+    real_os_remove = os.remove
+    real_os_unlink = os.unlink
+    real_path_unlink = Path.unlink
+
+    def guarded_open(file, mode="r", *args, **kwargs):
+        if any(m in mode for m in ("w", "a", "x", "+")):
+            if _is_real_capacium_write(file):
+                raise RuntimeError(
+                    f"Forbidden write to production directory during test execution: {file}"
+                )
+        return real_open(file, mode, *args, **kwargs)
+
+    def guarded_sqlite_connect(database, *args, **kwargs):
+        if (
+            database
+            and str(database) != ":memory:"
+            and not str(database).startswith("file::memory:")
+        ):
+            if _is_real_capacium_write(database):
+                raise RuntimeError(
+                    f"Forbidden SQLite connection to production directory during test execution: {database}"
+                )
+        return real_sqlite_connect(database, *args, **kwargs)
+
+    def guarded_path_mkdir(self, *args, **kwargs):
+        if _is_real_capacium_write(self):
+            raise RuntimeError(
+                f"Forbidden mkdir in production directory during test execution: {self}"
+            )
+        return real_path_mkdir(self, *args, **kwargs)
+
+    def guarded_os_mkdir(path, *args, **kwargs):
+        if _is_real_capacium_write(path):
+            raise RuntimeError(
+                f"Forbidden mkdir in production directory during test execution: {path}"
+            )
+        return real_os_mkdir(path, *args, **kwargs)
+
+    def guarded_os_makedirs(name, *args, **kwargs):
+        if _is_real_capacium_write(name):
+            raise RuntimeError(
+                f"Forbidden makedirs in production directory during test execution: {name}"
+            )
+        return real_os_makedirs(name, *args, **kwargs)
+
+    def guarded_os_remove(path, *args, **kwargs):
+        if _is_real_capacium_write(path):
+            raise RuntimeError(
+                f"Forbidden remove in production directory during test execution: {path}"
+            )
+        return real_os_remove(path, *args, **kwargs)
+
+    def guarded_os_unlink(path, *args, **kwargs):
+        if _is_real_capacium_write(path):
+            raise RuntimeError(
+                f"Forbidden unlink in production directory during test execution: {path}"
+            )
+        return real_os_unlink(path, *args, **kwargs)
+
+    def guarded_path_unlink(self, *args, **kwargs):
+        if _is_real_capacium_write(self):
+            raise RuntimeError(
+                f"Forbidden unlink in production directory during test execution: {self}"
+            )
+        return real_path_unlink(self, *args, **kwargs)
+
+    builtins.open = guarded_open
+    sqlite3.connect = guarded_sqlite_connect
+    Path.mkdir = guarded_path_mkdir
+    os.mkdir = guarded_os_mkdir
+    os.makedirs = guarded_os_makedirs
+    os.remove = guarded_os_remove
+    os.unlink = guarded_os_unlink
+    Path.unlink = guarded_path_unlink
+
+    try:
+        yield
+    finally:
+        builtins.open = real_open
+        sqlite3.connect = real_sqlite_connect
+        Path.mkdir = real_path_mkdir
+        os.mkdir = real_os_mkdir
+        os.makedirs = real_os_makedirs
+        os.remove = real_os_remove
+        os.unlink = real_os_unlink
+        Path.unlink = real_path_unlink
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home_for_every_test(monkeypatch, tmp_path, request):
+    """Ensure every test runs with an isolated temporary home directory.
+    Tests never touch the real user home or ~/.capacium.
+
+    Excluded:
+    - hermetic_probe module: has its own guard
+    - tests/neutrality/: these manage their own hermeticity via subprocess
+    - 'canary' tests: probe tests that need to read real home to verify guard
+    """
+    node_path = str(getattr(request.node, "fspath", "") or "")
+    # The neutrality suite runs P01 tests under hermetic_probe – it manages its
+    # own home isolation in-subprocess and must NOT have Path.home redirected
+    # here, because CAP_HOME is computed at module-import time and must resolve
+    # against the real operator home.
+    if "hermetic_probe" in sys.modules:
+        return
+    if "neutrality" in node_path:
+        return
+    if "canary" in getattr(request.node, "name", ""):
+        return
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+
 @pytest.fixture(autouse=True)
 def _skip_runtime_gate(monkeypatch):
     """Keep the suite host-independent: the adapter-level runtime gate
@@ -60,11 +222,13 @@ def _skip_runtime_gate(monkeypatch):
 
 
 @pytest.fixture
-def tmp_home(monkeypatch):
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        monkeypatch.setattr(Path, "home", lambda: tmp)
-        yield tmp
+def tmp_home(monkeypatch, tmp_path):
+    th = tmp_path / "home"
+    th.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(th))
+    monkeypatch.setenv("USERPROFILE", str(th))
+    monkeypatch.setattr(Path, "home", lambda: th)
+    yield th
 
 
 @pytest.fixture
