@@ -1,9 +1,12 @@
 """Tests for the Capacium Registry FTS5 search index."""
 
+import sqlite3
 import tempfile
 from pathlib import Path
 
 from src.capacium.index import Index
+
+_TRUST_TIER = {"signed": 4, "verified": 3, "audited": 2, "discovered": 1}
 
 
 class TestIndex:
@@ -165,6 +168,91 @@ class TestIndex:
         results, _, total = self.idx.search("python")
         assert total >= 1
         assert any(r["name"] == "x" for r in results)
+
+    def test_sort_by_trust(self):
+        self.idx.upsert(_sample_listing("a", trust="discovered"))
+        self.idx.upsert(_sample_listing("b", trust="audited"))
+        self.idx.upsert(_sample_listing("c", trust="verified"))
+        self.idx.upsert(_sample_listing("d", trust="signed"))
+        results, _, _ = self.idx.search("", sort="trust")
+        names = [r["name"] for r in results]
+        assert names[0] == "d"  # signed first
+        assert names[-1] == "a"  # discovered last
+
+    def test_trust_pagination_no_overlap_and_ordered(self):
+        trusts = list(_TRUST_TIER)
+        for i in range(30):
+            self.idx.upsert(
+                _sample_listing(f"skill-{i:02d}", trust=trusts[i % 4], stars=(i * 7) % 30)
+            )
+
+        collected = []
+        seen = set()
+        cursor = None
+        while True:
+            page, cursor, _ = self.idx.search("", sort="trust", limit=4, cursor=cursor)
+            for r in page:
+                assert r["id"] not in seen, f"overlap {r['id']}"
+                seen.add(r["id"])
+                collected.append(r)
+            if cursor is None:
+                break
+        assert len(collected) == 30
+
+        def key(r):
+            return (_TRUST_TIER[r["trust"]], r["stars"], r["id"])
+
+        # Verify the multi-page stream matches the full trust ordering
+        # (trust tier DESC, stars DESC, id ASC).
+        expected = sorted(
+            collected,
+            key=lambda r: (-key(r)[0], -key(r)[1], key(r)[2]),
+        )
+        assert [r["id"] for r in collected] == [r["id"] for r in expected]
+
+    def test_fts_schema_migration_recreates_id_column(self):
+        # Simulate an old index whose listings_fts predates the `id` column.
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("DROP TABLE IF EXISTS listings_index")
+        conn.execute("DROP TABLE IF EXISTS listings_fts")
+        conn.execute("""
+            CREATE TABLE listings_index (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'skill', trust TEXT NOT NULL DEFAULT 'discovered',
+                stars INTEGER NOT NULL DEFAULT 0, forks INTEGER DEFAULT 0, license TEXT DEFAULT '',
+                categories TEXT DEFAULT '[]', tags TEXT DEFAULT '[]', description TEXT DEFAULT '',
+                frameworks TEXT DEFAULT '[]', runtimes TEXT DEFAULT '{}', dependencies TEXT DEFAULT '{}',
+                fingerprint TEXT DEFAULT '', source_url TEXT DEFAULT '', publisher TEXT DEFAULT '',
+                version TEXT DEFAULT '', updated_at TEXT DEFAULT '', last_synced_at TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            CREATE VIRTUAL TABLE listings_fts USING fts5(
+                name, description, tags, categories, kind, trust,
+                tokenize='porter unicode61'
+            )
+        """)
+        conn.execute(
+            "INSERT INTO listings_index(id, name, description) VALUES ('alpha', 'alpha-name', 'browser automation')"
+        )
+        conn.execute(
+            "INSERT INTO listings_fts(name, description) VALUES ('alpha-name', 'browser automation')"
+        )
+        conn.commit()
+        conn.close()
+
+        # Reopening reconciles the stale FTS schema and does not crash search.
+        idx = Index(self.db_path)
+        results, _, total = idx.search("browser")
+        assert total == 1
+        assert results[0]["name"] == "alpha-name"
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(listings_fts)")]
+        assert "id" in cols
+        assert conn.execute("SELECT COUNT(*) c FROM listings_fts").fetchone()["c"] == 1
+        conn.close()
 
 
 def _sample_listing(name, **overrides):

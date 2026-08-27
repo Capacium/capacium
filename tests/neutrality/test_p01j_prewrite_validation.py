@@ -98,6 +98,7 @@ def test_missing_kind_raises_before_any_storage_write():
     copytree.assert_not_called()
     registry.add_capability.assert_not_called()
     registry.update_capability.assert_not_called()
+    registry.upsert_capability.assert_not_called()
 
 
 def test_unknown_kind_raises_before_any_storage_write():
@@ -113,6 +114,7 @@ def test_unknown_kind_raises_before_any_storage_write():
     copytree.assert_not_called()
     registry.add_capability.assert_not_called()
     registry.update_capability.assert_not_called()
+    registry.upsert_capability.assert_not_called()
 
 
 def test_legacy_kind_raises_before_any_storage_write():
@@ -128,6 +130,7 @@ def test_legacy_kind_raises_before_any_storage_write():
     copytree.assert_not_called()
     registry.add_capability.assert_not_called()
     registry.update_capability.assert_not_called()
+    registry.upsert_capability.assert_not_called()
 
 
 def test_valid_kind_with_blocking_manifest_errors_raises_before_write():
@@ -147,6 +150,7 @@ def test_valid_kind_with_blocking_manifest_errors_raises_before_write():
     copytree.assert_not_called()
     registry.add_capability.assert_not_called()
     registry.update_capability.assert_not_called()
+    registry.upsert_capability.assert_not_called()
 
 
 def test_malformed_manifest_empty_kind_caught_before_write():
@@ -163,6 +167,7 @@ def test_malformed_manifest_empty_kind_caught_before_write():
     copytree.assert_not_called()
     registry.add_capability.assert_not_called()
     registry.update_capability.assert_not_called()
+    registry.upsert_capability.assert_not_called()
 
 
 def test_valid_manifest_proceeds_to_storage_and_registry_write(tmp_path):
@@ -183,7 +188,7 @@ def test_valid_manifest_proceeds_to_storage_and_registry_write(tmp_path):
     assert exc is None, f"Unexpected exception: {exc}"
 
     copytree.assert_called()
-    registry.add_capability.assert_called()
+    registry.upsert_capability.assert_called()
 
     # The success path must stay inside the isolated root.
     copied_to = Path(copytree.call_args.args[1])

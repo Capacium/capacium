@@ -583,12 +583,14 @@ def install_capability(
         source_commit=(source_provenance.source_commit if source_provenance else None),
     )
 
-    if not registry.add_capability(cap):
-        existing = registry.get_capability(f"{owner}/{cap_name}", version)
-        if existing and existing.fingerprint != cap.fingerprint:
-            print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
-                  f"{existing.fingerprint[:8]} vs {cap.fingerprint[:8]}")
-        registry.update_capability(cap)
+    # BUG P6-006: single atomic upsert replaces the add->get->update dance that
+    # raced (INSERT IntegrityError between connection A and B -> UPDATE on a
+    # third connection -> `database is locked` on concurrent installs).
+    existing_before = registry.get_capability(f"{owner}/{cap_name}", version)
+    registry.upsert_capability(cap)
+    if existing_before and existing_before.fingerprint != cap.fingerprint:
+        print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
+              f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
     _record_install_status(registry, cap_id, version, resolved_frameworks)
 
     if all_frameworks:
@@ -790,8 +792,7 @@ def _install_single_sub_cap(
         source_url=source_url,
     )
 
-    if not registry.add_capability(capacity):
-        registry.update_capability(capacity)
+    registry.upsert_capability(capacity)
     _record_install_status(registry, f"{owner}/{sub_name}", version, sub_frameworks)
     StorageManager.write_meta(capacity, frameworks=sub_frameworks)
 
