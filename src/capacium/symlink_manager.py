@@ -1,8 +1,9 @@
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+
+from .utils.errors import TargetExistsError
 
 
 class SymlinkManager:
@@ -18,14 +19,20 @@ class SymlinkManager:
             if target.exists() or target.is_symlink():
                 if target.is_symlink():
                     target.unlink()
-                elif target.is_dir():
-                    shutil.rmtree(target)
                 else:
-                    target.unlink()
+                    # A real file or directory already occupies the link target.
+                    # Never delete user-owned data at an arbitrary location —
+                    # refuse instead of destructively removing it.
+                    raise TargetExistsError(
+                        f"Cannot create symlink at {target}: a real "
+                        f"{'directory' if target.is_dir() else 'file'} already exists there."
+                    )
 
             target.symlink_to(source)
             return True
 
+        except TargetExistsError:
+            raise
         except OSError as e:
             print(f"Failed to create symlink from {source} to {target}: {e}")
             return False

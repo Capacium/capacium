@@ -24,3 +24,7 @@ class FrameworkNotSupportedError(CapaciumError):
 
 class AmbiguousCapabilityError(CapaciumError):
     pass
+
+
+class TargetExistsError(CapaciumError):
+    pass

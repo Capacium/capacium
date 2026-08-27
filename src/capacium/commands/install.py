@@ -3,6 +3,7 @@ import json as _json
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,19 @@ def install_capability(
     elif "/" in cap_name:
         sub_skill_repo, sub_name = cap_name.split("/", 1)
         cap_name = sub_name.strip().strip("/").split("/")[-1]
+
+    # P6-004/security: a user-supplied capability or owner name must never
+    # escape the package store (``cap install ..`` and friends). Validate
+    # before any StorageManager/Registry creates operator-home state. An empty
+    # owner is allowed here — it is normalized to "global" downstream.
+    invalid = not _validate_install_name(cap_name) or (
+        owner not in ("", "global", "unknown", "any")
+        and not _validate_install_name(owner)
+    )
+    if invalid:
+        print(f"Error: invalid capability or owner name '{owner}/{cap_name}'.")
+        print("  Capability and owner names must be safe path components.")
+        return False
 
     # Resolve bare name (no owner prefix) via Exchange search
     # Skip when source/tarball/offline is provided — user brings their own
@@ -828,6 +842,25 @@ def _repository_identity(repository: Optional[str]) -> Optional[str]:
         return None
     owner, name = parts[-2], parts[-1]
     return _safe_canonical_identity(f"{owner}/{name}")
+
+
+def _validate_install_name(name: str) -> bool:
+    """Return True when *name* is safe to use as a single path component.
+
+    Guards against the ``cap install ..`` path-escape class: a capability name
+    that is a parent traversal (``..``), a separator, a dot, or empty would
+    otherwise flow into ``StorageManager.get_package_dir`` (``base / owner /
+    name / version``) and escape the package store root.
+    """
+    if not name:
+        return False
+    if "/" in name:
+        return False
+    if name in (".", ".."):
+        return False
+    if Path(name).is_absolute() or "~" in name:
+        return False
+    return True
 
 
 def _safe_canonical_identity(value: str) -> Optional[str]:
@@ -2249,14 +2282,66 @@ def _detect_name_from_tarball(tarball_path: str) -> Optional[str]:
     return None
 
 
+def _safe_extract_all(
+    tf: "tarfile.TarFile",
+    dest: Path,
+    tarball_path: str,
+) -> None:
+    """Extract a tarball without directory traversal.
+
+    :py:meth:`TarFile.extractall` gained a ``filter='data'`` argument that
+    rejects absolute paths, ``..`` parent escapes, hard/soft links that
+    resolve outside the extract root, and dangerous special files — but only
+    on Python >= 3.12. On older interpreters the generic ``extract`` path is
+    used, so this helper applies the same member sanitization manually: every
+    member whose path is absolute or would escape the destination is rejected
+    before it touches the filesystem.
+    """
+    try:
+        tf.extractall(dest, filter="data")
+    except TypeError:
+        # Python < 3.12 has no extractall(filter=...) signature.
+        _extract_with_traversal_guard(tf, dest, tarball_path)
+
+
+def _extract_with_traversal_guard(
+    tf: "tarfile.TarFile",
+    dest: Path,
+    tarball_path: str,
+) -> None:
+    dest_root = dest.resolve()
+    for member in tf.getmembers():
+        member_path = Path(member.name)
+        if member_path.is_absolute():
+            raise tarfile.TarError(
+                f"Refusing to extract absolute path from tarball {tarball_path}: {member.name}"
+            )
+        candidate = dest_root / member.name
+        try:
+            candidate.resolve().relative_to(dest_root)
+        except ValueError:
+            raise tarfile.TarError(
+                f"Refusing to extract path escaping the destination "
+                f"from tarball {tarball_path}: {member.name}"
+            )
+        if member.islnk() or member.issym():
+            link_target = member.linkname
+            if os.path.isabs(link_target) or any(
+                part == ".." for part in Path(link_target).parts
+            ):
+                raise tarfile.TarError(
+                    f"Refusing to extract unsafe link from tarball {tarball_path}: "
+                    f"{member.name} -> {link_target}"
+                )
+    tf.extractall(dest)
+
+
 def _install_from_tarball(
     tarball_path: str,
     storage: StorageManager,
     cap_name: str,
     owner: str,
 ) -> Optional[tuple[Path, Optional[str]]]:
-    import tarfile
-
     archive = Path(tarball_path)
     if not archive.exists():
         print(f"  Tarball not found: {tarball_path}")
@@ -2268,7 +2353,7 @@ def _install_from_tarball(
     tmp_dir = Path(tempfile.mkdtemp(prefix="cap-tarball-"))
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            tf.extractall(tmp_dir)
+            _safe_extract_all(tf, tmp_dir, tarball_path)
     except (tarfile.TarError, OSError) as e:
         print(f"  Failed to extract tarball: {e}")
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -2289,6 +2374,17 @@ def _install_from_tarball(
     manifest = Manifest.detect_source_declaration(source_dir)
     if manifest.name == source_dir.name and manifest.version == "1.0.0" and not (source_dir / "capability.yaml").exists():
         print("  Tarball does not contain a valid capability (no capability.yaml)")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None
+
+    # An empty owner (e.g. ``cap install --from-tarball file.tar.gz /name``) is
+    # a bare global name — normalize it to the canonical owner here, matching
+    # the contract stated by the outer guard in ``install_capability``.
+    if not owner:
+        owner = "global"
+
+    if not _validate_install_name(cap_name) or not _validate_install_name(owner):
+        print("  Error: invalid capability or owner name supplied for tarball install.")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return None
 

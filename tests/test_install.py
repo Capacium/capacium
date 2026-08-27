@@ -536,6 +536,28 @@ class TestPromptFrameworkSelection:
         assert result == ["claude-code", "opencode"]
 
 
+class TestInstallNameValidation:
+    def test_rejects_parent_traversal(self):
+        from capacium.commands.install import _validate_install_name
+        assert not _validate_install_name("..")
+        assert not _validate_install_name("../..")
+        assert not _validate_install_name("evil/../../x")
+
+    def test_rejects_separators_and_reserved(self):
+        from capacium.commands.install import _validate_install_name
+        assert not _validate_install_name("a/b")
+        assert not _validate_install_name(".")
+        assert not _validate_install_name("")
+        assert not _validate_install_name("/etc/passwd")
+        assert not _validate_install_name("~user")
+
+    def test_accepts_safe_components(self):
+        from capacium.commands.install import _validate_install_name
+        assert _validate_install_name("my-capability")
+        assert _validate_install_name("opencode")
+        assert _validate_install_name("my-cap.1x")
+
+
 class TestFrameworkAppend:
     def test_is_framework_already_returns_true_when_symlink_exists(self, monkeypatch, tmp_path):
         from capacium.commands.install import _is_framework_already
@@ -577,3 +599,94 @@ class TestFrameworkListOutput:
         _print_capabilities([cap], "")
         out = capsys.readouterr().out
         assert "claude-code, opencode, gemini-cli" in out
+
+
+class TestTarballTraversalGuard:
+    def _make_traversal_tarball(self, tmp_path):
+        import io
+        import tarfile
+        tar_path = tmp_path / "evil.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            info = tarfile.TarInfo("../escaped.txt")
+            data = b"evil"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        return tar_path
+
+    def test_extract_with_traversal_guard_rejects_parent_escape(self, tmp_path):
+        import tarfile
+        from capacium.commands.install import _safe_extract_all
+        tar_path = self._make_traversal_tarball(tmp_path)
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with tarfile.open(tar_path, "r:gz") as tf:
+            with pytest.raises(tarfile.TarError):
+                _safe_extract_all(tf, dest, str(tar_path))
+        assert not (tmp_path / "escaped.txt").exists()
+        assert not (dest / "escaped.txt").exists()
+
+    def test_extract_allows_normal_tarball(self, tmp_path):
+        import io
+        import tarfile
+        from capacium.commands.install import _safe_extract_all
+        tar_path = tmp_path / "ok.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            info = tarfile.TarInfo("capability.yaml")
+            data = b"name: ok\nversion: 1.0.0\nkind: skill\n"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with tarfile.open(tar_path, "r:gz") as tf:
+            _safe_extract_all(tf, dest, str(tar_path))
+        assert (dest / "capability.yaml").exists()
+
+
+class TestTarballInstallEmptyOwner:
+    def test_install_from_tarball_normalizes_empty_owner_to_global(self, tmp_path):
+        import io
+        import tarfile
+        from capacium.commands.install import _install_from_tarball
+        from capacium.storage import StorageManager
+
+        tar_path = tmp_path / "cap.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            info = tarfile.TarInfo("capability.yaml")
+            data = b"name: my-cap\nversion: 2.0.0\nkind: skill\n"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        store_base = tmp_path / "store"
+        storage = StorageManager(base_dir=store_base)
+        result = _install_from_tarball(str(tar_path), storage, "my-cap", "")
+        assert result is not None
+        package_dir, _ = result
+        assert store_base / "global" / "my-cap" / "2.0.0" == package_dir
+        assert (package_dir / "capability.yaml").exists()
+
+
+class TestSymlinkTargetGuard:
+    def test_create_symlink_raises_target_exists_error_for_real_dir(self, tmp_path):
+        from capacium.symlink_manager import SymlinkManager
+        from capacium.utils.errors import TargetExistsError
+        source = tmp_path / "src"
+        source.mkdir()
+        target = tmp_path / "real-data"
+        target.mkdir()
+        marker = target / "keep.txt"
+        marker.write_text("precious")
+        with pytest.raises(TargetExistsError):
+            SymlinkManager.create_symlink(source, target)
+        assert marker.exists(), "create_symlink must not delete the real target dir"
+
+    def test_create_symlink_replaces_existing_symlink(self, tmp_path):
+        from capacium.symlink_manager import SymlinkManager
+        src_a = tmp_path / "a"
+        src_a.mkdir()
+        src_b = tmp_path / "b"
+        src_b.mkdir()
+        target = tmp_path / "link"
+        assert SymlinkManager.create_symlink(src_a, target) is True
+        assert SymlinkManager.create_symlink(src_b, target) is True
+        assert target.is_symlink()
+        assert target.resolve() == src_b.resolve()
