@@ -854,7 +854,7 @@ def _canonical_identity(
         print(f"Warning: ignoring unsafe canonical identity '{moved_to}'.")
 
     declared_id = None
-    if manifest.owner and manifest.name:
+    if manifest.owner and manifest.name and manifest.owner != "unknown":
         declared_id = _safe_canonical_identity(
             f"{manifest.owner}/{manifest.name}"
         )

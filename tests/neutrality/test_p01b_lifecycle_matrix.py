@@ -161,7 +161,7 @@ def test_install_capability_from_source(tmp_home, tmp_path):
     assert result is True
 
     reg = Reg(db_path=reg_db)
-    cap = reg.get_capability("global/test-install-skill")
+    cap = reg.get_capability("test/test-install-skill")
     assert cap is not None
     assert cap.kind == Kind.SKILL
 
@@ -290,10 +290,10 @@ def test_lock_capability_writes_lockfile(tmp_home, tmp_path):
         yes=True,
     )
 
-    result = lock_capability("test-lock-cap")
+    result = lock_capability("test/test-lock-cap")
     assert result is True
 
-    lock_path = tmp_home / ".capacium" / "packages" / "global" / "test-lock-cap" / "1.0.0" / "capability.lock"
+    lock_path = tmp_home / ".capacium" / "packages" / "test" / "test-lock-cap" / "1.0.0" / "capability.lock"
     assert lock_path.exists()
 
 
