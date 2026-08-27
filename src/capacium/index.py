@@ -14,9 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .kinds import validate_kind
-
-from .kinds import CapaciumKind
+from .kinds import validate_kind, CapaciumKind
 
 
 class Index:
@@ -37,17 +35,55 @@ class Index:
         finally:
             conn.close()
 
+    _FTS_SCHEMA_SQL = """
+        CREATE VIRTUAL TABLE IF NOT EXISTS listings_fts USING fts5(
+            name, description, tags, categories, kind, trust, id UNINDEXED,
+            tokenize='porter unicode61'
+        )
+    """
+
+    def _ensure_fts_schema(self, conn: sqlite3.Connection) -> None:
+        """Reconcile the FTS5 table with the current schema.
+
+        Older indexes created ``listings_fts`` without the trailing ``id``
+        column. ``search()`` selects ``id`` from ``listings_fts``, so an old
+        table makes every search raise ``OperationalError: no such column:
+        listings_fts.id``. The index is fully derived from ``listings_index``,
+        so the safe remediation is to drop the stale table and rebuild it from
+        the canonical rows.
+        """
+        has_id = False
+        try:
+            cols = conn.execute("PRAGMA table_info(listings_fts)").fetchall()
+            has_id = any(row["name"] == "id" for row in cols)
+        except sqlite3.OperationalError:
+            has_id = False
+
+        if has_id:
+            return
+
+        conn.execute("DROP TABLE IF EXISTS listings_fts")
+        conn.execute(self._FTS_SCHEMA_SQL)
+        conn.commit()
+        self._reindex_fts(conn)
+
+    def _reindex_fts(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT id, name, description, tags, categories, kind, trust FROM listings_index"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "INSERT INTO listings_fts(name, description, tags, categories, kind, trust, id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (row["name"], row["description"], row["tags"], row["categories"],
+                 row["kind"], row["trust"], row["id"]),
+            )
+
     def _init_db(self):
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-16000")
-            conn.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS listings_fts USING fts5(
-                    name, description, tags, categories, kind, trust,
-                    tokenize='porter unicode61'
-                )
-            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS listings_index (
                     id TEXT PRIMARY KEY,
@@ -89,6 +125,7 @@ class Index:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_taxonomy_path ON taxonomy(path)")
+            self._ensure_fts_schema(conn)
             conn.commit()
 
     def upsert(self, listing: Dict[str, Any]) -> None:
@@ -131,7 +168,7 @@ class Index:
                     listing.get("last_synced_at", ""),
                     listing_id,
                 ))
-                conn.execute("DELETE FROM listings_fts WHERE rowid = (SELECT rowid FROM listings_fts WHERE name = ? AND rowid IS NOT NULL LIMIT 1)", (listing_id,))
+                conn.execute("DELETE FROM listings_fts WHERE id = ?", (listing_id,))
             else:
                 conn.execute("""
                     INSERT INTO listings_index (
@@ -163,8 +200,8 @@ class Index:
                     listing.get("last_synced_at", ""),
                 ))
             conn.execute("""
-                INSERT INTO listings_fts(name, description, tags, categories, kind, trust)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO listings_fts(name, description, tags, categories, kind, trust, id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 listing.get("name", ""),
                 listing.get("description", ""),
@@ -172,6 +209,7 @@ class Index:
                 self._json_str(listing.get("categories", [])),
                 validated_kind,
                 listing.get("trust", "discovered"),
+                listing_id,
             ))
             conn.commit()
 
@@ -205,9 +243,9 @@ class Index:
 
             if query.strip():
                 where_parts.append(
-                    "i.name || ' ' || i.description || ' ' || i.tags || ' ' || i.categories LIKE ?"
+                    "i.id IN (SELECT id FROM listings_fts WHERE listings_fts MATCH ?)"
                 )
-                where_params.append(f"%{query}%")
+                where_params.append(_fts_query(query))
 
             if kind:
                 where_parts.append("i.kind = ?")
@@ -236,44 +274,41 @@ class Index:
             where_base = "WHERE " + " AND ".join(where_parts) if where_parts else ""
 
             count_sql = f"SELECT COUNT(*) as cnt FROM listings_index i {where_base}"
-            total = conn.execute(count_sql, where_params).fetchone()["cnt"]
+            try:
+                total = conn.execute(count_sql, where_params).fetchone()["cnt"]
+            except sqlite3.OperationalError:
+                total = 0
 
             if total == 0:
                 return [], None, 0
 
-            order_map = {
-                "stars": "i.stars DESC, i.name ASC",
-                "trust": """
-                    CASE i.trust
-                        WHEN 'signed' THEN 4
-                        WHEN 'verified' THEN 3
-                        WHEN 'audited' THEN 2
-                        WHEN 'discovered' THEN 1
-                        ELSE 0
-                    END DESC, i.stars DESC
-                """,
-                "updated": "i.updated_at DESC",
-                "name": "i.name ASC",
-            }
-            order_clause = f"ORDER BY {order_map.get(sort, order_map['stars'])}"
+            order_spec = _order_by_clause(sort)
+            order_clause = f"ORDER BY {order_spec.order_sql}"
 
             if cursor is not None:
-                where_cursor = where_base + (" AND i.id > ?" if where_base else "WHERE i.id > ?")
-                query_params = where_params + [cursor, limit + 1]
-                sql = f"SELECT i.* FROM listings_index i {where_cursor} {order_clause} LIMIT ?"
+                cursor_clause = order_spec.cursor_clause("i")
+                if where_base:
+                    cursor_sql = f"{where_base} AND {cursor_clause}"
+                else:
+                    cursor_sql = f"WHERE {cursor_clause}"
+                query_params = where_params + list(order_spec.cursor_params(cursor)) + [limit + 1]
+                sql = f"SELECT i.* FROM listings_index i {cursor_sql} {order_clause} LIMIT ?"
             else:
                 query_params = where_params + [limit + 1]
                 sql = f"SELECT i.* FROM listings_index i {where_base} {order_clause} LIMIT ?"
 
-            rows = conn.execute(sql, query_params).fetchall()
+            try:
+                rows = conn.execute(sql, query_params).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
 
             has_more = len(rows) > limit
             if has_more:
                 rows = rows[:limit]
 
-            next_cursor = rows[-1]["id"] if rows else None
+            next_cursor = order_spec.cursor_value(rows[-1]) if rows and has_more else None
             results = [_row_to_dict(row) for row in rows]
-            return results, next_cursor if has_more else None, total
+            return results, next_cursor, total
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         with self._conn() as conn:
@@ -345,7 +380,7 @@ class Index:
     def delete(self, listing_id: str) -> bool:
         with self._conn() as conn:
             conn.execute("DELETE FROM listings_index WHERE id = ?", (listing_id,))
-            conn.execute("DELETE FROM listings_fts WHERE name = ?", (listing_id,))
+            conn.execute("DELETE FROM listings_fts WHERE id = ?", (listing_id,))
             conn.commit()
             return True
 
@@ -358,12 +393,12 @@ class Index:
     def reindex_fts(self) -> None:
         with self._conn() as conn:
             conn.execute("DELETE FROM listings_fts")
-            rows = conn.execute("SELECT name, description, tags, categories, kind, trust FROM listings_index").fetchall()
+            rows = conn.execute("SELECT id, name, description, tags, categories, kind, trust FROM listings_index").fetchall()
             conn.execute("BEGIN")
             for row in rows:
                 conn.execute(
-                    "INSERT INTO listings_fts(name, description, tags, categories, kind, trust) VALUES (?,?,?,?,?,?)",
-                    (row["name"], row["description"], row["tags"], row["categories"], row["kind"], row["trust"])
+                    "INSERT INTO listings_fts(name, description, tags, categories, kind, trust, id) VALUES (?,?,?,?,?,?,?)",
+                    (row["name"], row["description"], row["tags"], row["categories"], row["kind"], row["trust"], row["id"])
                 )
             conn.execute("COMMIT")
 
@@ -423,3 +458,127 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             d[field] = {}
     return d
+
+
+_FTS_FORBIDDEN = {'"', "'", "\x00"}
+
+
+def _fts_query(query: str) -> str:
+    """Build a safe FTS5 MATCH expression from a user query.
+
+    Bare tokens are AND-combined, which yields relevance-ranked matches over
+    name/description/tags/categories. Quotes (which FTS5 treats as phrase
+    delimiters) and NUL are stripped to keep the expression well-formed.
+    """
+    cleaned = "".join(ch for ch in query if ch not in _FTS_FORBIDDEN)
+    tokens = [tok for tok in cleaned.split() if tok.strip()]
+    if not tokens:
+        return ""
+    return " ".join(tokens)
+
+
+_TRUST_TIER = """
+    CASE i.trust
+        WHEN 'signed' THEN 4
+        WHEN 'verified' THEN 3
+        WHEN 'audited' THEN 2
+        WHEN 'discovered' THEN 1
+        ELSE 0
+    END
+"""
+
+
+class _OrderSpec:
+    """Sort/keyset coupling so cursor pagination stays consistent with ORDER BY.
+
+    ``segments`` is the ordered list of ``(sql_expr, key, descending)`` triples
+    before the final ``id ASC`` tiebreaker. ``sql_expr`` is the ORDER BY
+    expression (``key`` may differ when the sort key is derived, e.g. the trust
+    tier). The cursor encodes one value per segment plus the id, and the cursor
+    predicate compares those values lexicographically in the same overall
+    direction as ORDER BY. Compound sorts (``trust`` = trust-tier DESC then
+    stars DESC) paginate correctly because the keyset is built from the actual
+    sort expressions, not a surrogate column.
+    """
+
+    __slots__ = ("segments",)
+
+    def __init__(self, segments: List[Tuple[str, str, bool]]):
+        self.segments = segments
+
+    @property
+    def order_sql(self) -> str:
+        parts = [f"{expr} {'DESC' if desc else 'ASC'}" for expr, _, desc in self.segments]
+        parts.append("i.id ASC")
+        return ", ".join(parts)
+
+    _TRUST_TIER_VALUE = {"signed": 4, "verified": 3, "audited": 2, "discovered": 1}
+
+    @classmethod
+    def _value(cls, row: sqlite3.Row, key: str) -> Any:
+        if key == "trust":
+            return cls._TRUST_TIER_VALUE.get(row["trust"], 0)
+        return row[key]
+
+    def cursor_value(self, row: sqlite3.Row) -> str:
+        values = [self._value(row, key) for _, key, _ in self.segments]
+        values = ["" if v is None else v for v in values]
+        return json.dumps([*values, row["id"]])
+
+    def cursor_params(self, cursor: str) -> List[Any]:
+        param_count = len(self.segments) * 2 + 1
+        try:
+            values = json.loads(cursor)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return [cursor] * param_count
+        if not isinstance(values, list):
+            return [cursor] * param_count
+        values = ["" if v is None else v for v in values]
+        while len(values) < len(self.segments) + 1:
+            values.append("")
+        values = values[: len(self.segments) + 1]
+        # Each segment contributes a `< ?` and a `= ?`, then the id tiebreaker.
+        params = []
+        for v in values[:-1]:
+            params.extend([v, v])
+        params.append(values[-1])
+        return params
+
+    @staticmethod
+    def _sql_col(expr: str, alias: str, key: str) -> str:
+        if key == "trust":
+            return _TRUST_TIER.replace("i.", f"{alias}.")
+        return expr.replace("i.", f"{alias}.")
+
+    def cursor_clause(self, alias: str) -> str:
+        """Lexicographic keyset predicate.
+
+        For segments [(a, DESC), (b, DESC)] this yields:
+            (a < ? OR (a = ? AND (b < ? OR (b = ? AND id > ?))))
+        For ascending segments the ``<`` flips to ``>``. Each column in the
+        comparison is bound from the cursor value list in order.
+        """
+        clauses = []
+        for expr, key, desc in self.segments:
+            col = self._sql_col(expr, alias, key)
+            op = "<" if desc else ">"
+            clauses.append((f"{col} {op} ?", f"{col} = ?"))
+        innermost = f"{alias}.id > ?"
+        inner = innermost
+        for i in range(len(clauses) - 1, -1, -1):
+            lt_or_gt, eq = clauses[i]
+            inner = f"({lt_or_gt} OR ({eq} AND {inner}))"
+        return inner
+
+
+def _order_by_clause(sort: str) -> _OrderSpec:
+    if sort == "trust":
+        return _OrderSpec([
+            (_TRUST_TIER, "trust", True),
+            ("i.stars", "stars", True),
+        ])
+    if sort == "updated":
+        return _OrderSpec([("i.updated_at", "updated_at", True)])
+    if sort == "name":
+        return _OrderSpec([("i.name", "name", False)])
+    return _OrderSpec([("i.stars", "stars", True)])

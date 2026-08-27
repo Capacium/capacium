@@ -459,6 +459,41 @@ class Registry:
             conn.commit()
             return cursor.rowcount > 0
 
+    def upsert_capability(self, cap: Capability) -> None:
+        """Atomically insert-or-replace a capability in a single statement.
+
+        Replaces the ``add -> get -> update`` dance that opened a race between
+        three separate connections: two concurrent installs of the same
+        capability could interleave between the failed INSERT (IntegrityError)
+        and the UPDATE, yielding ``database is locked``. ``ON CONFLICT`` makes
+        the whole operation one atomic write on one connection.
+        """
+        fields = cap.to_dict()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO capabilities (
+                    owner, name, version, kind, fingerprint, install_path,
+                    installed_at, dependencies, framework, frameworks,
+                    source_url, source_ref, source_commit
+                ) VALUES (
+                    :owner, :name, :version, :kind, :fingerprint, :install_path,
+                    :installed_at, :dependencies, :framework, :frameworks,
+                    :source_url, :source_ref, :source_commit
+                )
+                ON CONFLICT(owner, name, version) DO UPDATE SET
+                    kind = excluded.kind,
+                    fingerprint = excluded.fingerprint,
+                    install_path = excluded.install_path,
+                    installed_at = excluded.installed_at,
+                    dependencies = excluded.dependencies,
+                    framework = excluded.framework,
+                    frameworks = excluded.frameworks,
+                    source_url = excluded.source_url,
+                    source_ref = excluded.source_ref,
+                    source_commit = excluded.source_commit
+            """, fields)
+            conn.commit()
+
     def cap_count(self) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()
