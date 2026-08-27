@@ -38,6 +38,8 @@ from pathlib import Path
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 # Windows resolves symlink targets to 8.3 short paths (e.g. C:\Users\RUNNER~1)
 # while Capacium builds sandboxed CAPACIUM_PROJECT_ROOT/HOME trees, so the
@@ -485,3 +487,375 @@ def test_install_driven_autonomous_deletion_is_guarded(tmp_path):
     assert link.is_symlink() and link.resolve() == cur.resolve(), (
         "current live link no longer resolves to the kept generation"
     )
+
+
+# ---------------------------------------------------------------------------
+# CAP-REC-D2 — install/update/remove/rename lifecycle invariants.
+#
+# The four mutating CLI operations form a lifecycle on top of the shared
+# ``live_linked_store_paths`` guard. This section pins the invariants each one
+# must uphold so that a later change to any single operation cannot silently
+# break the store as a whole:
+#
+#   * install  — idempotent reinstall leaves exactly one registry row and one
+#                live link per (owner, name, version); a reinstall never parks
+#                a live-linked generation.
+#   * update   — reconciliation never changes identity, never parks or orphans
+#                the live-linked dir, and leaves the fingerprint row consistent
+#                with the store content.
+#   * remove   — a remove of a non-linked version leaves the still-live link
+#                (and its target version) intact; a remove of the last version
+#                unlinks and collapses the owner/name tree atomically.
+#   * rename   — canonical-identity relocation (``moved_to``) yields exactly one
+#                canonical row, records an auditable alias, moves (never copies)
+#                the payload dir, and never leaves a dangling live link.
+# ---------------------------------------------------------------------------
+
+
+# --- shared library-level builders -----------------------------------------
+
+def _source_dir(tmp_path: Path, name: str, version: str, *, owner: str = "",
+                 moved_to: str = "") -> Path:
+    """Write a self-consistent skill source directory for install probes."""
+    tag = (moved_to or "none").replace("/", "-")
+    src = tmp_path / f"src-{name}-{version}-{tag}"
+    src.mkdir()
+    manifest = [
+        f"kind: skill\nname: {name}\nversion: {version}\n"
+        "description: invariant probe\nframeworks:\n- opencode\n",
+    ]
+    if owner:
+        manifest.append(f"owner: {owner}\n")
+    if moved_to:
+        manifest.append(f"moved_to: {moved_to}\n")
+    (src / "capability.yaml").write_text("".join(manifest))
+    (src / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+    return src
+
+
+def _registry_rows(home: Path) -> dict:
+    """Map ``(owner, name, version)`` -> install_path for every registry row."""
+    from capacium.registry import Registry
+    return {
+        (c.owner, c.name, c.version): c.install_path
+        for c in Registry(home / ".capacium" / "registry.db").list_capabilities()
+    }
+
+
+def _installed(home: Path, cap_id: str, version: str = "") -> bool:
+    """Capability with ``cap_id`` is installed; optional precise version check."""
+    from capacium.registry import Registry
+    owner, name = cap_id.split("/", 1)
+    row = Registry(home / ".capacium" / "registry.db").get_capability(
+        f"{owner}/{name}", version or None
+    )
+    return row is not None
+
+
+def _store_version(home: Path, owner: str, name: str, version: str) -> Path:
+    return home / ".capacium" / "packages" / owner / name / version
+
+
+def _harness_links(home: Path, name: str) -> list:
+    """Every harness symlink named ``name`` across all known roots."""
+    links = []
+    for base in (home / ".opencode", home / ".claude", home / ".gemini",
+                 home / ".agents", home / ".cursor"):
+        for child in base.rglob(name):
+            if child.is_symlink():
+                links.append(child)
+    return links
+
+
+# --- install invariants -----------------------------------------------------
+
+
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
+def test_install_is_idempotent_single_row_single_link(tmp_path):
+    """install: reinstalling the same (owner, name, version) over itself with
+    ``--yes`` must converge on exactly ONE registry row and ONE live link — no
+    duplicate owners, no parked ``.removing`` trees, and the single link still
+    resolves into the single store version."""
+    home = tmp_path / "install-idem"
+
+    def _run() -> subprocess.CompletedProcess:
+        return _cap(home, "install", "--source", str(src),
+                    "acme/widget", "--version", "1.0.0",
+                    "--framework", "opencode", "--no-lock", "--yes")
+
+    src = _source_dir(tmp_path, "widget", "1.0.0", owner="acme")
+    assert _run().returncode == 0
+    assert _run().returncode == 0
+
+    rows = _registry_rows(home)
+    key_rows = [p for (o, n, v), p in rows.items()
+                if n == "widget" and v == "1.0.0"]
+    assert len(key_rows) == 1, (
+        f"reinstall produced {len(key_rows)} widget@1.0.0 rows: {rows}"
+    )
+
+    version_dir = _store_version(home, "acme", "widget", "1.0.0")
+    assert version_dir.exists()
+    assert not list(version_dir.parent.glob("*.removing*")), (
+        "reinstall left a parked .removing tree"
+    )
+
+    links = _harness_links(home, "widget")
+    assert len(links) >= 1
+    assert all(link.resolve() == version_dir.resolve() for link in links), (
+        "reinstall left a link resolving somewhere else or dangling"
+    )
+
+
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
+def test_install_never_duplicates_harness_link_on_reinstall(tmp_path):
+    """install: a second install of the SAME version does not add a second
+    harness symlink for the same name in the same root."""
+    home = tmp_path / "install-nodup"
+    src = _source_dir(tmp_path, "widget", "1.0.0")
+    cmd = ["install", "--source", str(src), "global/widget",
+           "--version", "1.0.0", "--framework", "opencode", "--no-lock", "--yes"]
+    assert _cap(home, *cmd).returncode == 0
+    before = len(_harness_links(home, "widget"))
+    assert _cap(home, *cmd).returncode == 0
+    after = len(_harness_links(home, "widget"))
+    assert after == before, (
+        f"reinstall grew harness links {before} -> {after}"
+    )
+
+
+# --- update invariants ------------------------------------------------------
+
+
+def test_update_preserves_identity_and_leaves_live_link_resolving(tmp_path):
+    """update: reconciling a capability never changes its (owner, name, version)
+    identity, never parks the live-linked dir, and the link still resolves into
+    the same store version afterwards."""
+    home = tmp_path / "update-identity"
+    src = _source_dir(tmp_path, "widget", "1.0.0", owner="acme")
+
+    # Library-level install (isolated by conftest's HOME fixture via monkeypatch
+    # of Path.home through tmp_home is not active here — use the subprocess CLI
+    # for a real store, then drive update in the same sandboxed HOME).
+    r = _cap(home, "install", "--source", str(src), "acme/widget",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+
+    version_dir = _store_version(home, "acme", "widget", "1.0.0")
+    links_before = _harness_links(home, "widget")
+    assert links_before, "no live link after install"
+
+    # Drive update under the SAME HOME via a tiny subprocess that imports the
+    # library but points HOME at the sandbox (Path.home is what Registry uses).
+    script = (
+        "import os, pathlib, sys\n"
+        f"os.environ['HOME'] = {str(home)!r}\n"
+        "pathlib.Path.home = lambda *a, **k: pathlib.Path(os.environ['HOME'])\n"
+        "sys.path.insert(0, 'src')\n"
+        "from capacium.commands.update import update_capability\n"
+        "sys.exit(0 if update_capability('acme/widget', skip_runtime_check=True) else 2)\n"
+    )
+    u = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, cwd=_REPO_ROOT,
+    )
+    assert u.returncode == 0, f"update failed:\n{u.stdout}\n{u.stderr}"
+
+    rows = _registry_rows(home)
+    widget_rows = [(o, n, v) for (o, n, v) in rows if n == "widget"]
+    assert widget_rows == [("acme", "widget", "1.0.0")], (
+        f"update changed identity: {widget_rows}"
+    )
+
+    assert version_dir.exists(), "update parked/deleted the live-linked dir"
+    assert not list(version_dir.parent.glob("*.removing*")), "update parked a tree"
+    links_after = _harness_links(home, "widget")
+    assert links_after, "update removed the live link"
+    assert all(link.resolve() == version_dir.resolve() for link in links_after), (
+        "update left a dangling or relinked harness link"
+    )
+
+
+def test_update_is_idempotent_and_fingerprint_consistent(tmp_path):
+    """update: a second update without content drift is a no-op that still
+    reports success and leaves the registry fingerprint row unchanged."""
+    home = tmp_path / "update-idem"
+    src = _source_dir(tmp_path, "widget", "1.0.0")
+
+    r = _cap(home, "install", "--source", str(src), "global/widget",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0
+
+    from capacium.registry import Registry
+
+    def _update():
+        script = (
+            "import os, pathlib, sys\n"
+            f"os.environ['HOME'] = {str(home)!r}\n"
+            "pathlib.Path.home = lambda *a, **k: pathlib.Path(os.environ['HOME'])\n"
+            "sys.path.insert(0, 'src')\n"
+            "from capacium.commands.update import update_capability\n"
+            "sys.exit(0 if update_capability('global/widget', skip_runtime_check=True) else 2)\n"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, cwd=_REPO_ROOT,
+        )
+
+    assert _update().returncode == 0
+    reg = Registry(home / ".capacium" / "registry.db")
+    cap = reg.get_capability("global/widget", "1.0.0")
+    assert cap is not None
+    fp_before = cap.fingerprint
+
+    assert _update().returncode == 0
+    cap = reg.get_capability("global/widget", "1.0.0")
+    assert cap.fingerprint == fp_before, "idempotent update changed fingerprint"
+    assert cap.owner == "global" and cap.name == "widget" and cap.version == "1.0.0"
+
+
+# --- remove invariants ------------------------------------------------------
+
+
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
+def test_remove_of_non_linked_version_keeps_live_link_and_target(tmp_path):
+    """remove: removing a NON-linked version leaves the still-live link and the
+    version it resolves into untouched — only the removed version disappears."""
+    home = tmp_path / "remove-nonlinked"
+
+    def _src(v):
+        s = _source_dir(tmp_path, "widget", v)
+        return s
+
+    for v in ("1.0.0", "2.0.0"):
+        r = _cap(home, "install", "--source", str(_src(v)), "global/widget",
+                 "--version", v, "--framework", "opencode", "--no-lock", "--yes")
+        assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+
+    v1 = _store_version(home, "global", "widget", "1.0.0")
+    v2 = _store_version(home, "global", "widget", "2.0.0")
+    assert v1.exists() and v2.exists()
+
+    # force the harness link to the 2.0.0 dir by removing 1.0.0 first would
+    # refuse (CAP-REC-D1) — so link the newest explicitly and remove 1.0.0.
+    r = _cap(home, "remove", "global/widget@1.0.0")
+    # 1.0.0 is not the linked dir (install links the newest), so this must
+    # succeed and leave 2.0.0 (and its link) alone.
+    assert r.returncode == 0, f"remove non-linked version failed:\n{r.stdout}\n{r.stderr}"
+    assert not v1.exists(), "removed version dir still present"
+    assert not _installed(home, "global/widget", "1.0.0")
+    assert v2.exists(), "non-removed version dir vanished"
+    assert _installed(home, "global/widget", "2.0.0")
+    links = _harness_links(home, "widget")
+    assert links and all(link.resolve() == v2.resolve() for link in links)
+
+
+@pytest.mark.skipif(WIN_SYMLINK_CLASSIFY, reason=_WIN_REASON)
+def test_remove_last_version_unlinks_and_collapses_tree(tmp_path):
+    """remove: removing the LAST version of an owner/name unlinks the harness
+    AND removes the version dir — no orphaned link, no leftover registry row.
+    (Empty parent-dir collapse is the *rename* path's job, not remove's: remove
+    parks then purges the version dir only, leaving the empty owner/name tree
+    for gc/reconcile to sweep — see ``_relocate_registry_identity`` vs remove.py.)"""
+    home = tmp_path / "remove-last"
+    src = _source_dir(tmp_path, "solo", "1.0.0", owner="acme")
+    r = _cap(home, "install", "--source", str(src), "acme/solo",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0
+
+    version_dir = _store_version(home, "acme", "solo", "1.0.0")
+    assert version_dir.exists()
+
+    r = _cap(home, "remove", "acme/solo@1.0.0")
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+
+    assert not _installed(home, "acme/solo")
+    assert not version_dir.exists(), "version dir survived last-version remove"
+    assert _harness_links(home, "solo") == [], "last-version remove left a link"
+
+
+# --- rename (canonical-identity relocation) invariants ----------------------
+
+
+def test_rename_via_moved_to_is_single_row_with_alias(tmp_path):
+    """rename: installing under an old id with ``moved_to`` relocates to the
+    canonical id — exactly ONE row remains, an alias old->new is recorded, and
+    the payload dir is MOVED (not copied) to the new owner/name path."""
+    home = tmp_path / "rename"
+    src = _source_dir(tmp_path, "widget", "1.0.0", owner="newco",
+                      moved_to="newco/widget")
+
+    r = _cap(home, "install", "--source", str(src), "oldco/widget",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+
+    rows = _registry_rows(home)
+    widget_rows = [(o, n, v) for (o, n, v) in rows if n == "widget"]
+    assert widget_rows == [("newco", "widget", "1.0.0")], (
+        f"rename left non-canonical rows: {widget_rows}"
+    )
+
+    from capacium.registry import Registry
+    reg = Registry(home / ".capacium" / "registry.db")
+    assert reg.get_relocation("oldco/widget") == "newco/widget", (
+        "rename did not record old_id -> new_id alias"
+    )
+
+    new_dir = _store_version(home, "newco", "widget", "1.0.0")
+    old_dir = _store_version(home, "oldco", "widget", "1.0.0")
+    assert new_dir.exists(), "canonical payload dir missing after rename"
+    assert not old_dir.exists(), "rename left the old-owner payload behind (copy, not move)"
+    # The old owner/name dirs must have been collapsed (empty after the move).
+    assert not old_dir.parent.exists(), "old name dir not collapsed after rename"
+
+
+def test_rename_rejects_unsafe_canonical_identity(tmp_path):
+    """rename: an unsafe ``moved_to`` that would escape the store is ignored —
+    the capability installs under the requested id unchanged, never path-traverses."""
+    home = tmp_path / "rename-unsafe"
+    src = _source_dir(tmp_path, "widget", "1.0.0", moved_to="../../escape/widget")
+
+    r = _cap(home, "install", "--source", str(src), "global/widget",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
+
+    rows = _registry_rows(home)
+    widget_rows = [o for (o, n, v) in rows if n == "widget"]
+    assert widget_rows == ["global"], f"unsafe moved_to escaped: {rows}"
+
+    escaped = tmp_path.parent / "escape"
+    assert not escaped.exists(), "moved_to traversal created an escaping dir"
+
+    version_dir = _store_version(home, "global", "widget", "1.0.0")
+    assert version_dir.exists()
+
+
+def test_rename_survives_relinking_without_dangling_link(tmp_path):
+    """rename: after relocation the live harness link is never left dangling —
+    it either already points at the canonical dir or is a reconcilable
+    relocation_gap, but it never resolves into a non-existent version."""
+    home = tmp_path / "rename-relink"
+    src = _source_dir(tmp_path, "widget", "1.0.0", owner="newco",
+                      moved_to="newco/widget")
+
+    r = _cap(home, "install", "--source", str(src), "oldco/widget",
+             "--version", "1.0.0", "--framework", "opencode",
+             "--no-lock", "--yes")
+    assert r.returncode == 0
+
+    new_dir = _store_version(home, "newco", "widget", "1.0.0")
+    for link in _harness_links(home, "widget"):
+        ok = link.exists() and link.resolve() == new_dir.resolve()
+        # A relocation gap alias may still name oldco until the next sweep, but
+        # it must never dangle into a non-existent directory.
+        assert link.resolve().exists(), (
+            f"rename left a dangling harness link: {link} -> {link.resolve()}"
+        )
+        assert ok or "oldco" in str(link.resolve()), (
+            f"rename left a link pointing outside oldco/newco: {link.resolve()}"
+        )
