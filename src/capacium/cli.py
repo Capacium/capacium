@@ -716,7 +716,7 @@ def main():
             else:
                 print("Error: specify a capability or --all")
                 sys.exit(1)
-            sys.exit(0 if success else 2)
+            sys.exit(0 if success else 1)
 
         elif args.command == "lock":
             from .commands.lock import lock_capability
@@ -1043,6 +1043,12 @@ def main():
             parser.print_help()
             sys.exit(1)
 
+    except KeyboardInterrupt:
+        # A user interrupt must not leave a traceback or a half-finished
+        # multi-step command; mutating commands (install/remove) already
+        # roll back via their own journals, so exiting cleanly is sufficient.
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
     except ImportError as e:
         print(f"Error: Command module not available: {e}")
         sys.exit(1)

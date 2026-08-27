@@ -124,8 +124,9 @@ src/capacium/
 
 ### Exit Codes
 - 0: Success
-- 1: User error (invalid input, missing args)
-- 2: System error (I/O, database, network)
+- 1: User error (invalid input, missing args, verification/permission failure)
+- 2: System error (I/O, database, network, sandbox violations, deprecated `--policy` shim)
+- 130: Interrupted by the user (SIGINT/KeyboardInterrupt) — no traceback, no partial state
 
 ## Bundle Support (Kind.BUNDLE)
 

@@ -8,7 +8,6 @@ This module provides a filtered copytree that skips framework dirs, metadata
 files, and dangling/recursive symlinks.
 """
 
-import os
 import shutil
 import stat
 from pathlib import Path

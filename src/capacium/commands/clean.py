@@ -11,16 +11,14 @@ Detects and removes:
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..framework_detector import framework_skills_dirs
-from ..models import Capability
 from ..registry import Registry
-from ..utils.config import get_packages_dir, get_config_dir
+from ..utils.config import get_packages_dir
 
 
 def is_test_fingerprint(fp: Optional[str]) -> bool:

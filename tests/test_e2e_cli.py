@@ -71,8 +71,18 @@ def test_verify_all_on_empty_registry():
         [sys.executable, "-m", "capacium.cli", "verify", "--all"],
         capture_output=True, text=True,
     )
-    # Exit code 0 = verified, 2 = system error (e.g. empty DB — acceptable)
-    assert result.returncode in (0, 2)
+    # Empty registry is a successful no-op verify, not an error.
+    assert result.returncode == 0
+
+
+def test_verify_nonexistent_exits_user_error():
+    """cap verify on an unknown capability exits 1 (user error), not 2."""
+    result = subprocess.run(
+        [sys.executable, "-m", "capacium.cli", "verify", "nonexistent/capability99999"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 1
+    assert "not found" in (result.stdout + result.stderr).lower()
 
 
 def test_help_outputs():

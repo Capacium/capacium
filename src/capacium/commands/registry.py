@@ -1,8 +1,11 @@
 import json
-import os
 from pathlib import Path
 
-REGISTRIES_FILE = os.path.expanduser("~/.capacium/registries.json")
+REGISTRIES_FILE = Path.home() / ".capacium" / "registries.json"
+
+
+def _auth_dir() -> Path:
+    return Path.home() / ".capacium" / "auth"
 
 
 def _load_registries():
@@ -15,6 +18,10 @@ def _load_registries():
 def _save_registries(data):
     Path(REGISTRIES_FILE).parent.mkdir(parents=True, exist_ok=True)
     Path(REGISTRIES_FILE).write_text(json.dumps(data, indent=2))
+
+
+def _token_path(name: str) -> Path:
+    return _auth_dir() / f"{name}.token"
 
 
 def handle_registry(args):
@@ -35,13 +42,13 @@ def handle_registry(args):
         print(f"Visit: {auth_url}")
         print("After login, paste your token:")
         token = input().strip()
-        token_path = Path(os.path.expanduser(f"~/.capacium/auth/{args.name}.token"))
+        token_path = _token_path(args.name)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(token)
         print(f"Logged in to '{args.name}'")
 
     elif args.registry_action == "logout":
-        token_path = Path(os.path.expanduser(f"~/.capacium/auth/{args.name}.token"))
+        token_path = _token_path(args.name)
         if token_path.exists():
             token_path.unlink()
         print(f"Logged out of '{args.name}'")
@@ -52,7 +59,7 @@ def handle_registry(args):
             print("Add one with: cap registry add <name> <url>")
             return
         for name, info in registries.items():
-            token_path = Path(os.path.expanduser(f"~/.capacium/auth/{name}.token"))
+            token_path = _token_path(name)
             logged_in = "✓ logged in" if token_path.exists() else "✗ not logged in"
             default = " (default)" if info.get("default") else ""
             print(f"  {name}: {info['url']} {logged_in}{default}")
