@@ -297,6 +297,32 @@ def main():
              "live-linked install)",
     )
 
+    clean_parser = subparsers.add_parser(
+        "clean",
+        aliases=["clean-test-artifacts"],
+        help="Clean up test artifacts, dead symlinks, and orphan test registry entries",
+    )
+    clean_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List test artifacts without removing them",
+    )
+    clean_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output cleanup results as JSON",
+    )
+    clean_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Force removal of all detected test artifacts",
+    )
+    clean_parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts",
+    )
+
     runtimes_parser = subparsers.add_parser(
         "runtimes",
         help="Inspect or print install hints for known host runtimes",
@@ -735,6 +761,15 @@ def main():
             # quarantine/delete/refuse per entry), not only the version prune.
             cleanup(dry_run=args.dry_run, force=args.force)
             garbage_collect(keep=args.keep, dry_run=args.dry_run)
+            sys.exit(0)
+
+        elif args.command in ("clean", "clean-test-artifacts"):
+            from .commands.clean import clean_test_artifacts
+
+            clean_test_artifacts(
+                dry_run=args.dry_run,
+                json_output=getattr(args, "json", False),
+            )
             sys.exit(0)
 
         elif args.command == "runtimes":
