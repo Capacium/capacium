@@ -223,3 +223,29 @@ class TestRegistryFindings:
         kinds = {f["kind"] for f in report["findings"]}
         assert "phantom" in kinds
         assert "unregistered" in kinds
+
+class TestOrphanedDirectories:
+    def test_orphaned_directories_reported(self, tmp_home):
+        home = tmp_home
+        registry = Registry(home / ".capacium" / "registry.db")
+        packages = home / ".capacium" / "packages"
+        packages.mkdir(parents=True)
+        
+        # Orphaned owner directory (no capabilities)
+        orphaned_owner = packages / "EmptyOwner"
+        orphaned_owner.mkdir()
+
+        # Orphaned capability directory (no versions)
+        orphaned_cap = packages / "LangeVC" / "EmptyCap"
+        orphaned_cap.mkdir(parents=True)
+        
+        report = reconcile()
+        findings = report["findings"]
+        
+        kinds = [f["kind"] for f in findings]
+        assert kinds.count("orphaned_dir") == 2
+
+        # Verify the paths are correct
+        paths = [Path(f["path"]).name for f in findings if f["kind"] == "orphaned_dir"]
+        assert "EmptyOwner" in paths
+        assert "EmptyCap" in paths

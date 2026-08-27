@@ -69,23 +69,23 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
 
     valid_capabilities = []
     for cap in capabilities:
-        if not cap.install_path or not Path(cap.install_path).exists():
+        if cap.install_path and not Path(cap.install_path).exists():
             continue
-        if not cap.fingerprint or not cap.installed_at:
-            continue
-        cap.frameworks = _get_valid_frameworks(cap)
+        fws = _get_valid_frameworks(cap)
+        if fws:
+            cap.frameworks = fws
         valid_capabilities.append(cap)
     capabilities = valid_capabilities
-
-    if not capabilities:
-        if not json_output:
-            print("No capabilities installed.")
-        return
 
     if json_output:
         _print_capabilities_json(capabilities, registry)
     else:
-        _print_capabilities(capabilities, label, details, registry)
+        if not capabilities:
+            print("No capabilities installed.")
+        else:
+            _print_capabilities(capabilities, label, details, registry)
+        from .reconcile import show_reconcile_summary
+        show_reconcile_summary()
 
 
 def _print_capabilities_json(capabilities, registry=None) -> None:

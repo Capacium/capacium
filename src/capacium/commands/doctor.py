@@ -728,5 +728,7 @@ def doctor(cap_spec: Optional[str] = None, deep: bool = False) -> bool:
             print(f"  {symbol} {name}: {detail}")
             if not passed:
                 overall_ok = False
+    from .reconcile import show_reconcile_summary
+    show_reconcile_summary()
 
     return overall_ok
