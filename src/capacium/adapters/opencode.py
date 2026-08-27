@@ -77,10 +77,6 @@ class OpenCodeAdapter(FrameworkAdapter):
 
     def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
-        if package_dir.exists() and package_dir.resolve() != source_dir.resolve():
-            shutil.rmtree(package_dir)
-        if package_dir.resolve() != source_dir.resolve():
-            shutil.copytree(source_dir, package_dir)
 
         from ..manifest import Manifest
         manifest = Manifest.detect_from_directory(package_dir)

@@ -23,6 +23,7 @@ from ..runtimes import (
 )
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
+from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 _CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -743,6 +744,8 @@ def _install_single_sub_cap(
         # decision, not an unreported door.
         storage.remove_package_path(package_dir)
         shutil.copytree(source_path, package_dir)
+        remove_git_metadata(package_dir)
+        ensure_execution_permissions(package_dir)
 
     sub_kind = source_manifest.kind
     sub_frameworks = resolve_frameworks(
@@ -1710,6 +1713,8 @@ def _fetch_from_registry(
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
         shutil.copytree(repo_dir, cache_dir)
+        remove_git_metadata(cache_dir)
+        ensure_execution_permissions(cache_dir)
         return cache_dir, resolved_url
     finally:
         # The clone is disposable once it has been cached, and must not
@@ -2293,6 +2298,8 @@ def _install_from_tarball(
     if package_dir.exists():
         shutil.rmtree(package_dir)
     shutil.copytree(source_dir, package_dir)
+    remove_git_metadata(package_dir)
+    ensure_execution_permissions(package_dir)
 
     source_url = manifest.repository or _detect_git_remote(package_dir)
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -2415,7 +2422,15 @@ def _build_go_binary(package_dir: Path, cap_name: str, yes: bool = False) -> str
         print(f"  go build failed:\n{result.stderr.strip()[:800]}")
         return "failed"
     print(f"  Built {binary.relative_to(package_dir)}")
-    return "built" if binary.exists() else "failed"
+    if binary.exists():
+        try:
+            import stat
+            st = binary.stat()
+            binary.chmod(st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        except OSError:
+            pass
+        return "built"
+    return "failed"
 
 
 def _install_npm_dependencies(package_dir: Path, cap_name: str) -> bool:

@@ -43,7 +43,7 @@
 #     set declared per repo.
 #
 # Forgejo Actions secrets (org-level):
-#   GH_MIRROR_TOKEN  — required. GitHub PAT with push access to the mirror.
+#   GH_MIRROR_TOKEN  — required. GitHub token with push access to the mirror.
 #                      Name is fixed across orgs to keep mirror.yml identical.
 
 name: Mirror to GitHub

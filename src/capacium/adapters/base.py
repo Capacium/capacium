@@ -16,12 +16,16 @@ def _cap_id(cap_name: str, owner: str = "global") -> str:
 
 def ensure_package_dir(storage, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> Path:
     """Copy source_dir → package_dir if they differ. Returns package_dir."""
+    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+
     package_dir = storage.get_package_dir(cap_name, version, owner=owner)
     if source_dir.resolve() != package_dir.resolve():
         import shutil
         if package_dir.exists():
             shutil.rmtree(package_dir)
         shutil.copytree(source_dir, package_dir)
+    remove_git_metadata(package_dir)
+    ensure_execution_permissions(package_dir)
     return package_dir
 
 
