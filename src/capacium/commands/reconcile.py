@@ -591,6 +591,15 @@ def reconcile(home: Optional[Path] = None) -> Dict[str, Any]:
     for finding in registry_findings + vestigial + hold_drift:
         states[finding.get("kind", "?")] = states.get(finding.get("kind", "?"), 0) + 1
 
+    dead_mcp = [{
+        "kind": "dead_mcp_config",
+        "framework": e.get("framework", ""),
+        "server_key": e.get("server_key", ""),
+        "path": e.get("target", ""),
+        "current_version": e.get("current_version", ""),
+        "reason": "MCP config points to missing or superseded version",
+    } for e in mcp if e.get("state") in ("dead", "stale")]
+
     return {
         "packages_root": str(_packages_dir()),
         "summary": {
@@ -603,9 +612,8 @@ def reconcile(home: Optional[Path] = None) -> Dict[str, Any]:
         },
         "skills": skills,
         "mcp": mcp,
-        "findings": registry_findings + vestigial + hold_drift,
+        "findings": registry_findings + vestigial + hold_drift + dead_mcp,
     }
-
 
 def reconcile_cmd(args) -> int:
     """CLI entry point for ``cap reconcile``."""

@@ -584,6 +584,10 @@ def install_capability(
     )
 
     if not registry.add_capability(cap):
+        existing = registry.get_capability(f"{owner}/{cap_name}", version)
+        if existing and existing.fingerprint != cap.fingerprint:
+            print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
+                  f"{existing.fingerprint[:8]} vs {cap.fingerprint[:8]}")
         registry.update_capability(cap)
     _record_install_status(registry, cap_id, version, resolved_frameworks)
 
@@ -854,7 +858,8 @@ def _canonical_identity(
         declared_id = _safe_canonical_identity(
             f"{manifest.owner}/{manifest.name}"
         )
-    if declared_id and requested_id in (manifest.replaces or []):
+    if declared_id:
+        # manifest.owner/name is canonical — ALWAYS prioritize it
         return declared_id
 
     repository_id = _repository_identity(manifest.repository or source_url)
