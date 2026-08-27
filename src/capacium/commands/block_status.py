@@ -16,9 +16,9 @@ from ._resolve import resolve_cap_id
 
 
 def _resolve(cap_spec: str):
+    spec = VersionManager.parse_version_spec(cap_spec)
     cap_id = resolve_cap_id(cap_spec)
-    spec = VersionManager.parse_version_spec(cap_id)
-    bare_id = f"{spec['owner']}/{spec['skill']}"
+    bare_id = cap_id
     registry = Registry()
     version = None if spec["version"] in ("latest", "stable") else spec["version"]
     return registry, bare_id, registry.get_capability(bare_id, version)

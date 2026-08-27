@@ -557,36 +557,61 @@ def test_resolve_identity_follows_transitive_chain(tmp_home, monkeypatch):
     ]
 
 
-def test_resolve_identity_refuses_two_node_cycle(tmp_home, monkeypatch):
-    """A two-node relocation cycle resolves to a WRONG owner silently today; it
-    must be refused with a diagnosis naming both aliases."""
+def test_relocate_refuses_two_node_cycle(tmp_home, monkeypatch):
+    """relocate_capability refuses to record an alias that would close on
+    itself (A -> B -> A), instead of silently overwriting to a wrong owner."""
     from capacium.registry import Registry, RelocationCycleError
 
     _install_skillweave_under_old_owner(tmp_home, monkeypatch)
     registry = Registry()
     registry.relocate_capability("global/skillweave", "LangeVC/skillweave")
-    registry.relocate_capability("LangeVC/skillweave", "global/skillweave")
 
     with pytest.raises(RelocationCycleError) as excinfo:
-        registry.resolve_identity("global/skillweave")
+        registry.relocate_capability("LangeVC/skillweave", "global/skillweave")
 
     message = str(excinfo.value)
     assert "global/skillweave" in message
     assert "LangeVC/skillweave" in message
 
 
-def test_resolve_identity_refuses_self_loop(tmp_home, monkeypatch):
-    """A self-loop (old_id == new_id) is detected and refused."""
+def test_relocate_refuses_self_loop(tmp_home, monkeypatch):
+    """A self-loop (old_id == new_id) is detected and refused by relocate."""
     from capacium.registry import Registry, RelocationCycleError
 
     _install_skillweave_under_old_owner(tmp_home, monkeypatch)
     registry = Registry()
-    registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave")
 
     with pytest.raises(RelocationCycleError) as excinfo:
-        registry.resolve_identity("LangeVC/skillweave")
+        registry.relocate_capability("LangeVC/skillweave", "LangeVC/skillweave")
 
     message = str(excinfo.value)
+    assert "LangeVC/skillweave" in message
+
+
+def test_resolve_identity_refuses_cycle_seeded_directly(tmp_home, monkeypatch):
+    """resolve_identity still refuses a cycle seeded directly in the alias
+    table (defense in depth for corrupted state the public write path now
+    prevents)."""
+    from capacium.registry import Registry, RelocationCycleError
+
+    _install_skillweave_under_old_owner(tmp_home, monkeypatch)
+    registry = Registry()
+    with registry._get_connection() as conn:
+        conn.execute(
+            "INSERT INTO capability_aliases (old_id, new_id) VALUES (?, ?)",
+            ("global/skillweave", "LangeVC/skillweave"),
+        )
+        conn.execute(
+            "INSERT INTO capability_aliases (old_id, new_id) VALUES (?, ?)",
+            ("LangeVC/skillweave", "global/skillweave"),
+        )
+        conn.commit()
+
+    with pytest.raises(RelocationCycleError) as excinfo:
+        registry.resolve_identity("global/skillweave")
+
+    message = str(excinfo.value)
+    assert "global/skillweave" in message
     assert "LangeVC/skillweave" in message
 
 

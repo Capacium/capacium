@@ -46,6 +46,7 @@ def test_update_reconciles_unique_unqualified_mcp_name(tmp_home, tmp_path):
 def test_update_reports_ambiguous_unqualified_name(tmp_home, tmp_path, capsys):
     from capacium.registry import Registry
     from capacium.models import Capability, Kind
+    from capacium.utils.errors import AmbiguousCapabilityError
     from datetime import datetime
 
     registry = Registry()
@@ -62,12 +63,12 @@ def test_update_reports_ambiguous_unqualified_name(tmp_home, tmp_path, capsys):
         ))
 
     from capacium.commands.update import update_capability
-    assert update_capability("shared", skip_runtime_check=True) is False
+    with pytest.raises(AmbiguousCapabilityError) as excinfo:
+        update_capability("shared", skip_runtime_check=True)
 
-    out = capsys.readouterr().out
-    assert "ambiguous" in out
-    assert "alice/shared" in out
-    assert "bob/shared" in out
+    assert "ambiguous" in str(excinfo.value)
+    assert "alice/shared" in str(excinfo.value)
+    assert "bob/shared" in str(excinfo.value)
 
 
 def test_parse_version_orders_correctly():

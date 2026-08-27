@@ -48,9 +48,9 @@ def get_hold(cap_id: str) -> Optional[dict]:
 
 
 def _resolve_cap(cap_spec: str):
+    spec = VersionManager.parse_version_spec(cap_spec)
     cap_id = resolve_cap_id(cap_spec)
-    spec = VersionManager.parse_version_spec(cap_id)
-    bare_id = f"{spec['owner']}/{spec['skill']}"
+    bare_id = cap_id
     registry = Registry()
     version = None if spec["version"] in ("latest", "stable") else spec["version"]
     return bare_id, registry.get_capability(bare_id, version)

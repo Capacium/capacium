@@ -517,9 +517,19 @@ class Registry:
         install_paths: Optional[Dict[str, Path]] = None,
         source_url: Optional[str] = None,
     ) -> int:
-        """Move registry identity in place and retain an auditable alias."""
+        """Move registry identity in place and retain an auditable alias.
+
+        A relocation that would close on itself is refused with
+        :class:`RelocationCycleError` *before* any row is mutated, so a
+        colliding alias can never silently rewrite a target to an identity the
+        chain already left. When a version is already present under the target
+        identity, the source row is merged into the canonical target (the
+        destination wins and the duplicate source row is dropped), preserving
+        the alias rather than destroying colliding target data.
+        """
         old_owner, old_name = self.parse_cap_id(old_id)
         new_owner, new_name = self.parse_cap_id(new_id)
+        self._ensure_safe_relocation(old_id, new_id)
         moved = 0
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -534,6 +544,10 @@ class Registry:
                     (new_owner, new_name, version),
                 )
                 if cursor.fetchone():
+                    # The target already canonicalises this version: merge the
+                    # duplicate source row away rather than overwriting the
+                    # target. The target row (fingerprint, install_path) is the
+                    # authoritative record; the alias below retains provenance.
                     cursor.execute(
                         "DELETE FROM capabilities WHERE owner = ? AND name = ? AND version = ?",
                         (old_owner, old_name, version),
@@ -593,6 +607,26 @@ class Registry:
             )
             conn.commit()
         return moved
+
+    def _ensure_safe_relocation(self, old_id: str, new_id: str) -> None:
+        """Refuse a relocation whose target chain closes back on ``old_id``.
+
+        Following ``new_id`` through the alias table must never reach ``old_id``
+        (a self-loop or a multi-node cycle); otherwise recording ``old_id ->
+        new_id`` would make resolution return a wrong-but-silent owner.
+        """
+        current = new_id
+        seen = {old_id}
+        while True:
+            if current in seen:
+                raise RelocationCycleError(
+                    f"relocation would close on itself: {old_id} -> {new_id}"
+                )
+            seen.add(current)
+            nxt = self.get_relocation(current)
+            if nxt is None:
+                return
+            current = nxt
 
     def get_relocation(self, old_id: str) -> Optional[str]:
         with self._get_connection() as conn:

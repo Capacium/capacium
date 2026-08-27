@@ -176,11 +176,10 @@ def _other_registered_versions(registry: Registry, owner: str, cap_name: str,
 
 
 def remove_capability(cap_spec: str, force: bool = False) -> bool:
-    cap_id = resolve_cap_id(cap_spec)
-    spec = VersionManager.parse_version_spec(cap_id)
-    owner = spec["owner"]
-    cap_name = spec["skill"]
+    spec = VersionManager.parse_version_spec(cap_spec)
     version_spec = spec["version"]
+    cap_id = resolve_cap_id(cap_spec)
+    owner, cap_name = Registry.parse_cap_id(cap_id)
 
     bare_id = f"{owner}/{cap_name}"
 

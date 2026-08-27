@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 
 from ..registry import Registry
 from ..registry_client import RegistryClient, RegistryClientError
+from ..utils.errors import AmbiguousCapabilityError
 from ..versioning import VersionManager
 
 
@@ -23,17 +24,22 @@ def resolve_cap_spec(cap_spec: str) -> Tuple[str, str, str]:
 def resolve_cap_id(cap_spec: str) -> str:
     """Resolve a capability spec to a ``owner/name`` string.
 
-    If the spec already contains a ``/``, it is returned as-is.
-    Bare names are resolved via local registry first, then Exchange.
-    Falls back to ``global/<name>`` if no match is found.
+    If the spec already contains a ``/``, the version suffix (``@...``) is
+    stripped and the ``owner/name`` returned as-is. Bare names are resolved
+    via local registry first, then Exchange. Falls back to ``global/<name>``
+    if no match is found.
+
+    Raises:
+        AmbiguousCapabilityError: if a bare name matches multiple owners and
+            cannot be resolved deterministically.
     """
     owner, name, _ = resolve_cap_spec(cap_spec)
     if "/" in cap_spec:
-        return cap_spec.split("@", 1)[0] if "@" not in cap_spec else cap_spec
-    resolved = _resolve_owner_locally(name) or _resolve_owner_via_search(name)
+        return f"{owner}/{name}"
+    resolved = _resolve_owner_locally(name)
     if resolved:
         return f"{resolved}/{name}"
-    return f"global/{name}"
+    return _resolve_owner_via_search(name) or f"global/{name}"
 
 
 def _resolve_owner_locally(cap_name: str) -> Optional[str]:
@@ -48,11 +54,10 @@ def _resolve_owner_locally(cap_name: str) -> Optional[str]:
     unique_owners = sorted({c.owner for c in matches})
     if len(unique_owners) == 1:
         return unique_owners[0]
-    print(
+    raise AmbiguousCapabilityError(
         f"Capability name '{cap_name}' is ambiguous locally. "
-        f"Use one of: " + ", ".join(f"{o}/{cap_name}" for o in unique_owners)
+        "Use one of: " + ", ".join(f"{o}/{cap_name}" for o in unique_owners)
     )
-    return None
 
 
 def _resolve_owner_via_search(

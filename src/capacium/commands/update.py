@@ -97,8 +97,8 @@ def update_capability(
     skip_runtime_check: bool = False,
 ) -> bool:
     registry = Registry()
+    spec = VersionManager.parse_version_spec(cap_spec)
     cap_id = resolve_cap_id(cap_spec)
-    spec = VersionManager.parse_version_spec(cap_id)
     cap_name = spec["skill"]
     version_spec = spec["version"]
 
