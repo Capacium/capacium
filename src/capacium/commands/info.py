@@ -74,9 +74,11 @@ def _stars_label(n: Optional[int]) -> str:
 
 def _fingerprint_status(detail: Dict[str, Any]) -> str:
     fp = detail.get("fingerprint", "")
-    if fp:
+    if not fp:
+        return f"{_DIM}none{_RESET}"
+    if detail.get("fingerprint_verified"):
         return f"{TrustBadge.render('verified')} verified"
-    return f"{_DIM}none{_RESET}"
+    return f"{_DIM}unverified{_RESET}"
 
 
 def _wrap_description(text: str, width: int, indent: int = 2) -> str:
@@ -323,6 +325,14 @@ def _resolve_from_local_registry(
     if cap is None:
         return None
 
+    if not cap.install_path or not Path(cap.install_path).exists():
+        return None
+
+    from ..fingerprint import verify_fingerprint
+    fp_verified = False
+    if cap.fingerprint and cap.install_path:
+        fp_verified = verify_fingerprint(Path(cap.install_path), cap.fingerprint)
+
     result = {
         "name": cap.name,
         "owner": cap.owner,
@@ -330,6 +340,7 @@ def _resolve_from_local_registry(
         "version": cap.version,
         "description": "",
         "fingerprint": cap.fingerprint,
+        "fingerprint_verified": fp_verified,
         "trust": "installed",
         "stars": None,
         "forks": None,

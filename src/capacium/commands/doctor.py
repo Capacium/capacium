@@ -93,7 +93,16 @@ def _check_stdout_hygiene(cap: Capability) -> None:
 def _resolve_for(cap: Capability, resolver: RuntimeResolver) -> List[RuntimeStatus]:
     manifest = _load_manifest(cap)
     if manifest is None:
-        return []
+        from ..runtimes import RuntimeStatus
+        return [RuntimeStatus(
+            name="integrity",
+            requirement="manifest",
+            runtime=None,
+            found=False,
+            version=None,
+            satisfied=False,
+            error="Capability directory is missing or corrupt (cache drift)"
+        )]
     requirements = infer_required_runtimes(manifest)
     if not requirements:
         return []
@@ -115,34 +124,31 @@ def _select(registry: Registry, cap_spec: Optional[str]) -> Tuple[List[Capabilit
 # ---------------------------------------------------------------------------
 
 def _check_symlink_depth() -> Tuple[str, bool, str]:
-    registry = Registry()
-    capabilities = registry.list_capabilities()
-    if not capabilities:
-        return ("Symlink depth", True, "no symlinks to check")
     packages_dir = Path.home() / ".capacium" / "packages"
     issues = []
-    for cap in capabilities:
-        cap_name = cap.name
-        for fw_name, skills_dir in framework_skills_dirs().items():
-            candidate = skills_dir / cap_name
-            if candidate.exists() and candidate.is_symlink():
-                target = candidate.resolve()
+    
+    for fw_name, skills_dir in framework_skills_dirs().items():
+        if not skills_dir.exists():
+            continue
+        for child in skills_dir.iterdir():
+            if child.is_symlink():
+                try:
+                    target = child.resolve(strict=True)
+                except OSError:
+                    issues.append(f"{fw_name}:{child.name} → broken symlink")
+                    continue
                 if not str(target).startswith(str(packages_dir)):
                     issues.append(
-                        f"{fw_name}:{candidate} → {target} (outside {packages_dir})"
+                        f"{fw_name}:{child.name} → {target} (outside expected dir)"
                     )
+
     if issues:
         return (
             "Symlink depth",
             False,
-            f"{len(issues)} symlink(s) outside expected dir: {'; '.join(issues[:3])}",
+            "\n".join(f"      - {i}" for i in issues),
         )
-    count = sum(
-        1 for cap in capabilities
-        for fw_name, skills_dir in framework_skills_dirs().items()
-        if (skills_dir / cap.name).is_symlink()
-    )
-    return ("Symlink depth", True, f"{count} symlink(s) look correct")
+    return ("Symlink depth", True, "all symlinks valid")
 
 
 def _check_config_file_paths() -> Tuple[str, bool, str]:
@@ -187,6 +193,7 @@ def _check_dependency_materialization() -> Tuple[str, bool, str]:
             continue
         install_path = cap.install_path
         if install_path is None or not Path(install_path).exists():
+            issues.append(f"{cap.name}: Capability directory is missing (cache drift)")
             continue
         node_modules = Path(install_path) / "node_modules"
         package_json = Path(install_path) / "package.json"
@@ -306,7 +313,10 @@ def _check_mcp_handshake() -> Tuple[str, bool, str]:
             blocked_caps.append(f"{cap.name}: blocked upstream — {reason}")
             continue
         manifest = _load_manifest(cap)
-        if manifest is None or not manifest.mcp:
+        if manifest is None:
+            failures.append(f"{cap.name} (no manifest / cache drift)")
+            continue
+        if not manifest.mcp:
             continue
         command, args, env = _probe_command_for(cap, manifest)
         if not command:
@@ -417,7 +427,10 @@ def _check_registry_drift() -> Tuple[str, bool, str]:
                     in_config_not_db.append(f"{fw_id}:{server_key} in config but not in registry")
 
     in_db_not_config = []
+    missing_on_disk = []
     for cap in db_caps:
+        if not cap.install_path or not Path(cap.install_path).exists():
+            missing_on_disk.append(f"{cap.owner}/{cap.name} in registry but missing on disk")
         if cap.kind and cap.kind.value != "mcp-server":
             continue
         found = False
@@ -448,12 +461,14 @@ def _check_registry_drift() -> Tuple[str, bool, str]:
         if not found:
             in_db_not_config.append(f"{cap.owner}/{cap.name} in registry but not in any config")
 
-    if in_config_not_db or in_db_not_config:
+    if in_config_not_db or in_db_not_config or missing_on_disk:
         parts = []
         if in_config_not_db:
             parts.append(f"{len(in_config_not_db)} in config not in registry")
         if in_db_not_config:
             parts.append(f"{len(in_db_not_config)} in registry not in config")
+        if missing_on_disk:
+            parts.append(f"{len(missing_on_disk)} in registry but missing on disk")
         return ("Registry/config drift", False, "; ".join(parts))
     if not db_caps:
         return ("Registry/config drift", True, "no capabilities installed")

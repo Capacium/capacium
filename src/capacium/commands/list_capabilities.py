@@ -1,3 +1,5 @@
+from pathlib import Path
+from ..framework_detector import framework_skills_dirs
 import json
 from typing import Optional
 from ..registry import Registry
@@ -25,6 +27,22 @@ FRONTEND_ORDER = [
 ]
 
 
+def _get_valid_frameworks(cap) -> list:
+    if not cap.install_path:
+        return []
+    valid_fws = []
+    for fw, skills_dir in framework_skills_dirs().items():
+        symlink_path = skills_dir / cap.name
+        if symlink_path.is_symlink():
+            try:
+                resolved = symlink_path.resolve()
+                if resolved == Path(cap.install_path).resolve():
+                    valid_fws.append(fw)
+            except OSError:
+                pass
+    return valid_fws
+
+
 def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = None,
                       json_output: bool = False, details: bool = False):
     registry = Registry()
@@ -48,6 +66,16 @@ def list_capabilities(kind: Optional[str] = None, framework: Optional[str] = Non
     else:
         capabilities = registry.list_capabilities()
         label = ""
+
+    valid_capabilities = []
+    for cap in capabilities:
+        if not cap.install_path or not Path(cap.install_path).exists():
+            continue
+        if not cap.fingerprint or not cap.installed_at:
+            continue
+        cap.frameworks = _get_valid_frameworks(cap)
+        valid_capabilities.append(cap)
+    capabilities = valid_capabilities
 
     if not capabilities:
         if not json_output:
