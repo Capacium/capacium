@@ -214,13 +214,15 @@ def test_registry_roundtrip_preserves_source_ref_and_commit(tmp_home, capsys):
     from capacium.commands.list_capabilities import list_capabilities
 
     registry = Registry()
+    installed_dir = tmp_home / "installed"
+    installed_dir.mkdir(parents=True, exist_ok=True)
     cap = Capability(
         owner="acme",
         name="provenance-cap",
         version="2.0.0",
         kind=Kind.SKILL,
         fingerprint="abc123",
-        install_path=tmp_home / "installed",
+        install_path=installed_dir,
         installed_at=datetime.now(),
         source_url="file:///tmp/provenance.git",
         source_ref="refs/tags/v2.0.0",

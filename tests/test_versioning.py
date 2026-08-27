@@ -36,6 +36,20 @@ class TestVersionManager:
         result = VersionManager.resolve_alias("stable", ["1.0.0", "2.0.0-alpha", "1.5.0"])
         assert result == "1.5.0"
 
+    def test_resolve_alias_latest_with_prerelease_mixed_with_release(self):
+        # P6-008: pre-release strings like 1.2.1-alpha must not raise a
+        # TypeError against a plain release of the same core version.
+        result = VersionManager.resolve_alias(
+            "latest", ["1.2.1", "1.2.1-alpha"]
+        )
+        assert result == "1.2.1"
+
+    def test_resolve_alias_latest_prerelease_order(self):
+        result = VersionManager.resolve_alias(
+            "latest", ["1.0.0-rc.1", "1.0.0-rc.2", "1.0.0-rc.1.1"]
+        )
+        assert result == "1.0.0-rc.2"
+
     def test_is_valid_version(self):
         assert VersionManager.is_valid_version("1.2.3")
         assert VersionManager.is_valid_version("0.1.0")

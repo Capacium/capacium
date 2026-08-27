@@ -1,11 +1,13 @@
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
 from . import __version__
 from .commands.registry import add_registry_parser
 from .commands.init import VALID_TEMPLATES
+from .utils.errors import CapaciumError
 
 
 def main():
@@ -1052,8 +1054,24 @@ def main():
     except ImportError as e:
         print(f"Error: Command module not available: {e}")
         sys.exit(1)
+    except SystemExit:
+        # Command modules already call sys.exit() with the correct code; let it
+        # propagate unchanged instead of re-classifying it as a generic failure.
+        raise
+    except (sqlite3.Error, OSError, EOFError) as e:
+        # System error: I/O, database, or transport failure. The CLI contract
+        # reserves exit code 2 for these (0 success / 1 user error / 2 system
+        # error / 130 interrupt). A blanket `except Exception` here would
+        # collapse them into a user error and mask the distinction.
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
+    except CapaciumError as e:
+        # Domain-level error raised by a command maps to a user error (exit 1).
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        print(f"Error: {e}")
+        # Unclassified failure is a generic user error by default.
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
