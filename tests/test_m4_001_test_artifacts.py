@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from capacium.commands.clean import clean_test_artifacts, is_temp_path, is_test_fingerprint
+from capacium.commands.clean import clean_test_artifacts
 from capacium.commands.list_capabilities import (
     _has_unknown_or_invalid_status,
     _is_invalid_or_test_fingerprint,
@@ -265,7 +265,7 @@ class TestArtifactCleanupCommand:
         assert broken_symlink.is_symlink()
 
         # Test Real Execution
-        real_report = clean_test_artifacts(dry_run=False, registry=registry, verbose=True)
+        clean_test_artifacts(dry_run=False, registry=registry, verbose=True)
         captured = capsys.readouterr().out
         assert "Cleaned test artifacts" in captured
 

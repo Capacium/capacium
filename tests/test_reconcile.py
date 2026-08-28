@@ -227,7 +227,7 @@ class TestRegistryFindings:
 class TestOrphanedDirectories:
     def test_orphaned_directories_reported(self, tmp_home):
         home = tmp_home
-        registry = Registry(home / ".capacium" / "registry.db")
+        Registry(home / ".capacium" / "registry.db")
         packages = home / ".capacium" / "packages"
         packages.mkdir(parents=True)
         
