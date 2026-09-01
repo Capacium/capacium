@@ -1,8 +1,5 @@
-import pytest
-from pathlib import Path
 from capacium.commands.info import _resolve_from_local_registry, _fingerprint_status
 from capacium.models import Capability, Kind
-from datetime import datetime
 
 class DummyRegistry:
     def __init__(self, cap):
