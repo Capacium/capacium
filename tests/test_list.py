@@ -1,6 +1,4 @@
-import pytest
-from pathlib import Path
-from capacium.commands.list_capabilities import list_capabilities, _get_valid_frameworks
+from capacium.commands.list_capabilities import _get_valid_frameworks
 from capacium.models import Capability, Kind
 from datetime import datetime
 
