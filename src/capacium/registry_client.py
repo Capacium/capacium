@@ -70,12 +70,11 @@ class RegistryClient:
     @staticmethod
     def from_config() -> "RegistryClient":
         from .utils.config import get_registry_url, load_auth_token
+        # config.yaml stores the full URL (e.g. https://api.capacium.xyz/v2).
+        # No /v2 handling belongs here: _build_registry_url is the single funnel
+        # every path passes through and strips an exact trailing /v2 segment, so
+        # all construction paths are normalised in one place.
         url = get_registry_url().rstrip("/")
-        # Strip /v2 suffix — _build_registry_url appends /v2/* paths itself.
-        # config.yaml stores the full URL (e.g. https://api.capacium.xyz/v2)
-        # so without this strip we'd get …/v2/v2/listings.
-        if url.endswith("/v2"):
-            url = url[:-3]
         token = load_auth_token()
         return RegistryClient(base_url=url, token=token)
 
@@ -143,6 +142,15 @@ class RegistryClient:
         base = (registry_url or self._base_url or self._read_config_registry_url()
                 or os.environ.get("CAPACIUM_REGISTRY_URL", "https://api.capacium.xyz"))
         base = base.rstrip("/")
+        # Every path this funnel appends is itself prefixed /v2/... (submit,
+        # publish, listings, capabilities, ...). If the resolved base already
+        # carries a trailing /v2 segment we would double it, e.g. base
+        # https://…/v2 + /v2/submit -> https://…/v2/v2/submit. Strip only an
+        # exact trailing /v2 segment so all four base sources are normalised;
+        # a "v2" elsewhere in the path (a host or earlier segment such as
+        # …/api/v2-staging or …/v20) is untouched.
+        if base.endswith("/v2"):
+            base = base[:-3]
         return f"{base}{path}"
 
     @staticmethod
