@@ -255,7 +255,7 @@ jobs:
               ;;
           esac
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PYPROJ_VERSION="$(python3 -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")"
+          PYPROJ_VERSION="$(grep -E '^version[[:space:]]*=' pyproject.toml | head -1 | cut -d '"' -f 2)"
           if [ "${PYPROJ_VERSION}" != "${TAG_VERSION}" ]; then
             echo "ERROR: pyproject.toml version is ${PYPROJ_VERSION}, but tag is v${TAG_VERSION}."
             echo "  Bump pyproject.toml to ${TAG_VERSION} before tagging; this tag will NOT be mirrored."
