@@ -67,6 +67,9 @@ version: 1.0.2
 description: SkillWeave bundle
 owner: LangeVC
 repository: https://github.com/LangeVC/skillweave
+capabilities:
+  - name: skillweave-core
+    source: ./core
 replaces:
   - typelicious/skillweave
 previous_identities:

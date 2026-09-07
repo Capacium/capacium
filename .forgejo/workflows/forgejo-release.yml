@@ -57,10 +57,14 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
             
-          if [ "$HTTP_STATUS" != "201" ]; then
-            echo "Failed to create release. HTTP $HTTP_STATUS"
-            cat response.json
-            exit 1
+          if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
+            if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
+              echo "Release already exists (HTTP $HTTP_STATUS). Treating as idempotent success."
+            else
+              echo "Failed to create release. HTTP $HTTP_STATUS"
+              cat response.json
+              exit 1
+            fi
           fi
           
           echo "Release created successfully."

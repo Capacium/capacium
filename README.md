@@ -25,10 +25,10 @@ Works fully offline from local paths. The Exchange layer (separate repo) adds re
 You can install Capacium globally in an isolated environment using `pipx`.
 
 ```bash
-pipx install git+https://github.com/Capacium/capacium.git@v1.0.0
+pipx install git+https://github.com/Capacium/capacium.git@v1.1.0
 
 # Or with optional signing and YAML support:
-pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v1.0.0"
+pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v1.1.0"
 ```
 
 Or from PyPI:
@@ -43,7 +43,7 @@ If you don't use Python, you can download standalone executables directly from t
 ### 3. Docker (GHCR)
 Run Capacium safely in a container with your directories mounted:
 ```bash
-docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:1.0.0
+docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:1.1.0
 ```
 
 ### 4. macOS / Linux (Homebrew)
@@ -182,7 +182,5 @@ cap publish ./dist/local-my-skill-0.1.0.tar.gz
 Apache-2.0. See [LICENSE](./LICENSE).
 
 ## Development
-
-Canonical repository: **self-hosted Forgejo** — `git.langevc.com/capacium/capacium`
-(`git clone git@git.langevc.com:capacium/capacium.git`). Develop against the Forgejo
-clone and open pull requests there. The GitHub copy is a read-only mirror.
+ 
+The canonical repository is maintained on self-hosted infrastructure. The GitHub repository serves as the public release and distribution mirror. Pull requests and issues submitted via GitHub are welcomed and synchronized automatically.
