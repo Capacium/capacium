@@ -43,6 +43,13 @@ def publish_capability(
         print("Error: manifest missing required field 'version'")
         return False
 
+    errors = manifest.validate()
+    if errors:
+        print("Error: Manifest validation failed (Pre-Flight Check):")
+        for err in errors:
+            print(f"  - {err}")
+        return False
+
     owner = manifest.owner or "global"
     frameworks = manifest.frameworks or []
     if isinstance(frameworks, str):
@@ -59,7 +66,23 @@ def publish_capability(
         "dependencies": manifest.dependencies or {},
         "replaces": manifest.replaces or [],
         "previous_identities": manifest.previous_identities or [],
+        "operator_meta": manifest.operator_meta or {},
+        "checkpoint_meta": manifest.checkpoint_meta or {},
+        "policy_meta": manifest.policy_meta or {},
+        "mcp_tools": manifest.mcp_tools or [],
     }
+
+    # Bilde veraltete Felder ab: Lade governance.trust_state um auf intended_trust_tier
+    governance = getattr(manifest, "governance", None) or manifest.extensions.get("x_governance", {})
+    if isinstance(governance, dict) and "trust_state" in governance:
+        import click
+        click.secho(
+            "Warning: 'governance.trust_state' is deprecated. Please use 'intended_trust_tier'.",
+            fg="yellow", err=True
+        )
+        payload["intended_trust_tier"] = governance["trust_state"]
+    elif "intended_trust_tier" in manifest.extensions:
+        payload["intended_trust_tier"] = manifest.extensions["intended_trust_tier"]
 
     canonical = f"{owner}/{manifest.name}"
 

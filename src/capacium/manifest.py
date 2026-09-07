@@ -103,6 +103,11 @@ class Manifest:
     access: Optional[Dict[str, Any]] = None
     compatibility: Optional[Dict[str, Any]] = None
     qualified_interfaces: List[Dict[str, Any]] = field(default_factory=list)
+    operator_meta: Optional[Dict[str, Any]] = None
+    checkpoint_meta: Optional[Dict[str, Any]] = None
+    policy_meta: Optional[Dict[str, Any]] = None
+    mcp_tools: List[Dict[str, Any]] = field(default_factory=list)
+    governance: Optional[Dict[str, Any]] = None
     # Lossless extension namespace. Keys written under the ``x_`` prefix are
     # not interpreted by Core but must survive a load-save-load cycle intact;
     # dropping them silently destroyed provenance such as ``x_kind_migration``.
