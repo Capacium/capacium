@@ -4,7 +4,10 @@ import sys
 import subprocess
 from unittest import mock
 
-from capacium.commands.publish import publish_capability
+from capacium.commands.publish import (
+    EXIT_OK,
+    publish_capability,
+)
 from capacium.registry_client import RegistryClientError
 
 
@@ -12,13 +15,13 @@ class TestPublish:
     def test_publish_rejects_nonexistent_tarball(self, tmp_path):
         bad_path = tmp_path / "does-not-exist.tar.gz"
         result = publish_capability(bad_path)
-        assert result is False
+        assert result != EXIT_OK
 
     def test_publish_rejects_non_tarball(self, tmp_path):
         txt_file = tmp_path / "not-a-tarball.txt"
         txt_file.write_text("hello")
         result = publish_capability(txt_file)
-        assert result is False
+        assert result != EXIT_OK
 
     def test_publish_tarball_without_manifest(self, tmp_path):
         import tarfile
@@ -27,7 +30,7 @@ class TestPublish:
         with tarfile.open(tarball, "w:gz"):
             pass
         result = publish_capability(tarball)
-        assert result is False
+        assert result != EXIT_OK
 
     def test_publish_valid_tarball(self, tmp_path):
         import tarfile
@@ -55,7 +58,7 @@ frameworks:
                 "created": True,
             }
             result = publish_capability(tarball)
-            assert result is True
+            assert result == EXIT_OK
             instance.publish.assert_called_once()
 
     def test_publish_includes_identity_migration_fields(self, tmp_path):
@@ -87,7 +90,7 @@ previous_identities:
                 "created": True,
             }
             result = publish_capability(cap_yaml)
-            assert result is True
+            assert result == EXIT_OK
 
             payload = instance.publish.call_args.args[0]
             assert payload["repo_url"] == "https://github.com/LangeVC/skillweave"
@@ -121,7 +124,7 @@ owner: test-owner
                 status_code=409,
             )
             result = publish_capability(tarball)
-            assert result is False
+            assert result != EXIT_OK
 
     def test_publish_unauthorized_401(self, tmp_path):
         import tarfile
@@ -144,7 +147,7 @@ owner: test-owner
                 status_code=401,
             )
             result = publish_capability(tarball)
-            assert result is False
+            assert result != EXIT_OK
 
     def test_publish_package_path_is_required(self):
         result = subprocess.run(
@@ -176,5 +179,5 @@ owner: test-owner
                 "created": True,
             }
             result = publish_capability(tarball, token="my-secret-token")
-            assert result is True
+            assert result == EXIT_OK
             mock_client.assert_called_once_with(token="my-secret-token")

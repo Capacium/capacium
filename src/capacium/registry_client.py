@@ -66,6 +66,7 @@ class RegistryClient:
     def __init__(self, token: Optional[str] = None, base_url: Optional[str] = None):
         self._token = token
         self._base_url = base_url
+        self.last_response_status: Optional[int] = None
 
     @staticmethod
     def from_config() -> "RegistryClient":
@@ -117,6 +118,7 @@ class RegistryClient:
         req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                self.last_response_status = resp.status
                 body = resp.read()
                 if resp.status == 204:
                     return {}
@@ -127,6 +129,7 @@ class RegistryClient:
                 detail = e.read().decode("utf-8")
             except Exception:
                 pass
+            self.last_response_status = e.code
             raise RegistryClientError(
                 f"HTTP {e.code} from {url}: {detail or e.reason}",
                 status_code=e.code,
