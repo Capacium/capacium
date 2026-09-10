@@ -72,16 +72,22 @@ def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None
     """Forward to the real ``rmtree`` using only the keyword arguments the
     installed stdlib actually accepts.
 
-    Python 3.10/3.11 expose ``(path, ignore_errors, onerror, *, dir_fd)``;
-    Python 3.12+ replaced ``onerror`` with the keyword-only ``onexc`` (and
-    kept ``onerror`` as a deprecated shim). Passing ``onexc`` unconditionally
-    raised ``TypeError`` on 3.10/3.11, so the keyword set is probed per call.
+    Python 3.11 exposes ``(path, ignore_errors, onerror, *, dir_fd)`` and
+    Python 3.12+ exposes ``(path, ignore_errors, onerror, *, onexc, dir_fd)``.
+    Some 3.10/3.11 builds omit ``dir_fd`` entirely when fd-based functions are
+    unavailable. ``ignore_errors`` is always accepted; each optional keyword
+    (``onerror``, ``onexc``, ``dir_fd``) is probed per call and forwarded only
+    when the real callable understands it, so an unsupported keyword never
+    raises ``TypeError``. Callback selection stays capability-based: ``onexc``
+    is preferred when supported, otherwise ``onerror`` when it is.
     """
-    kwargs = {"ignore_errors": ignore_errors, "dir_fd": dir_fd}
+    kwargs = {"ignore_errors": ignore_errors}
     if _real_rmtree_supports_kwarg("onexc"):
         kwargs["onexc"] = onexc
     elif _real_rmtree_supports_kwarg("onerror"):
         kwargs["onerror"] = onerror
+    if _real_rmtree_supports_kwarg("dir_fd"):
+        kwargs["dir_fd"] = dir_fd
     _real_rmtree(path, **kwargs)
 
 

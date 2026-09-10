@@ -6,9 +6,13 @@ call signature that pytest's ``tmp_path`` teardown uses. These tests exercise
 the wrapper directly so the contract is proven without a Windows runner.
 
 Regression focus: Python 3.10/3.11 ``shutil.rmtree`` has no ``onexc``
-parameter. The original wrapper forwarded ``onexc=...`` unconditionally and
-raised ``TypeError`` there. The wrapper now probes the real callable's
-signature and forwards only the keywords it understands.
+parameter, and some 3.10/3.11 builds omit ``dir_fd`` as well when fd-based
+functions are unavailable. The original wrapper forwarded ``onexc=...`` and
+``dir_fd=...`` unconditionally and raised ``TypeError`` there. The wrapper now
+probes the real callable's signature and forwards only the keywords it
+understands. The version-shaped stand-ins below pin each historical signature
+and the no-``dir_fd`` shape is exercised on every host, so the regression is
+covered even where the local stdlib does accept ``dir_fd``.
 """
 
 from __future__ import annotations
@@ -37,10 +41,13 @@ def test_rmtree_wrapper_retry_arguments_do_not_collide_with_stdlib():
     """Retry budget uses private names so no stdlib keyword is shadowed."""
     stdlib = set(_stdlib_signature().parameters)
     extra = set(inspect.signature(_rmtree_retry).parameters) - stdlib
-    # ``onexc`` is absent from the 3.10/3.11 stdlib; the wrapper still declares
-    # it so a 3.12-style caller can pass it, and forwards it only when the real
-    # callable understands it. Private retry kwargs must never collide.
-    assert extra <= {"_attempts", "_delay", "onexc"}, f"unexpected extra params: {extra}"
+    # ``onexc`` (3.12+) and ``dir_fd`` (3.11+; absent from some 3.10/3.11
+    # builds) may be missing from the local stdlib. The wrapper still declares
+    # them so a caller written for another version works, and forwards them
+    # only when the real callable understands them. Private retry kwargs must
+    # never collide with a stdlib parameter.
+    assert extra <= {"_attempts", "_delay", "onexc", "dir_fd"}, \
+        f"unexpected extra params: {extra}"
     assert {"_attempts", "_delay"} <= extra, f"retry params missing: {extra}"
 
 
@@ -106,25 +113,38 @@ def test_rmtree_wrapper_forwards_onexc_to_onexc_capable_callable(tmp_path, monke
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Python 3.10/3.11 regression: no ``onexc`` in the real rmtree signature.
-# These callables are the exact stdlib signature for those versions, so they
-# raise TypeError if the wrapper forwards onexc (the reviewed defect).
+# Version-shaped regression stand-ins.
+#
+# Each callable mirrors a real stdlib signature and performs the removal
+# directly, so a forwarded keyword it does not declare raises TypeError — the
+# exact reviewed defect. ``python310_no_fd`` additionally omits ``dir_fd``,
+# reproducing the CPython 3.10.21 build where fd-based functions are
+# unavailable. That shape does not exist on the local host (whose 3.11/3.12+
+# stdlib accepts ``dir_fd``), so it is the direct, always-run coverage for the
+# failure CI saw.
 # ──────────────────────────────────────────────────────────────────────────
 
 
 def _rmtree_310(path, ignore_errors=False, onerror=None, *, dir_fd=None):
-    """Signature-identical stand-in for Python 3.10/3.11 ``shutil.rmtree``."""
+    """Signature-identical stand-in for Python 3.11 ``shutil.rmtree``."""
+    if dir_fd is None:
+        return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
     return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror, dir_fd=dir_fd)
 
 
+def _rmtree_310_no_fd(path, ignore_errors=False, onerror=None):
+    """Stand-in for the 3.10.21 build that omits ``dir_fd`` entirely."""
+    return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
+
+
 def test_rmtree_wrapper_plain_call_without_onexc_on_310_callable(tmp_path, monkeypatch):
-    """Plain call: must not forward onexc to a 3.10/3.11-shaped rmtree."""
+    """Plain call: must not forward onexc (or an unsupported dir_fd) to a
+    3.10/3.11-shaped rmtree."""
     target = tmp_path / "tree"
     target.mkdir()
     (target / "file.txt").write_text("x")
 
     monkeypatch.setattr("tests.conftest._real_rmtree", _rmtree_310)
-    monkeypatch.setattr(shutil, "rmtree", shutil.rmtree)  # keep the real one intact
 
     _rmtree_retry(target, _delay=0.0)
 
@@ -170,7 +190,7 @@ def test_rmtree_wrapper_310_callable_ignore_errors_fallback(tmp_path, monkeypatc
     def failing_310(path, ignore_errors=False, onerror=None, *, dir_fd=None):
         if ignore_errors:
             calls["ignore"] += 1
-            return shutil.rmtree(path, ignore_errors=True, dir_fd=dir_fd)
+            return _rmtree_310(path, ignore_errors=True)
         raise PermissionError("winerror 32 simulated handle contention")
 
     monkeypatch.setattr("tests.conftest._real_rmtree", failing_310)
@@ -181,7 +201,46 @@ def test_rmtree_wrapper_310_callable_ignore_errors_fallback(tmp_path, monkeypatc
     assert not target.exists()
 
 
-def test_rmtree_wrapper_310_callable_reraises_unexpected_signature_error(tmp_path, monkeypatch):
+def test_rmtree_wrapper_no_dir_fd_callable_plain_call(tmp_path, monkeypatch):
+    """Direct coverage for CI's environment: the real rmtree omits ``dir_fd``.
+
+    The wrapper must not forward ``dir_fd`` (nor ``onexc``) to a callable that
+    does not declare it, on every host and Python version."""
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", _rmtree_310_no_fd)
+
+    _rmtree_retry(target, _delay=0.0)
+
+    assert not target.exists()
+
+
+def test_rmtree_wrapper_no_dir_fd_callable_ignore_errors_fallback(tmp_path, monkeypatch):
+    """Persistent contention against the no-``dir_fd`` callable: the retry and
+    the ignore_errors fallback must both remain dir_fd-free."""
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    calls = {"ignore": 0}
+
+    def failing_no_fd(path, ignore_errors=False, onerror=None):
+        if ignore_errors:
+            calls["ignore"] += 1
+            return shutil.rmtree(path, ignore_errors=True)
+        raise PermissionError("winerror 32 simulated handle contention")
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", failing_no_fd)
+
+    _rmtree_retry(target, _attempts=3, _delay=0.0)
+
+    assert calls["ignore"] == 1
+    assert not target.exists()
+
+
+def test_rmtree_wrapper_callable_reraises_unexpected_signature_error(tmp_path, monkeypatch):
     """A genuine TypeError (not a contention error) must propagate, proving the
     wrapper did not blanket-swallow signature errors."""
     def strict_rmtree(path, ignore_errors=False, onerror=None, *, dir_fd=None):
