@@ -1,6 +1,42 @@
 # Changelog
 
-## Capacium v0.18.0 — One decision about what may be removed (2026-08-25)
+## Capacium v1.1.1 — Machine-readable publish receipts (2026-09-09)
+
+Publish now reports instrumentable, verifiable outcomes instead of a human
+phrase.
+
+### Changed
+
+- **Machine-readable publish receipts.** `cap publish` emits a structured
+  receipt describing what was published, to which registry, and the outcome.
+- **Distinguishable exit codes.** Publish distinguishes user errors, system
+  errors, and unconfirmed listings, so callers can act on failure without
+  parsing prose.
+- **Truthful trusted-publishing help.** The trusted-publishing guidance now
+  describes the actual publish flow instead of a presumed one.
+
+## Capacium v1.1.0 — CLI payloads, mirror preflight, Forgejo releases (2026-09-08)
+
+### Added
+
+- **CLI payload extraction** with validation for missing fields.
+- **Forgejo release automation** (`forgejo-release.yml`) with idempotent
+  retry on already-existing releases.
+
+### Changed
+
+- **Mirror preflight.** The GitHub mirror reads owner/repo from repository
+  variables and preflights existence and permission before forwarding a ref;
+  the draft `dry_run` input was dropped (the push event is its own proof).
+- **Trustworthy submit reporting.** Exchange submission now reports failure,
+  not success, for unconfirmed listings.
+- **Single trailing-`/v2` strip** at the URL funnel rather than per
+  construction path.
+
+### Fixed
+
+- Removed `tomllib` dependency in the version gate and cleaned unused imports
+  flagged by ruff.
 
 Four review rounds each found the next unguarded way to delete something a
 harness was still using. This release replaces them with one guard and one

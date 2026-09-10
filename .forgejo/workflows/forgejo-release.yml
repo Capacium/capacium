@@ -41,11 +41,11 @@ jobs:
           done <<< "$COMMITS"
           
           # Format notes safely
-          NOTES=$(printf "## %s\n\n### What's Changed\n%s" "$TAG_NAME" "$CHANGES")
+          NOTES=$(printf "## Capacium %s\n\n### What's Changed\n%s" "$TAG_NAME" "$CHANGES")
           
           PAYLOAD=$(jq -n \
             --arg tag_name "$TAG_NAME" \
-            --arg name "$TAG_NAME" \
+            --arg name "Capacium ${TAG_NAME}" \
             --arg body "$NOTES" \
             '{tag_name: $tag_name, name: $name, body: $body, draft: false, prerelease: false}')
             
@@ -59,7 +59,21 @@ jobs:
             
           if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
             if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
-              echo "Release already exists (HTTP $HTTP_STATUS). Treating as idempotent success."
+              echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting exact title (self-healing, matches GitHub)."
+              # Forgejo has no `gh release edit`; PATCH the existing release by
+              # tag so a pre-existing release always ends with the canonical
+              # 'Capacium ${TAG_NAME}' title, not a stale/empty one.
+              PATCH_STATUS=$(curl -s -o patch.json -w "%{http_code}" \
+                -X PATCH "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" \
+                -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n --arg name "Capacium ${TAG_NAME}" '{name: $name}')")
+              if [ "$PATCH_STATUS" != "200" ]; then
+                echo "Failed to re-assert release title. HTTP $PATCH_STATUS"
+                cat patch.json
+                exit 1
+              fi
+              echo "Release title re-asserted to 'Capacium ${TAG_NAME}'."
             else
               echo "Failed to create release. HTTP $HTTP_STATUS"
               cat response.json

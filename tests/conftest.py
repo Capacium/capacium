@@ -1,5 +1,6 @@
 import builtins
 import gc
+import inspect
 import os
 import shutil
 import sqlite3
@@ -50,19 +51,72 @@ def _is_real_capacium_write(p) -> bool:
         return False
 
 
-def _rmtree_retry(path, attempts: int = 5, delay: float = 0.25) -> None:
+def _real_rmtree_supports_kwarg(name: str) -> bool:
+    """Capability probe: does the installed stdlib ``shutil.rmtree`` accept
+    ``name`` (e.g. ``onexc``, added in 3.12; ``dir_fd``/``onerror`` older)?
+
+    Derived from the live callable's signature rather than a hardcoded
+    ``sys.version_info`` branch, so it stays correct on 3.10, 3.11, 3.12+ and
+    on any doctored callable a caller passes in. Only keyword-only or named
+    keyword parameters count — a ``**kwargs`` catch-all does not, because the
+    underlying C implementation may still reject an unknown keyword.
+    """
+    try:
+        parameters = inspect.signature(_real_rmtree).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters
+
+
+def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None:
+    """Forward to the real ``rmtree`` using only the keyword arguments the
+    installed stdlib actually accepts.
+
+    Python 3.10/3.11 expose ``(path, ignore_errors, onerror, *, dir_fd)``;
+    Python 3.12+ replaced ``onerror`` with the keyword-only ``onexc`` (and
+    kept ``onerror`` as a deprecated shim). Passing ``onexc`` unconditionally
+    raised ``TypeError`` on 3.10/3.11, so the keyword set is probed per call.
+    """
+    kwargs = {"ignore_errors": ignore_errors, "dir_fd": dir_fd}
+    if _real_rmtree_supports_kwarg("onexc"):
+        kwargs["onexc"] = onexc
+    elif _real_rmtree_supports_kwarg("onerror"):
+        kwargs["onerror"] = onerror
+    _real_rmtree(path, **kwargs)
+
+
+def _rmtree_retry(path, ignore_errors: bool = False, onerror=None, *,
+                  onexc=None, dir_fd=None,
+                  _attempts: int = 5, _delay: float = 0.25) -> None:
     """shutil.rmtree replacement that retries on transient Windows handle
-    contention before falling back to an ignoring best-effort removal."""
-    for attempt in range(attempts):
+    contention before falling back to an ignoring best-effort removal.
+
+    Signature matches the stdlib (``ignore_errors``, ``onerror``, ``onexc``,
+    ``dir_fd``) so pytest's ``tmp_path`` teardown can call it exactly as it
+    calls ``shutil.rmtree``. The retry budget is passed via private keyword
+    args (``_attempts``/``_delay``) that collide with no stdlib parameter, so
+    the wrapper can be swapped in transparently on Windows.
+
+    Keyword forwarding is capability-based (see ``_call_real_rmtree``): the
+    wrapper declares ``onexc``/``onerror``/``dir_fd`` so it accepts every
+    caller, but only hands the installed stdlib the subset it understands.
+    """
+    for attempt in range(_attempts):
         try:
-            _real_rmtree(path)
+            # ``ignore_errors=True`` suppresses the ``onexc``/``onerror``
+            # callback semantics; callers asking to ignore errors want silent
+            # best-effort removal from the first attempt.
+            if ignore_errors:
+                _call_real_rmtree(path, True, None, None, dir_fd)
+            else:
+                _call_real_rmtree(path, False, onerror, onexc, dir_fd)
             return
         except (PermissionError, OSError):
-            if attempt == attempts - 1:
-                _real_rmtree(path, ignore_errors=True)
+            if attempt == _attempts - 1:
+                _call_real_rmtree(path, True, None, None, dir_fd)
                 return
             gc.collect()
-            time.sleep(delay)
+            time.sleep(_delay)
 
 
 @pytest.fixture(scope="session", autouse=True)
