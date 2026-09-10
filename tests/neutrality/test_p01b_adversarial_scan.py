@@ -15,7 +15,7 @@ fixtures including every case required by P01F:
 
 import tempfile
 from dataclasses import FrozenInstanceError
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -29,9 +29,19 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "capacium"
 CANONICAL_RELPATH = _CANONICAL_KIND_RELPATH
 
 
+def _canonical_relpath(finding_file: str) -> str:
+    """Reconstruct the repo-relative POSIX path the guard compares against.
+
+    ``Finding.file`` is already POSIX (the guard canonicalizes it), so the
+    comparison must use POSIX join semantics on every host; ``str(Path(...))``
+    would reintroduce backslashes on Windows.
+    """
+    return str(PurePosixPath("src") / "capacium" / finding_file)
+
+
 def test_current_src_clean():
     findings, advisories = detect_authority_violations(SRC)
-    strict_findings = [f for f in findings if str(Path("src") / "capacium" / f.file) != CANONICAL_RELPATH]
+    strict_findings = [f for f in findings if _canonical_relpath(f.file) != CANONICAL_RELPATH]
     assert not strict_findings, "Unauthorized Kind registries:\n" + "\n".join(str(f) for f in strict_findings)
 
 

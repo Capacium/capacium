@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 from .models import Capability
+from .utils.fs import rmtree as fs_rmtree
 
 
 class StorageManager:
@@ -70,7 +71,7 @@ class StorageManager:
         if path.is_symlink():
             path.unlink()
         elif path.is_dir():
-            shutil.rmtree(path)
+            fs_rmtree(path)
         elif path.exists():
             path.unlink()
 
@@ -249,7 +250,7 @@ class StorageManager:
         the ``protected`` live-linked set so a linked dir is never severed."""
         stubs = self.find_empty_package_stubs(protected=protected)
         for stub in stubs:
-            shutil.rmtree(stub)
+            fs_rmtree(stub)
         for owner_dir in list(self.base_dir.iterdir()):
             if owner_dir.is_dir() and not owner_dir.is_symlink() and not any(owner_dir.iterdir()):
                 owner_dir.rmdir()

@@ -115,9 +115,10 @@ def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
     ancestor directory beneath the package store, so a quarantine/delete of an
     ancestor can never be emitted while a live link resolves into it.
     """
-    from .reconcile import _packages_dir
+    from .reconcile import _packages_dir, _canonical
 
     packages = _packages_dir()
+    packages_key = _canonical(packages)
     live: Set[Path] = set()
     for entry in list(report.get("skills", [])) + list(report.get("mcp", [])):
         if entry.get("liveness") != "alive":
@@ -131,17 +132,17 @@ def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
             continue
         target = Path(str(resolved)).resolve()
         try:
-            target.relative_to(packages.resolve())
+            _canonical(target).relative_to(packages_key)
         except ValueError:
             continue
         parent = target
         while True:
             live.add(parent)
-            if parent == packages.resolve():
+            if _canonical(parent) == packages_key:
                 break
             parent = parent.parent
             try:
-                parent.relative_to(packages.resolve())
+                _canonical(parent).relative_to(packages_key)
             except ValueError:
                 break
     return live
@@ -167,9 +168,16 @@ def live_linked_store_paths() -> Set[Path]:
 def _is_harness_linked(path: Path, live_linked: Set[Path]) -> bool:
     """True when *path* is a store directory a live harness link resolves into,
     or is an ancestor of one. A cleanup must never quarantine or delete such a
-    path: the link it serves would be left dangling."""
+    path: the link it serves would be left dangling.
+
+    Comparisons are canonicalized so a Windows short-name spelling of the same
+    directory cannot slip past the guard.
+    """
+    from .reconcile import _canonical
+
+    path_key = _canonical(path)
     return any(
-        path.resolve() == live or path.resolve() in live.parents
+        path_key == _canonical(live) or path_key in _canonical(live).parents
         for live in live_linked
     )
 
@@ -801,13 +809,15 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
     )
 
     disagreeing = []
+    from .reconcile import _canonical as _canon
+
     for entry in entries:
         try:
-            resolved = entry.path.resolve()
+            resolved = _canon(entry.path)
         except (OSError, RuntimeError):
             resolved = entry.path
         if any(
-            resolved == refused or resolved in refused.parents
+            resolved == _canon(refused) or resolved in _canon(refused).parents
             for refused in refused_paths
         ):
             disagreeing.append(entry.ref)
@@ -884,10 +894,13 @@ def _literal_store_identity(target: Path, packages: Path) -> Tuple[bool, Optiona
     A bundle member's install path (``.../owner/name/version``) is itself a
     symlink into the bundle tree; resolving it would classify the link under the
     bundle's owner/name instead of the member's. Resolving only the *parent*
-    directories normalises the macOS ``/var`` -> ``/private/var`` prefix while
-    leaving the leaf (version) untouched (CAP-REC-D2)."""
-    root = packages.resolve()
-    parent_resolved = target.parent.resolve()
+    directories normalises the macOS ``/var`` -> ``/private/var`` prefix and a
+    Windows 8.3 short-name parent while leaving the leaf (version) untouched
+    (CAP-REC-D2)."""
+    from .reconcile import _canonical
+
+    root = _canonical(packages)
+    parent_resolved = _canonical(target.parent)
     leaf = target.name
     try:
         rel = (parent_resolved / leaf).relative_to(root)

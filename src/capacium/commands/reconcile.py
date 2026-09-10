@@ -57,23 +57,49 @@ def _all_skill_roots() -> Dict[str, Path]:
 
 def _packages_dir() -> Path:
     """The canonical package store root."""
-    return (Path.home() / ".capacium" / "packages").resolve()
+    return _canonical(Path.home() / ".capacium" / "packages")
 
 
-def _is_within(path: Path, root: Path) -> bool:
+def _canonical(path: Path) -> Path:
+    """Return a stable, long-form spelling of *path* for comparisons.
+
+    ``os.path.realpath`` expands a Windows 8.3 short name (``RUNNER~1``) to its
+    long form for a path that exists, so two spellings of one directory compare
+    equal and a Capacium-written link is not misclassified as ``foreign`` purely
+    because the OS spelled its target differently. Case is *not* folded: the
+    store layout is case-sensitive to the registry, and the canonical spelling
+    of an existing path already carries the on-disk case.
+    """
     try:
-        path.resolve().relative_to(root.resolve())
+        return Path(os.path.realpath(str(path)))
+    except OSError:
+        return path
+
+
+def _path_in_store(path: Path, root: Path) -> bool:
+    """True when *path* (any spelling) lies under the resolved *root*."""
+    try:
+        _canonical(path).relative_to(_canonical(root))
         return True
     except ValueError:
         return False
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    return _path_in_store(path, root)
+
+
 def _literal_within(path: Path, root: Path) -> bool:
     """True when *path* sits under *root* by its literal (written) form —
-    without resolving symlink hops, so a second hop out of the store is not
-    mistaken for a direct store target."""
+    without following symlink hops, so a second hop out of the store is not
+    mistaken for a direct store target.
+
+    Only the parent chain is canonicalized; the leaf is preserved so a symlink
+    at the leaf still reads as a second hop.
+    """
     try:
-        path.absolute().relative_to(root.resolve())
+        parent = _canonical(path.parent)
+        (parent / path.name).relative_to(_canonical(root))
         return True
     except ValueError:
         return False
@@ -258,10 +284,16 @@ def _classify_entry(
 
 
 def _match_relocation(relocations: Dict[str, str], target: Path) -> Optional[Dict[str, str]]:
-    """Return a relocation record whose old id appears in the target path."""
-    text = str(target)
+    """Return a relocation record whose old id appears in the target path.
+
+    The old id is written with POSIX separators (``global/elementeer-mcp``), so
+    the path is canonicalized to POSIX before matching; on Windows the raw
+    string carries backslashes and the substring test would never fire.
+    """
+    text = _canonical(target).as_posix()
+    folded = os.path.normcase(text).replace(os.sep, "/")
     for old_id, new_id in relocations.items():
-        if old_id in text:
+        if os.path.normcase(old_id) in folded:
             return {"from": old_id, "to": new_id}
     return None
 
@@ -273,7 +305,7 @@ def _store_owner_version(target: Path, packages: Path) -> Tuple[Optional[str], O
     ``<packages>/<owner>/<name>`` for bundles). Returns (owner/name, version)
     when the layout matches, else (None, None)."""
     try:
-        rel = target.resolve().relative_to(packages.resolve())
+        rel = _canonical(target).relative_to(_canonical(packages))
     except ValueError:
         return None, None
     parts = rel.parts

@@ -18,15 +18,21 @@ covered even where the local stdlib does accept ``dir_fd``.
 from __future__ import annotations
 
 import inspect
-import shutil
 
 import pytest
 
-from tests.conftest import _rmtree_retry
+from tests.conftest import _real_rmtree as _stdlib_rmtree, _rmtree_retry
 
 
 def _stdlib_signature():
-    return inspect.signature(shutil.rmtree)
+    """The real stdlib signature the wrapper must be compatible with.
+
+    On Windows the session fixture swaps ``shutil.rmtree`` for
+    ``_rmtree_retry``; ``inspect.signature(shutil.rmtree)`` would then inspect
+    the wrapper itself and make every compatibility assertion vacuous. The
+    original callable is captured at import time as ``_stdlib_rmtree``.
+    """
+    return inspect.signature(_stdlib_rmtree)
 
 
 def test_rmtree_wrapper_accepts_stdlib_keyword_arguments():
@@ -128,13 +134,13 @@ def test_rmtree_wrapper_forwards_onexc_to_onexc_capable_callable(tmp_path, monke
 def _rmtree_310(path, ignore_errors=False, onerror=None, *, dir_fd=None):
     """Signature-identical stand-in for Python 3.11 ``shutil.rmtree``."""
     if dir_fd is None:
-        return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
-    return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror, dir_fd=dir_fd)
+        return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
+    return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror, dir_fd=dir_fd)
 
 
 def _rmtree_310_no_fd(path, ignore_errors=False, onerror=None):
     """Stand-in for the 3.10.21 build that omits ``dir_fd`` entirely."""
-    return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
+    return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
 
 
 def test_rmtree_wrapper_plain_call_without_onexc_on_310_callable(tmp_path, monkeypatch):
@@ -229,7 +235,7 @@ def test_rmtree_wrapper_no_dir_fd_callable_ignore_errors_fallback(tmp_path, monk
     def failing_no_fd(path, ignore_errors=False, onerror=None):
         if ignore_errors:
             calls["ignore"] += 1
-            return shutil.rmtree(path, ignore_errors=True)
+            return _stdlib_rmtree(path, ignore_errors=True)
         raise PermissionError("winerror 32 simulated handle contention")
 
     monkeypatch.setattr("tests.conftest._real_rmtree", failing_no_fd)

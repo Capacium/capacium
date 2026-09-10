@@ -31,6 +31,26 @@ _REAL_PROD_CAPACIUM_SEP = _REAL_PROD_CAPACIUM_STR + os.sep
 _real_rmtree = shutil.rmtree
 
 
+def home_env(home, *, base=None) -> dict:
+    """Return a subprocess environment whose *platform* home points at ``home``.
+
+    ``Path.home()`` reads ``USERPROFILE`` (or ``HOMEDRIVE`` + ``HOMEPATH``) on
+    Windows and ``HOME`` on POSIX. A sandboxed subprocess that sets only ``HOME``
+    therefore still resolves the real runner home on Windows and writes into the
+    operator's ``~/.capacium``. All home variables are set so the same helper
+    sandboxes identically on every host.
+    """
+    env = dict(os.environ if base is None else base)
+    home_str = str(home)
+    env["HOME"] = home_str
+    env["USERPROFILE"] = home_str
+    drive, _, tail = home_str.partition(":")
+    if drive and tail:
+        env["HOMEDRIVE"] = drive + ":"
+        env["HOMEPATH"] = tail
+    return env
+
+
 def _is_real_capacium_write(p) -> bool:
     if not p:
         return False

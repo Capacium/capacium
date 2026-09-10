@@ -25,6 +25,7 @@ from ..runtimes import (
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+from ..utils.fs import rmtree as fs_rmtree
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 _CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -1239,11 +1240,11 @@ def _clone_remote_source(
             )
             if result.returncode != 0:
                 print(f"  Clone failed: {result.stderr.strip()}")
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                fs_rmtree(tmp_dir, ignore_errors=True)
                 return None
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             print(f"  Clone failed: {e}")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            fs_rmtree(tmp_dir, ignore_errors=True)
             return None
 
         repo_dir = tmp_dir / "repo"
@@ -1254,7 +1255,7 @@ def _clone_remote_source(
             selected_tag = _select_remote_tag(tags, version_filter)
         if version_filter and selected_tag is None:
             print(f"  Version {version_filter} not found in remote tags.")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            fs_rmtree(tmp_dir, ignore_errors=True)
             return None
 
         default_branch = _git_output(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -1268,17 +1269,17 @@ def _clone_remote_source(
             )
             if checkout.returncode != 0:
                 print(f"  Checkout failed: {checkout.stderr.strip()}")
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                fs_rmtree(tmp_dir, ignore_errors=True)
                 return None
 
         head_commit = _git_output(repo_dir, "rev-parse", "HEAD")
         if not head_commit:
             print("  Clone failed: unable to resolve the checked-out commit.")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            fs_rmtree(tmp_dir, ignore_errors=True)
             return None
         if selected_tag is not None and head_commit and head_commit != selected_tag.source_commit:
             print("  Checkout failed: resolved commit does not match selected tag.")
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            fs_rmtree(tmp_dir, ignore_errors=True)
             return None
 
         resolved_commit = head_commit
@@ -1318,7 +1319,7 @@ def _clone_remote_source(
         return repo_dir, url
     finally:
         if not _materialized:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            fs_rmtree(tmp_dir, ignore_errors=True)
 
 
 def _fetch_remote_tags(repo_url: str) -> List[str]:
@@ -1710,7 +1711,7 @@ def _fetch_from_registry(
         # survival question is the reconciler/gc lane's, which sweeps the cache
         # against the guard on the next autonomous pass.
         if cache_dir.exists():
-            shutil.rmtree(cache_dir)
+            fs_rmtree(cache_dir)
 
     # CAPR3-P01L-A: build the Exchange declaration *before* materializing the
     # source. _clone_remote_source() generates the manifest for a clone that
@@ -1759,7 +1760,7 @@ def _fetch_from_registry(
         # checks, so this rmtree names a version dir that is not yet the live
         # linked generation.
         if cache_dir.exists():
-            shutil.rmtree(cache_dir)
+            fs_rmtree(cache_dir)
         shutil.copytree(repo_dir, cache_dir)
         remove_git_metadata(cache_dir)
         ensure_execution_permissions(cache_dir)
@@ -1767,7 +1768,7 @@ def _fetch_from_registry(
     finally:
         # The clone is disposable once it has been cached, and must not
         # survive a refusal either.
-        shutil.rmtree(repo_dir.parent, ignore_errors=True)
+        fs_rmtree(repo_dir.parent, ignore_errors=True)
 
 
 def _clone_registry_repo(repo_url: str, version: str, github_token: Optional[str] = None) -> Optional[Path]:
@@ -2130,8 +2131,7 @@ def _force_remove_conflicting_link(cap_name: str, existing_owner: str, target_fr
             # severs a healthy link", and a user-initiated owner switch is not
             # autonomous.
             print(f"  Removing old installation from {fw_name}...")
-            import shutil
-            shutil.rmtree(link_path, ignore_errors=True)
+            fs_rmtree(link_path, ignore_errors=True)
             if not target_framework:
                 cap_id = f"{existing_owner}/{cap_name}"
                 try:
@@ -2366,13 +2366,13 @@ def _install_from_tarball(
             _safe_extract_all(tf, tmp_dir, tarball_path)
     except (tarfile.TarError, OSError) as e:
         print(f"  Failed to extract tarball: {e}")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        fs_rmtree(tmp_dir, ignore_errors=True)
         return None
 
     entries = list(tmp_dir.iterdir())
     if not entries:
         print("  Tarball is empty")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        fs_rmtree(tmp_dir, ignore_errors=True)
         return None
 
     extract_dir = entries[0]
@@ -2384,7 +2384,7 @@ def _install_from_tarball(
     manifest = Manifest.detect_source_declaration(source_dir)
     if manifest.name == source_dir.name and manifest.version == "1.0.0" and not (source_dir / "capability.yaml").exists():
         print("  Tarball does not contain a valid capability (no capability.yaml)")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        fs_rmtree(tmp_dir, ignore_errors=True)
         return None
 
     # An empty owner (e.g. ``cap install --from-tarball file.tar.gz /name``) is
@@ -2395,7 +2395,7 @@ def _install_from_tarball(
 
     if not _validate_install_name(cap_name) or not _validate_install_name(owner):
         print("  Error: invalid capability or owner name supplied for tarball install.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        fs_rmtree(tmp_dir, ignore_errors=True)
         return None
 
     package_dir = storage.get_package_dir(cap_name, manifest.version, owner=owner)
@@ -2407,13 +2407,13 @@ def _install_from_tarball(
     # AUTONOMOUS cleanup. ``--prune`` after a tarball install still routes the
     # superseded-generation removal through the guarded ``prune_superseded_versions``.
     if package_dir.exists():
-        shutil.rmtree(package_dir)
+        fs_rmtree(package_dir)
     shutil.copytree(source_dir, package_dir)
     remove_git_metadata(package_dir)
     ensure_execution_permissions(package_dir)
 
     source_url = manifest.repository or _detect_git_remote(package_dir)
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    fs_rmtree(tmp_dir, ignore_errors=True)
     return package_dir, source_url
 
 

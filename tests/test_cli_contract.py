@@ -33,7 +33,13 @@ class TestExitCodeContract:
 
     def test_verify_all_empty_registry_is_success(self, tmp_path, monkeypatch):
         # Isolated empty home -> no installed capabilities -> success no-op.
-        result = _cap("verify", "--all", env={"HOME": str(tmp_path)})
+        import os
+
+        from tests.conftest import home_env
+
+        home = tmp_path / "scratch-home"
+        home.mkdir()
+        result = _cap("verify", "--all", env=home_env(home, base=os.environ))
         assert result.returncode == 0
 
     def test_remove_nonexistent_is_user_error(self):
