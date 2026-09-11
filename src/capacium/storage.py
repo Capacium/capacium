@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
 from .models import Capability
-from .utils.fs import rmtree as fs_rmtree
+from .utils.fs import canonical_path, rmtree as fs_rmtree
 
 
 class StorageManager:
@@ -234,10 +234,20 @@ class StorageManager:
     @staticmethod
     def _is_protected_stub(stub: Path, protected: set) -> bool:
         """True when *stub* (or any parent up to the store) is a live-linked
-        store path — a directory some live harness link still resolves into."""
-        resolved = stub.resolve()
+        store path — a directory some live harness link still resolves into.
+
+        Both sides are put in the one canonical comparison vocabulary
+        (:func:`capacium.utils.fs.canonical_path`): resolved and stripped of a
+        Windows ``\\\\?\\`` / ``\\??\\`` prefix. ``os.readlink`` returns a
+        directory link's target with that prefix on Windows, so the
+        ``protected`` set built from a link target can be spelled with the
+        prefix while ``stub.resolve()`` is bare; a raw ``==`` / ``parents``
+        comparison then reports a live linked stub as unprotected and the
+        empty-stub prune severs the live link (CAP-REC-D2 empty-stub hole).
+        """
+        resolved = canonical_path(stub)
         for p in protected:
-            p = Path(p).resolve()
+            p = canonical_path(p)
             try:
                 if resolved == p or resolved in p.parents or p in resolved.parents:
                     return True

@@ -384,3 +384,93 @@ def test_backup_does_not_lose_a_copy_on_identical_timestamps(tmp_path, monkeypat
         '{"existing": true}',
         '{"existing": false}',
     }
+
+
+# ── live-linked guard under a Windows ``\\?\`` readlink target ────────────────
+
+
+def _emulate_windows_realpath(monkeypatch) -> None:
+    """Make ``os.path.realpath`` return the Windows extended-prefixed spelling.
+
+    Windows ``realpath`` returns an already-prefixed input unchanged (its
+    ``had_prefix`` branch skips the prefix strip), so a live set built from a
+    ``\\\\?\\`` readlink target is stored prefixed while a bare
+    ``Path.resolve()`` of the same directory is not. Patching realpath keeps the
+    real filesystem checks (existence, symlink resolution) intact — only the
+    returned spelling carries the prefix — so the defect is reproduced on every
+    host, not only Windows.
+    """
+    import os.path as osp
+
+    real_realpath = osp.realpath
+
+    def windows_shaped_realpath(path, *args, **kwargs):
+        resolved = real_realpath(path, *args, **kwargs)
+        if isinstance(resolved, str) and resolved and not resolved.startswith("\\\\?\\"):
+            return "\\\\?\\" + resolved
+        return resolved
+
+    monkeypatch.setattr(osp, "realpath", windows_shaped_realpath)
+
+
+def _build_empty_live_linked(home: Path):
+    from capacium.registry import Registry
+    from capacium.storage import StorageManager
+
+    packages = home / ".capacium" / "packages"
+    install_dir = packages / "foo" / "bar" / "1.0.0"
+    install_dir.mkdir(parents=True)
+    skills_dir = home / ".opencode" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "bar").symlink_to(install_dir, target_is_directory=True)
+
+    # An empty registry is needed so the store inventory reports the on-disk
+    # ``foo/bar/1.0.0`` as an unregistered install.
+    Registry(packages.parent / "registry.db")
+    return StorageManager(packages, migrate=False), install_dir
+
+
+def test_empty_live_linked_stub_survives_windows_prefixed_realpath(
+    tmp_home, monkeypatch
+):
+    """The empty-stub prune must protect a live-linked dir on Windows.
+
+    Windows ``os.readlink`` returns a directory link's target with the
+    ``\\\\?\\`` extended prefix and ``realpath`` keeps it. The live-linked set
+    built from that target was stored prefixed, while ``_is_protected_stub``
+    compared raw ``stub.resolve()`` (bare) against it, so the two spellings were
+    unequal, the stub was reported unprotected and ``cap gc`` deleted the very
+    directory a live harness link resolved into. The guard must canonicalize
+    both sides through the shared vocabulary.
+    """
+    from capacium.commands import gc as gcmod
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    storage, install_dir = _build_empty_live_linked(tmp_home)
+    _emulate_windows_realpath(monkeypatch)
+
+    live = gcmod.live_linked_store_paths()
+    assert live, "live-linked set is empty for a healthy in-store link"
+    # The prefixed live entry and the bare stub must still be seen as one path.
+    assert storage._is_protected_stub(install_dir.parent, live) is True
+    assert storage.find_empty_package_stubs(protected=live) == []
+
+
+def test_prefixed_live_set_is_stored_in_canonical_vocabulary(tmp_home, monkeypatch):
+    """``_live_linked_store_paths`` must not return a ``\\\\?\\``-prefixed path.
+
+    The set is the single guard every store-mutating path consults; a prefixed
+    member silently fails any consumer that compares raw. Every member must be
+    the shared canonical spelling so a second consumer cannot reintroduce the
+    empty-stub hole.
+    """
+    from capacium.commands import gc as gcmod
+
+    monkeypatch.delenv("CAPACIUM_PROJECT_ROOT", raising=False)
+    _build_empty_live_linked(tmp_home)
+    _emulate_windows_realpath(monkeypatch)
+
+    live = gcmod.live_linked_store_paths()
+
+    assert live, "live-linked set is empty for a healthy in-store link"
+    assert all("\\\\?\\" not in str(p) for p in live), live
