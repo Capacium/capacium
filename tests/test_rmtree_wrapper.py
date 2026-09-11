@@ -18,15 +18,22 @@ covered even where the local stdlib does accept ``dir_fd``.
 from __future__ import annotations
 
 import inspect
-import shutil
+import os
 
 import pytest
 
-from tests.conftest import _rmtree_retry
+from tests.conftest import _real_rmtree as _stdlib_rmtree, _rmtree_retry
 
 
 def _stdlib_signature():
-    return inspect.signature(shutil.rmtree)
+    """The real stdlib signature the wrapper must be compatible with.
+
+    On Windows the session fixture swaps ``shutil.rmtree`` for
+    ``_rmtree_retry``; ``inspect.signature(shutil.rmtree)`` would then inspect
+    the wrapper itself and make every compatibility assertion vacuous. The
+    original callable is captured at import time as ``_stdlib_rmtree``.
+    """
+    return inspect.signature(_stdlib_rmtree)
 
 
 def test_rmtree_wrapper_accepts_stdlib_keyword_arguments():
@@ -128,13 +135,13 @@ def test_rmtree_wrapper_forwards_onexc_to_onexc_capable_callable(tmp_path, monke
 def _rmtree_310(path, ignore_errors=False, onerror=None, *, dir_fd=None):
     """Signature-identical stand-in for Python 3.11 ``shutil.rmtree``."""
     if dir_fd is None:
-        return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
-    return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror, dir_fd=dir_fd)
+        return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
+    return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror, dir_fd=dir_fd)
 
 
 def _rmtree_310_no_fd(path, ignore_errors=False, onerror=None):
     """Stand-in for the 3.10.21 build that omits ``dir_fd`` entirely."""
-    return shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
+    return _stdlib_rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
 
 
 def test_rmtree_wrapper_plain_call_without_onexc_on_310_callable(tmp_path, monkeypatch):
@@ -217,6 +224,76 @@ def test_rmtree_wrapper_no_dir_fd_callable_plain_call(tmp_path, monkeypatch):
     assert not target.exists()
 
 
+def test_rmtree_wrapper_preserves_onexc_handler_on_onerror_only_callable(
+    tmp_path, monkeypatch
+):
+    """A ``onexc``-only caller against a 3.10/3.11 ``onerror``-only callable
+    must still have its handler invoked.
+
+    The original wrapper selected the keyword by capability but dropped the
+    handler when the caller's spelling differed from the callable's: ``onexc``
+    was ignored because only ``onerror`` existed, and the retry callback never
+    fired. That is what left a read-only tree behind. The handler must be
+    adapted, not dropped.
+    """
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    seen = {"handler": None}
+
+    def onerror_only(path, ignore_errors=False, onerror=None):
+        seen["handler"] = onerror
+        if onerror is not None:
+            # Invoke the adapted handler once, the way the stdlib would.
+            try:
+                raise PermissionError("winerror 32 simulated")
+            except PermissionError as exc:
+                onerror(os.unlink, str(target / "file.txt"), (PermissionError, exc, exc.__traceback__))
+        return _stdlib_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", onerror_only)
+
+    invoked = {"count": 0}
+
+    def onexc(func, path, exc):
+        invoked["count"] += 1
+
+    _rmtree_retry(target, onexc=onexc, _delay=0.0)
+
+    assert seen["handler"] is not None, "onexc handler was dropped for the onerror callable"
+    assert invoked["count"] >= 1, "the caller's handler was never invoked"
+
+
+def test_rmtree_wrapper_preserves_onerror_handler_on_onexc_only_callable(
+    tmp_path, monkeypatch
+):
+    """An ``onerror``-only caller against a 3.12 ``onexc``-only callable must
+    still have its handler invoked (the mirror conversion)."""
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    def onexc_only(path, ignore_errors=False, onerror=None, *, onexc=None, dir_fd=None):
+        if onexc is not None:
+            try:
+                raise PermissionError("winerror 32 simulated")
+            except PermissionError as exc:
+                onexc(os.unlink, str(target / "file.txt"), exc)
+        return _stdlib_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", onexc_only)
+
+    invoked = {"count": 0}
+
+    def onerror(func, path, exc_info):
+        invoked["count"] += 1
+
+    _rmtree_retry(target, onerror=onerror, _delay=0.0)
+
+    assert invoked["count"] >= 1, "the caller's onerror handler was never invoked"
+
+
 def test_rmtree_wrapper_no_dir_fd_callable_ignore_errors_fallback(tmp_path, monkeypatch):
     """Persistent contention against the no-``dir_fd`` callable: the retry and
     the ignore_errors fallback must both remain dir_fd-free."""
@@ -229,7 +306,7 @@ def test_rmtree_wrapper_no_dir_fd_callable_ignore_errors_fallback(tmp_path, monk
     def failing_no_fd(path, ignore_errors=False, onerror=None):
         if ignore_errors:
             calls["ignore"] += 1
-            return shutil.rmtree(path, ignore_errors=True)
+            return _stdlib_rmtree(path, ignore_errors=True)
         raise PermissionError("winerror 32 simulated handle contention")
 
     monkeypatch.setattr("tests.conftest._real_rmtree", failing_no_fd)

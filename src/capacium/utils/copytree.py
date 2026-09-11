@@ -12,6 +12,8 @@ import shutil
 import stat
 from pathlib import Path
 
+from .fs import rmtree as fs_rmtree
+
 
 # Directories that must NEVER be copied into package cache.
 # Framework skill dirs (.cursor/, .opencode/) may contain symlinks back
@@ -187,7 +189,7 @@ def ensure_execution_permissions(package_dir: Path) -> None:
 def safe_copytree(source_dir: Path, dest_dir: Path) -> None:
     """Copy source_dir -> dest_dir, ignoring framework dirs and stale symlinks."""
     if dest_dir.exists():
-        shutil.rmtree(dest_dir)
+        fs_rmtree(dest_dir)
     shutil.copytree(source_dir, dest_dir, ignore=_copytree_ignore)
     remove_git_metadata(dest_dir)
     ensure_execution_permissions(dest_dir)

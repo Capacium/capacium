@@ -203,11 +203,19 @@ class TestPublishTransportNotice:
 
 class TestPublishHelp:
     def test_help_describes_trusted_publishing(self, tmp_path, monkeypatch):
+        # Start from the ambient environment: a bare ``{"PYTHONPATH": ...}``
+        # env drops SystemRoot/TEMP on Windows and the interpreter aborts
+        # before argparse runs ("failed to get random numbers to initialize
+        # Python"). Only PYTHONPATH is overridden; everything else is inherited.
+        import os
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent / "src")
         result = subprocess.run(
             [sys.executable, "-m", "capacium.cli", "publish", "--help"],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")},
+            env=env,
         )
         text = (result.stdout + result.stderr).lower()
         assert result.returncode == 0

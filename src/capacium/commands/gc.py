@@ -114,10 +114,21 @@ def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
     Returns, for every alive entry, its resolved target as well as every
     ancestor directory beneath the package store, so a quarantine/delete of an
     ancestor can never be emitted while a live link resolves into it.
+
+    Every returned path is put in the one comparison vocabulary used by every
+    consumer (:func:`capacium.commands.reconcile._canonical`): resolved and
+    stripped of a Windows ``\\\\?\\`` / ``\\??\\`` prefix. On Windows
+    ``os.readlink`` returns a *directory* link's target with the ``\\\\?\\``
+    extended prefix, and ``Path.resolve`` of an already-prefixed path keeps it;
+    a raw prefixed path compares unequal to the bare spelling, so a consumer
+    that compared raw (``StorageManager._is_protected_stub``) failed to
+    recognise a live path and pruned an empty live-linked store directory
+    (CAP-REC-D2 empty-stub hole).
     """
-    from .reconcile import _packages_dir
+    from .reconcile import _packages_dir, _canonical
 
     packages = _packages_dir()
+    packages_key = _canonical(packages)
     live: Set[Path] = set()
     for entry in list(report.get("skills", [])) + list(report.get("mcp", [])):
         if entry.get("liveness") != "alive":
@@ -129,21 +140,24 @@ def _live_linked_store_paths(report: Dict[str, object]) -> Set[Path]:
         resolved = entry.get("resolved") or entry.get("target")
         if not resolved:
             continue
-        target = Path(str(resolved)).resolve()
+        target = _canonical(Path(str(resolved)))
         try:
-            target.relative_to(packages.resolve())
+            target.relative_to(packages_key)
         except ValueError:
             continue
         parent = target
         while True:
             live.add(parent)
-            if parent == packages.resolve():
+            if parent == packages_key:
                 break
-            parent = parent.parent
+            parent = _canonical(parent.parent)
+            if parent == target:
+                break
             try:
-                parent.relative_to(packages.resolve())
+                parent.relative_to(packages_key)
             except ValueError:
                 break
+            target = parent
     return live
 
 
@@ -167,9 +181,16 @@ def live_linked_store_paths() -> Set[Path]:
 def _is_harness_linked(path: Path, live_linked: Set[Path]) -> bool:
     """True when *path* is a store directory a live harness link resolves into,
     or is an ancestor of one. A cleanup must never quarantine or delete such a
-    path: the link it serves would be left dangling."""
+    path: the link it serves would be left dangling.
+
+    Comparisons are canonicalized so a Windows short-name spelling of the same
+    directory cannot slip past the guard.
+    """
+    from .reconcile import _canonical
+
+    path_key = _canonical(path)
     return any(
-        path.resolve() == live or path.resolve() in live.parents
+        path_key == _canonical(live) or path_key in _canonical(live).parents
         for live in live_linked
     )
 
@@ -568,14 +589,16 @@ def _known_config_paths() -> Iterable[Path]:
 
 
 def _is_active(cap: Capability) -> bool:
+    from .reconcile import _canonical
+
     if not cap.install_path:
         return False
     install_path = Path(cap.install_path)
-    install_target = install_path.resolve()
+    install_target = _canonical(install_path)
     for candidate in _client_link_candidates(cap.name):
         if not candidate.is_symlink():
             continue
-        target = candidate.resolve()
+        target = _canonical(candidate)
         if target == install_target or install_target in target.parents:
             return True
 
@@ -642,6 +665,8 @@ def _plan_entries(
         if ref in caps_by_ref:
             protected[ref] = "explicit keep"
 
+    from .reconcile import _canonical
+
     physical_owners = []
     for owner_ref, owner_cap in caps_by_ref.items():
         if not owner_cap.install_path:
@@ -650,7 +675,7 @@ def _plan_entries(
         if owner_path.is_symlink() or not owner_path.is_dir():
             continue
         try:
-            physical_owners.append((owner_ref, owner_path.resolve()))
+            physical_owners.append((owner_ref, _canonical(owner_path)))
         except (OSError, RuntimeError):
             continue
 
@@ -671,7 +696,7 @@ def _plan_entries(
 
         if cap.install_path:
             try:
-                target = Path(cap.install_path).resolve()
+                target = _canonical(Path(cap.install_path))
             except (OSError, RuntimeError):
                 target = None
             if target is not None:
@@ -801,13 +826,15 @@ def prune_superseded_versions(owner: str, name: str, keep_version: str) -> GCRep
     )
 
     disagreeing = []
+    from .reconcile import _canonical as _canon
+
     for entry in entries:
         try:
-            resolved = entry.path.resolve()
+            resolved = _canon(entry.path)
         except (OSError, RuntimeError):
             resolved = entry.path
         if any(
-            resolved == refused or resolved in refused.parents
+            resolved == _canon(refused) or resolved in _canon(refused).parents
             for refused in refused_paths
         ):
             disagreeing.append(entry.ref)
@@ -855,11 +882,12 @@ def _stale_links_for(owner: str, name: str, keep_version: str, registry: Registr
     symlink into the bundle's physical tree. Classification must therefore use
     the written (literal) target, not the resolved one, so a member link is
     matched to its member, never to the bundle it physically resolves into."""
-    from .reconcile import _all_skill_roots, _resolve_target, _packages_dir
+    from .reconcile import _all_skill_roots, _resolve_target, _packages_dir, _canonical
 
     packages = _packages_dir()
     keep_cap = registry.get_capability(f"{owner}/{name}", keep_version)
-    keep_target = Path(keep_cap.install_path).resolve() if keep_cap and keep_cap.install_path else None
+    keep_path = keep_cap.install_path if keep_cap and keep_cap.install_path else None
+    keep_target = _canonical(Path(keep_path)) if keep_path is not None else None
     stale: List[Path] = []
     for _fw_id, skills_dir in _all_skill_roots().items():
         if not skills_dir.exists():
@@ -871,7 +899,7 @@ def _stale_links_for(owner: str, name: str, keep_version: str, registry: Registr
             literal_within, cid, _ver = _literal_store_identity(literal, packages)
             if not literal_within or cid != f"{owner}/{name}":
                 continue
-            if keep_target is not None and literal.resolve() == keep_target:
+            if keep_target is not None and _canonical(literal) == keep_target:
                 continue
             stale.append(child)
     return stale
@@ -884,10 +912,13 @@ def _literal_store_identity(target: Path, packages: Path) -> Tuple[bool, Optiona
     A bundle member's install path (``.../owner/name/version``) is itself a
     symlink into the bundle tree; resolving it would classify the link under the
     bundle's owner/name instead of the member's. Resolving only the *parent*
-    directories normalises the macOS ``/var`` -> ``/private/var`` prefix while
-    leaving the leaf (version) untouched (CAP-REC-D2)."""
-    root = packages.resolve()
-    parent_resolved = target.parent.resolve()
+    directories normalises the macOS ``/var`` -> ``/private/var`` prefix and a
+    Windows 8.3 short-name parent while leaving the leaf (version) untouched
+    (CAP-REC-D2)."""
+    from .reconcile import _canonical
+
+    root = _canonical(packages)
+    parent_resolved = _canonical(target.parent)
     leaf = target.name
     try:
         rel = (parent_resolved / leaf).relative_to(root)

@@ -1297,7 +1297,12 @@ def scan_directory(src_dir: Path) -> ScanResult:
             if not fn.endswith(".py"):
                 continue
             fp = Path(root) / fn
-            rel_path = str(fp.relative_to(src_dir))
+            # Canonicalize to POSIX separators so findings and the committed
+            # fixture reconcile identically on Windows, whose
+            # ``Path.relative_to`` stringifies with backslashes. Without this
+            # the same file produces a different finding key ("commands/init.py"
+            # vs "commands\\init.py") and every baseline comparison fails.
+            rel_path = fp.relative_to(src_dir).as_posix()
             if fp.stat().st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH) == 0:
                 broken_records.append(f"{rel_path}: unreadable (no read permission)")
                 continue

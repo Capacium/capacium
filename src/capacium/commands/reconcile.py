@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..framework_detector import harness_link_roots
 from ..registry import Registry
+from ..utils.fs import canonical_path
 
 
 def _all_skill_roots() -> Dict[str, Path]:
@@ -57,23 +58,48 @@ def _all_skill_roots() -> Dict[str, Path]:
 
 def _packages_dir() -> Path:
     """The canonical package store root."""
-    return (Path.home() / ".capacium" / "packages").resolve()
+    return _canonical(Path.home() / ".capacium" / "packages")
 
 
-def _is_within(path: Path, root: Path) -> bool:
+def _canonical(path: Path) -> Path:
+    """Return a stable, long-form spelling of *path* for comparisons.
+
+    Delegates to :func:`capacium.utils.fs.canonical_path`, which resolves an
+    8.3 short name (``RUNNER~1``), follows symlinks/junctions and strips a
+    Windows extended-length/NT prefix (``\\\\?\\``, ``\\??\\``). ``os.readlink``
+    returns the latter spelling for a junction, and a prefixed path does not
+    compare equal to the same directory without the prefix — which previously
+    made a Capacium-written store link look ``foreign``. Case is *not* folded:
+    the store layout is case-sensitive to the registry, and the canonical
+    spelling of an existing path already carries the on-disk case.
+    """
+    return canonical_path(path)
+
+
+def _path_in_store(path: Path, root: Path) -> bool:
+    """True when *path* (any spelling) lies under the resolved *root*."""
     try:
-        path.resolve().relative_to(root.resolve())
+        _canonical(path).relative_to(_canonical(root))
         return True
     except ValueError:
         return False
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    return _path_in_store(path, root)
+
+
 def _literal_within(path: Path, root: Path) -> bool:
     """True when *path* sits under *root* by its literal (written) form —
-    without resolving symlink hops, so a second hop out of the store is not
-    mistaken for a direct store target."""
+    without following symlink hops, so a second hop out of the store is not
+    mistaken for a direct store target.
+
+    Only the parent chain is canonicalized; the leaf is preserved so a symlink
+    at the leaf still reads as a second hop.
+    """
     try:
-        path.absolute().relative_to(root.resolve())
+        parent = _canonical(path.parent)
+        (parent / path.name).relative_to(_canonical(root))
         return True
     except ValueError:
         return False
@@ -258,10 +284,22 @@ def _classify_entry(
 
 
 def _match_relocation(relocations: Dict[str, str], target: Path) -> Optional[Dict[str, str]]:
-    """Return a relocation record whose old id appears in the target path."""
-    text = str(target)
+    """Return a relocation record whose old id appears in the target path.
+
+    The old id is written with POSIX separators (``global/elementeer-mcp``), so
+    both sides are folded to one separator and one case before matching. The
+    previous implementation called ``os.path.normcase`` on an already-POSIX
+    string: on Windows ``normcase`` rewrites ``/`` to ``\\``, so the needle
+    (``global\\elementeer-mcp``) could never appear in the POSIX haystack and
+    every relocated owner was reported ``ok``. Normalising separators *after*
+    case-folding on both sides, with ``POSIX`` as the common vocabulary, keeps
+    the match correct on every host.
+    """
+    text = _canonical(target).as_posix()
+    folded = os.path.normcase(text.replace("/", os.sep)).replace(os.sep, "/")
     for old_id, new_id in relocations.items():
-        if old_id in text:
+        needle = os.path.normcase(old_id.replace("/", os.sep)).replace(os.sep, "/")
+        if needle and needle in folded:
             return {"from": old_id, "to": new_id}
     return None
 
@@ -273,7 +311,7 @@ def _store_owner_version(target: Path, packages: Path) -> Tuple[Optional[str], O
     ``<packages>/<owner>/<name>`` for bundles). Returns (owner/name, version)
     when the layout matches, else (None, None)."""
     try:
-        rel = target.resolve().relative_to(packages.resolve())
+        rel = _canonical(target).relative_to(_canonical(packages))
     except ValueError:
         return None, None
     parts = rel.parts

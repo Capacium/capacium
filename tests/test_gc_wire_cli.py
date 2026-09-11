@@ -7,7 +7,6 @@ a library-only proof is exactly what produced the R5-B finding.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,8 +30,9 @@ _WIN_REASON = (
 
 
 def _cap(home: Path, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    from tests.conftest import home_env
+
+    env = home_env(home)
     env["CAPACIUM_PROJECT_ROOT"] = ""
     return subprocess.run(
         [sys.executable, "-m", "capacium.cli", *args],
