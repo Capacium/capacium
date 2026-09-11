@@ -88,6 +88,40 @@ def _real_rmtree_supports_kwarg(name: str) -> bool:
     return name in parameters
 
 
+def _as_onexc(onerror):
+    """Adapt a 3.10/3.11 ``onerror(func, path, exc_info)`` callback to the
+    3.12 ``onexc(func, path, exc)`` shape."""
+    if onerror is None:
+        return None
+
+    def onexc(func, path, exc):
+        exc_info = (
+            (type(exc), exc, exc.__traceback__) if exc is not None else None
+        )
+        return onerror(func, path, exc_info)
+
+    return onexc
+
+
+def _as_onerror(onexc):
+    """Adapt a 3.12 ``onexc(func, path, exc)`` callback to the 3.10/3.11
+    ``onerror(func, path, exc_info)`` shape.
+
+    Without this conversion a caller that passes only ``onexc`` (the 3.12
+    spelling) silently loses its handler on 3.10/3.11, where ``onerror`` is the
+    only accepted keyword — the exact defect that left a read-only tree behind
+    because the retry callback was never invoked.
+    """
+    if onexc is None:
+        return None
+
+    def onerror(func, path, exc_info):
+        exc = exc_info[1] if exc_info else None
+        return onexc(func, path, exc)
+
+    return onerror
+
+
 def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None:
     """Forward to the real ``rmtree`` using only the keyword arguments the
     installed stdlib actually accepts.
@@ -98,14 +132,18 @@ def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None
     unavailable. ``ignore_errors`` is always accepted; each optional keyword
     (``onerror``, ``onexc``, ``dir_fd``) is probed per call and forwarded only
     when the real callable understands it, so an unsupported keyword never
-    raises ``TypeError``. Callback selection stays capability-based: ``onexc``
-    is preferred when supported, otherwise ``onerror`` when it is.
+    raises ``TypeError``.
+
+    Callback selection is capability-based *and shape-preserving*: whichever
+    spelling the caller supplied is converted to the one the real callable
+    accepts, so a handler is never dropped merely because the two Python
+    versions name the same callback differently.
     """
     kwargs = {"ignore_errors": ignore_errors}
     if _real_rmtree_supports_kwarg("onexc"):
-        kwargs["onexc"] = onexc
+        kwargs["onexc"] = _as_onexc(onerror) if onexc is None else onexc
     elif _real_rmtree_supports_kwarg("onerror"):
-        kwargs["onerror"] = onerror
+        kwargs["onerror"] = _as_onerror(onexc) if onerror is None else onerror
     if _real_rmtree_supports_kwarg("dir_fd"):
         kwargs["dir_fd"] = dir_fd
     _real_rmtree(path, **kwargs)

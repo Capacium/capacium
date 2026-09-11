@@ -99,6 +99,53 @@ def test_rmtree_removes_read_only_files(tmp_path):
     assert not root.exists()
 
 
+def test_rmtree_clears_readonly_and_retries_a_failed_unlink(tmp_path, monkeypatch):
+    """A failed unlink of a read-only file must be retried after clearing the
+    write bit, not delegated to a version-shaped stdlib callback.
+
+    The old ``utils.fs.rmtree`` forwarded a handler to ``shutil.rmtree`` and
+    merely cleared read-only when ``os.name == "nt"``. On Windows the handler
+    was dropped through the 3.10/3.11 ``onerror``/``onexc`` mismatch and on
+    POSIX the clearing was skipped, so a read-only file survived. This drives a
+    filesystem whose unlink refuses until the write bit is set and asserts the
+    retry clears it on every host.
+    """
+    import os
+    import stat
+
+    from capacium.utils import fs as fsmod
+
+    root = tmp_path / "tree"
+    root.mkdir()
+    packed = root / "packed.bin"
+    packed.write_bytes(b"x")
+    packed.chmod(0o444)
+
+    real_unlink = os.unlink
+    state = {"refused": 0}
+
+    def flaky_unlink(path, *args, **kwargs):
+        dir_fd = kwargs.get("dir_fd")
+        try:
+            if dir_fd is not None:
+                st = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            else:
+                st = os.lstat(path)
+        except OSError:
+            return real_unlink(path, *args, **kwargs)
+        if not (st.st_mode & stat.S_IWRITE):
+            state["refused"] += 1
+            raise PermissionError(13, "read-only file blocks removal")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(fsmod.os, "unlink", flaky_unlink)
+
+    fsmod.rmtree(root)
+
+    assert not root.exists()
+    assert state["refused"] >= 1, "the retry never hit the read-only gate"
+
+
 def test_rmtree_is_idempotent_for_missing_and_symlink_targets(tmp_path):
     """Removal is a no-op for a missing path, and a symlink is unlinked, not
     followed into the tree it names."""
@@ -180,6 +227,124 @@ def test_relocation_matches_native_separator_paths(tmp_path):
         "from": "global/elementeer-mcp",
         "to": "elementeer/elementeer-mcp",
     }
+
+
+def test_relocation_matches_under_windows_casefold_and_separator(tmp_path, monkeypatch):
+    """The relocation match must survive Windows ``normcase``.
+
+    ``os.path.normcase`` on Windows rewrites ``/`` to ``\\`` *and* lowercases.
+    The db7423f implementation folded the already-POSIX haystack with
+    ``normcase`` and then compared a backslash needle against it, so the match
+    could never fire. This applies ``ntpath``-exact folding on the local host so
+    the defect is reproduced without a Windows runner.
+    """
+    import ntpath
+
+    from capacium.commands import reconcile as rec
+
+    monkeypatch.setattr(rec.os.path, "normcase", ntpath.normcase)
+    monkeypatch.setattr(rec.os, "sep", "\\")
+
+    relocations = {"global/elementeer-mcp": "elementeer/elementeer-mcp"}
+    target = Path(
+        str(tmp_path) + "\\.capacium\\packages\\global\\elementeer-mcp\\2.4.2"
+    )
+
+    match = rec._match_relocation(relocations, target)
+
+    assert match == {
+        "from": "global/elementeer-mcp",
+        "to": "elementeer/elementeer-mcp",
+    }
+
+
+# ── canonical spelling of a Windows-prefixed link target ─────────────────────
+
+
+def test_extended_prefix_is_stripped_from_both_spellings():
+    """``\\??\\`` and ``\\\\?\\`` name the same directory as a bare path.
+
+    ``os.readlink`` returns a junction's substitute name with an NT prefix and a
+    symlink's target may carry the extended-length prefix. The db7423f
+    reconciler compared that spelling verbatim against a bare store root and
+    classified a Capacium-written link ``foreign``. Both prefixes must fold to
+    the bare spelling.
+    """
+    from capacium.utils.fs import strip_extended_prefix
+
+    assert strip_extended_prefix("\\??\\C:\\store\\packages") == "C:\\store\\packages"
+    assert strip_extended_prefix("\\\\?\\C:\\store\\packages") == "C:\\store\\packages"
+    assert (
+        strip_extended_prefix("\\??\\UNC\\server\\share\\packages")
+        == "\\\\server\\share\\packages"
+    )
+    assert (
+        strip_extended_prefix("\\\\?\\UNC\\server\\share\\packages")
+        == "\\\\server\\share\\packages"
+    )
+    assert strip_extended_prefix("/plain/posix/path") == "/plain/posix/path"
+
+
+def test_canonical_path_strips_windows_prefix():
+    """The shared canonicalizer must return a prefix-free path.
+
+    ``canonical_path`` is the single comparison vocabulary the reconciler, the
+    GC live-linked guard and the store-identity parser use; a prefixed spelling
+    slipping through here is what produced the ``adopt`` misclassification.
+    """
+    from capacium.utils.fs import canonical_path
+
+    target = "\\??\\C:\\store\\packages\\global\\elementeer-mcp"
+    assert "\\??\\" not in str(canonical_path(target))
+    assert "\\\\?\\" not in str(canonical_path("\\\\?\\C:\\store\\packages"))
+
+
+def test_reparse_directory_is_treated_as_a_link_not_recursed():
+    """A directory reparse point (junction or directory symlink) must be
+    classified link-like.
+
+    ``os.path.islink`` reports a Windows junction as ``False``, so a walk that
+    trusted it would recurse into the junction and delete the tree it names.
+    The reparse tag distinguishes both link kinds; this pins the tag handling
+    with fabricated stat values on every host.
+    """
+    import stat
+    from types import SimpleNamespace
+
+    from capacium.utils.fs import _is_reparse_link
+
+    junction = SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=0xA0000003)
+    symlink_dir = SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=0xA000000C)
+    plain_dir = SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=0)
+    posix_link = SimpleNamespace(st_mode=stat.S_IFLNK)
+
+    assert _is_reparse_link(junction) is True
+    assert _is_reparse_link(symlink_dir) is True
+    assert _is_reparse_link(plain_dir) is False
+    assert _is_reparse_link(posix_link) is True
+
+
+def test_rmtree_does_not_follow_a_directory_symlink(tmp_path):
+    """A directory symlink nested in the tree is unlinked, never traversed.
+
+    If the walk followed it, the target's contents would be deleted. This is
+    the POSIX-representable half of the Windows junction safety guarantee.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "keep.txt").write_text("keep")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    link = tree / "nested-link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this host")
+
+    rmtree(tree)
+
+    assert not tree.exists()
+    assert (real / "keep.txt").read_text() == "keep"
 
 
 # ── backup retention uniqueness ──────────────────────────────────────────────

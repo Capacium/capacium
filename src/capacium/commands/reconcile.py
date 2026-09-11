@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..framework_detector import harness_link_roots
 from ..registry import Registry
+from ..utils.fs import canonical_path
 
 
 def _all_skill_roots() -> Dict[str, Path]:
@@ -63,17 +64,16 @@ def _packages_dir() -> Path:
 def _canonical(path: Path) -> Path:
     """Return a stable, long-form spelling of *path* for comparisons.
 
-    ``os.path.realpath`` expands a Windows 8.3 short name (``RUNNER~1``) to its
-    long form for a path that exists, so two spellings of one directory compare
-    equal and a Capacium-written link is not misclassified as ``foreign`` purely
-    because the OS spelled its target differently. Case is *not* folded: the
-    store layout is case-sensitive to the registry, and the canonical spelling
-    of an existing path already carries the on-disk case.
+    Delegates to :func:`capacium.utils.fs.canonical_path`, which resolves an
+    8.3 short name (``RUNNER~1``), follows symlinks/junctions and strips a
+    Windows extended-length/NT prefix (``\\\\?\\``, ``\\??\\``). ``os.readlink``
+    returns the latter spelling for a junction, and a prefixed path does not
+    compare equal to the same directory without the prefix — which previously
+    made a Capacium-written store link look ``foreign``. Case is *not* folded:
+    the store layout is case-sensitive to the registry, and the canonical
+    spelling of an existing path already carries the on-disk case.
     """
-    try:
-        return Path(os.path.realpath(str(path)))
-    except OSError:
-        return path
+    return canonical_path(path)
 
 
 def _path_in_store(path: Path, root: Path) -> bool:
@@ -287,13 +287,19 @@ def _match_relocation(relocations: Dict[str, str], target: Path) -> Optional[Dic
     """Return a relocation record whose old id appears in the target path.
 
     The old id is written with POSIX separators (``global/elementeer-mcp``), so
-    the path is canonicalized to POSIX before matching; on Windows the raw
-    string carries backslashes and the substring test would never fire.
+    both sides are folded to one separator and one case before matching. The
+    previous implementation called ``os.path.normcase`` on an already-POSIX
+    string: on Windows ``normcase`` rewrites ``/`` to ``\\``, so the needle
+    (``global\\elementeer-mcp``) could never appear in the POSIX haystack and
+    every relocated owner was reported ``ok``. Normalising separators *after*
+    case-folding on both sides, with ``POSIX`` as the common vocabulary, keeps
+    the match correct on every host.
     """
     text = _canonical(target).as_posix()
-    folded = os.path.normcase(text).replace(os.sep, "/")
+    folded = os.path.normcase(text.replace("/", os.sep)).replace(os.sep, "/")
     for old_id, new_id in relocations.items():
-        if os.path.normcase(old_id) in folded:
+        needle = os.path.normcase(old_id.replace("/", os.sep)).replace(os.sep, "/")
+        if needle and needle in folded:
             return {"from": old_id, "to": new_id}
     return None
 

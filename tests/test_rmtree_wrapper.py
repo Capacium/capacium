@@ -18,6 +18,7 @@ covered even where the local stdlib does accept ``dir_fd``.
 from __future__ import annotations
 
 import inspect
+import os
 
 import pytest
 
@@ -221,6 +222,76 @@ def test_rmtree_wrapper_no_dir_fd_callable_plain_call(tmp_path, monkeypatch):
     _rmtree_retry(target, _delay=0.0)
 
     assert not target.exists()
+
+
+def test_rmtree_wrapper_preserves_onexc_handler_on_onerror_only_callable(
+    tmp_path, monkeypatch
+):
+    """A ``onexc``-only caller against a 3.10/3.11 ``onerror``-only callable
+    must still have its handler invoked.
+
+    The original wrapper selected the keyword by capability but dropped the
+    handler when the caller's spelling differed from the callable's: ``onexc``
+    was ignored because only ``onerror`` existed, and the retry callback never
+    fired. That is what left a read-only tree behind. The handler must be
+    adapted, not dropped.
+    """
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    seen = {"handler": None}
+
+    def onerror_only(path, ignore_errors=False, onerror=None):
+        seen["handler"] = onerror
+        if onerror is not None:
+            # Invoke the adapted handler once, the way the stdlib would.
+            try:
+                raise PermissionError("winerror 32 simulated")
+            except PermissionError as exc:
+                onerror(os.unlink, str(target / "file.txt"), (PermissionError, exc, exc.__traceback__))
+        return _stdlib_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", onerror_only)
+
+    invoked = {"count": 0}
+
+    def onexc(func, path, exc):
+        invoked["count"] += 1
+
+    _rmtree_retry(target, onexc=onexc, _delay=0.0)
+
+    assert seen["handler"] is not None, "onexc handler was dropped for the onerror callable"
+    assert invoked["count"] >= 1, "the caller's handler was never invoked"
+
+
+def test_rmtree_wrapper_preserves_onerror_handler_on_onexc_only_callable(
+    tmp_path, monkeypatch
+):
+    """An ``onerror``-only caller against a 3.12 ``onexc``-only callable must
+    still have its handler invoked (the mirror conversion)."""
+    target = tmp_path / "tree"
+    target.mkdir()
+    (target / "file.txt").write_text("x")
+
+    def onexc_only(path, ignore_errors=False, onerror=None, *, onexc=None, dir_fd=None):
+        if onexc is not None:
+            try:
+                raise PermissionError("winerror 32 simulated")
+            except PermissionError as exc:
+                onexc(os.unlink, str(target / "file.txt"), exc)
+        return _stdlib_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr("tests.conftest._real_rmtree", onexc_only)
+
+    invoked = {"count": 0}
+
+    def onerror(func, path, exc_info):
+        invoked["count"] += 1
+
+    _rmtree_retry(target, onerror=onerror, _delay=0.0)
+
+    assert invoked["count"] >= 1, "the caller's onerror handler was never invoked"
 
 
 def test_rmtree_wrapper_no_dir_fd_callable_ignore_errors_fallback(tmp_path, monkeypatch):
