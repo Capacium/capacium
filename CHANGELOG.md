@@ -1,19 +1,108 @@
 # Changelog
 
-## Capacium v1.1.1 — Machine-readable publish receipts (2026-09-09)
+## Unreleased
 
-Publish now reports instrumentable, verifiable outcomes instead of a human
-phrase.
+- **Release notes come from the changelog, not the commit log.** Both the
+  Forgejo and GitHub release jobs publish the release body from the matching
+  tag's `CHANGELOG.md` section and fail before creating or editing a release
+  object when the tag has no entry, instead of generating notes from `git log`.
+- **External-audience gate on release notes.** A release body that names this
+  repository's own tracker is refused before publication. The vocabulary is the
+  committed `.ops.yaml` tracker-prefix list, parsed by one shared
+  stdlib-only parser the two jobs both invoke; the checker itself is the
+  pinned ops-engine helper.
+
+## Capacium v1.1.1 — Publish outcomes you can act on (2026-09-09)
+
+If you publish capabilities from a script, `cap publish` was unusable as a
+building block. It reported whether a publish succeeded as a human sentence on
+stdout, and every failure — a bad token, an owner you are not allowed to write
+as, a conflict with an existing version, a network blip — collapsed to the same
+exit code. A caller could not tell "this will never succeed, fix the request"
+apart from "the request may already have been recorded, read it back before
+retrying", so the safe reaction to a failure (retry? change? stop?) had to be
+guessed from prose.
+
+This release makes that outcome machine-readable and distinguishes the failure
+classes, so an automated publisher can decide correctly without a human reading
+the log. It also fixes the support text and the Windows behavior that stood
+between the release and a green cross-platform validation.
+
+### Added
+
+- **Structured publish receipts.** `cap publish --json` emits one JSON object on
+  stdout describing what was published: `canonical_name`, `name`, `version`,
+  `publication_id` and `publication_digest` when the Exchange returns them, and
+  the `created` / `idempotent` / `status` flags. In JSON mode the receipt is the
+  only thing on stdout; progress prose moves to stderr so it cannot corrupt the
+  payload. A human run without `--json` prints the same facts as readable text,
+  including a clear `accepted (new publication)` vs `accepted (idempotent
+  retry)` line instead of a fabricated success.
 
 ### Changed
 
-- **Machine-readable publish receipts.** `cap publish` emits a structured
-  receipt describing what was published, to which registry, and the outcome.
-- **Distinguishable exit codes.** Publish distinguishes user errors, system
-  errors, and unconfirmed listings, so callers can act on failure without
-  parsing prose.
-- **Truthful trusted-publishing help.** The trusted-publishing guidance now
-  describes the actual publish flow instead of a presumed one.
+- **Publish exits with a class-specific code.** A caller can now branch on the
+  outcome rather than parse stderr: `0` accepted, `1` local user error (missing
+  manifest or failed pre-flight validation), `2` transport-uncertain — the
+  request may or may not have been recorded, so read the coordinate back before
+  retrying, `3` missing/invalid credential (HTTP 401), `4` credential valid but
+  not bound to the publishing owner (HTTP 403), `5` version already published
+  with different metadata (HTTP 409), `6` invalid request or dependency entry
+  (HTTP 422), `7` any other server-reported HTTP error.
+- **Dependency payloads are preserved end to end.** The publish request carries
+  the manifest `dependencies` as the name-to-constraint map the Exchange
+  expects; entries are no longer dropped or reshaped on the way out.
+- **Trusted-publishing guidance now matches the flow.** The `--token` help and
+  the 401/403 diagnostics no longer repeat the old claim that the client token
+  must equal a server-wide secret on the Exchange. They state the actual
+  contract: the token is bound to the owner you publish as, and a 403 means the
+  token is valid but scoped for a different owner.
+- **Cross-platform filesystem handling.** Package removal, garbage collection
+  and home-directory resolution now go through one set of helpers that cope
+  with Windows realities the POSIX path ignored: read-only files and files held
+  open by a virus scanner or mapped DLL are retried instead of leaving a tree
+  half-removed, `USERPROFILE`/`HOMEDRIVE` resolve the home directory rather than
+  `HOME`, and 8.3 short names and `\\?\` extended-length prefixes are normalized
+  before any containment check, so two spellings of one directory compare equal.
+- **Release and distribution verification.** The release pipeline asserts the
+  canonical `Capacium vX.Y.Z` release title, standalone binaries attach to a
+  release that carries that same canonical title, and a manually dispatched
+  Windows validation job runs the release test command on the candidate before
+  tagging.
+
+### Notes on scope
+
+- The Core behavior in this release is the publisher CLI, the Windows
+  filesystem helpers and the release/distribution verification above. The
+  Exchange-side receipt fields (`created`, `idempotent`, `publication_id`,
+  `publication_digest`) are produced by the coordinated Exchange 1.1.1 release;
+  Core consumes them when present and falls back to the transport status when
+  they are not.
+- The live OIDC publish that exercised this path end to end ran as part of the
+  coordinated SkillWeave 1.5.4 distribution, which depends on this release. It
+  is proof of the integration, not a Capacium Core feature.
+- Checksums are published with the release assets. No cryptographic signature,
+  sigstore attestation or transparency-log entry is produced or claimed, and
+  nothing here confers trust on a listing.
+
+### Upgrade
+
+```bash
+brew update && brew upgrade capacium   # or: pip install --upgrade capacium
+cap --version                          # → 1.1.1
+```
+
+Existing installs need no migration; the new exit codes are only observable to
+callers that inspect them, and a script that treated any non-zero exit as
+failure still does. Docker users should pull `ghcr.io/capacium/cap:1.1.1`.
+
+**Full changelog:** [CHANGELOG.md](https://github.com/Capacium/capacium/blob/main/CHANGELOG.md) · **Diff:** [v1.1.0...v1.1.1](https://github.com/Capacium/capacium/compare/v1.1.0...v1.1.1)
+
+> **Editorial note (2026-09-12):** this expanded entry was written after the
+> `v1.1.1` release. The immutable `v1.1.1` tag still carries the original, shorter
+> changelog entry, and the released artifacts and tag bytes were not modified.
+> The prose here — including the `Unreleased` section above — lives on `main`
+> and changes there, not in the tag.
 
 ## Capacium v1.1.0 — CLI payloads, mirror preflight, Forgejo releases (2026-09-08)
 

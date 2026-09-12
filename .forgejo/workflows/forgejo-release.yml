@@ -1,5 +1,21 @@
 name: Create Forgejo Release
 
+# The release body is the CHANGELOG entry for the tag being released, never a
+# commit-log dump. This workflow:
+#
+#   1. gates the release title (exactly "Capacium vX.Y.Z"),
+#   2. extracts the notes from that tag's CHANGELOG.md section, and refuses the
+#      release before any release object exists if the section is missing or
+#      empty — a release with no authored notes is a release nobody can read,
+#   3. runs the ops-engine external-audience gate, so a body that still names
+#      this repository's own tracker is refused before publication,
+#   4. creates the release with the canonical title and the extracted notes, or
+#      — when it already exists — PATCHes BOTH the title and the body, so the
+#      idempotent path cannot repair a title while leaving a stale body.
+#
+# The extraction is one implementation shared with the GitHub release job
+# (scripts/extract_changelog_notes.py), not a second, drifting copy.
+
 on:
   push:
     tags:
@@ -19,66 +35,144 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create Release
+      # The release title is a gate, not an agreement. A tag whose rendered
+      # title does not conform is refused here, before any release object
+      # exists. Forge default behaviour names a release after the bare tag —
+      # that is not the convention.
+      - name: Gate the release title
+        id: title
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
         run: |
           set -euo pipefail
-          
-          TAG_NAME="${{ github.event.inputs.tag_name || github.ref_name }}"
-          
-          # Generate release notes
-          LAST_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || echo "")
-          CHANGES=""
-          if [ -n "$LAST_TAG" ]; then
-              COMMITS=$(git log "${LAST_TAG}..${TAG_NAME}" --oneline --no-merges 2>/dev/null || true)
-          else
-              COMMITS=$(git log "${TAG_NAME}" --oneline --no-merges --max-count=10 2>/dev/null || true)
-          fi
-          
-          while IFS= read -r line; do
-              [ -n "$line" ] && CHANGES="${CHANGES}- ${line}\n"
-          done <<< "$COMMITS"
-          
-          # Format notes safely
-          NOTES=$(printf "## Capacium %s\n\n### What's Changed\n%s" "$TAG_NAME" "$CHANGES")
-          
+          RELEASE_NAME="Capacium ${TAG_NAME}"
+          python3 - "${RELEASE_NAME}" <<'TITLE_GATE_PY'
+          import re
+          import sys
+
+          NAME_RE = re.compile(
+              r"^Capacium v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?$"
+          )
+          name = sys.argv[1]
+          if not NAME_RE.match(name):
+              sys.stderr.write(
+                  "ReleaseTitleError: release name %r does not match the required "
+                  "convention ^Capacium v[0-9]+\\.[0-9]+\\.[0-9]+$ or its "
+                  "prerelease form ...-rc[0-9]+$. Refusing before any release "
+                  "object exists.\n" % name
+              )
+              sys.exit(2)
+          sys.stdout.write("title gate: %r conforms\n" % name)
+          TITLE_GATE_PY
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      # The body is the CHANGELOG entry for this version. A tag whose version
+      # has no section — or an empty one — fails here, before any release
+      # object exists. The extractor is committed and shared with the GitHub
+      # release job; it is stdlib-only on purpose (no yaml, no pydantic).
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        env:
+          TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
+        run: |
+          set -euo pipefail
+          NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG_NAME")"
+          {
+            echo "notes<<NOTES_EOF"
+            echo "${NOTES}"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Generic tooling lives in the open base. ops-engine is OSS and publicly
+      # mirrored, so this needs no credential. Pinned to the v3.4.2 tag.
+      - name: Fetch the audience gate (canonical, ops-engine)
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://raw.githubusercontent.com/LangeVC/ops-engine/v3.4.2/scripts/release_notes_audience_gate.py" \
+            -o "$RUNNER_TEMP/release_notes_audience_gate.py"
+
+          # Prove what arrived. Without this the step reports success even when
+          # it fetched an HTML page: a redirect to a login page returns 200 and
+          # curl -f never triggers, so the failure surfaces later as a
+          # SyntaxError on "<!DOCTYPE html>".
+          python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+            "$RUNNER_TEMP/release_notes_audience_gate.py" \
+            || { echo "fetched file is not Python — first three lines:"; \
+                 head -3 "$RUNNER_TEMP/release_notes_audience_gate.py"; exit 1; }
+
+      # The release body is addressed at an external reader. The engine
+      # classifies nothing by shape: the code-and-number form is shared by
+      # internal ticket ids and by identifiers a reader legitimately needs
+      # (CVE, RFC, ISO, UTF-8, SHA-256). It refuses a ticket-shaped token only
+      # when its prefix appears in the vocabulary THIS repository declares.
+      # That vocabulary is the committed .ops.yaml, not a shell literal, so a
+      # reviewer can see and change the list.
+      - name: Gate the release notes for an external audience
+        env:
+          NOTES: "${{ steps.notes.outputs.notes }}"
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$(mktemp)"
+          PREFIXES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE" "$PREFIXES_FILE"' EXIT
+          printf '%s\n' "$NOTES" > "$NOTES_FILE"
+          python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE"
+          python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
+            --ticket-prefixes "$PREFIXES_FILE" \
+            "$NOTES_FILE"
+
+      - name: Create or re-assert the Forgejo release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
+          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
+          NOTES: "${{ steps.notes.outputs.notes }}"
+        run: |
+          set -euo pipefail
+
           PAYLOAD=$(jq -n \
             --arg tag_name "$TAG_NAME" \
-            --arg name "Capacium ${TAG_NAME}" \
+            --arg name "$RELEASE_NAME" \
             --arg body "$NOTES" \
             '{tag_name: $tag_name, name: $name, body: $body, draft: false, prerelease: false}')
-            
-          echo "Creating Forgejo release for $TAG_NAME..."
-          
+
+          echo "Creating release $TAG_NAME..."
           HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
             -X POST "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
-            
-          if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
-            if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
-              echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting exact title (self-healing, matches GitHub)."
-              # Forgejo has no `gh release edit`; PATCH the existing release by
-              # tag so a pre-existing release always ends with the canonical
-              # 'Capacium ${TAG_NAME}' title, not a stale/empty one.
-              PATCH_STATUS=$(curl -s -o patch.json -w "%{http_code}" \
-                -X PATCH "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" \
-                -H "Authorization: token ${GITHUB_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -n --arg name "Capacium ${TAG_NAME}" '{name: $name}')")
-              if [ "$PATCH_STATUS" != "200" ]; then
-                echo "Failed to re-assert release title. HTTP $PATCH_STATUS"
-                cat patch.json
-                exit 1
-              fi
-              echo "Release title re-asserted to 'Capacium ${TAG_NAME}'."
-            else
-              echo "Failed to create release. HTTP $HTTP_STATUS"
-              cat response.json
+
+          if [ "$HTTP_STATUS" = "201" ] || [ "$HTTP_STATUS" = "200" ]; then
+            echo "Release created successfully."
+            exit 0
+          fi
+
+          if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
+            # The release already exists. Forgejo has no `gh release edit`;
+            # PATCH by tag. Both the canonical title AND the extracted notes are
+            # written: repairing only the title is what left a stale body in
+            # place after a re-run.
+            echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting canonical title and notes."
+            PATCH_PAYLOAD=$(jq -n \
+              --arg name "$RELEASE_NAME" \
+              --arg body "$NOTES" \
+              '{name: $name, body: $body}')
+            PATCH_STATUS=$(curl -s -o patch.json -w "%{http_code}" \
+              -X PATCH "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$PATCH_PAYLOAD")
+            if [ "$PATCH_STATUS" != "200" ]; then
+              echo "Failed to re-assert release title and notes. HTTP $PATCH_STATUS"
+              cat patch.json
               exit 1
             fi
+            echo "Release title and notes re-asserted to '${RELEASE_NAME}'."
+            exit 0
           fi
-          
-          echo "Release created successfully."
+
+          echo "Failed to create release. HTTP $HTTP_STATUS"
+          cat response.json
+          exit 1
