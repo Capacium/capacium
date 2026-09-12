@@ -101,12 +101,33 @@ jobs:
           sha256sum -- *.whl *.tar.gz 2>/dev/null > checksums.txt || true
           cat checksums.txt
 
+      # Generic tooling lives in the open base. ops-engine is OSS and publicly
+      # mirrored, so this needs no credential. Pinned to the v3.4.2 tag. The
+      # checker is the same one the Forgejo release job fetches, so the two
+      # forges enforce the identical audience gate rather than two copies.
+      - name: Fetch the audience gate (canonical, ops-engine)
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://raw.githubusercontent.com/LangeVC/ops-engine/v3.4.2/scripts/release_notes_audience_gate.py" \
+            -o "$RUNNER_TEMP/release_notes_audience_gate.py"
+          # Prove what arrived (a redirect to a login page returns 200 and
+          # curl -f never triggers, so without this the failure would surface
+          # later as a SyntaxError on "<!DOCTYPE html>").
+          python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+            "$RUNNER_TEMP/release_notes_audience_gate.py" \
+            || { echo "fetched file is not Python — first three lines:"; \
+                 head -3 "$RUNNER_TEMP/release_notes_audience_gate.py"; exit 1; }
+
       # The body is the CHANGELOG entry for this tag, never a commit-log dump.
       # A tag whose version has no section — or an empty one — fails here,
       # before the GitHub Release object is created. The extractor is the same
       # committed implementation the Forgejo job uses, so the two forges cannot
-      # disagree on what the notes for vX.Y.Z are.
-      - name: Generate release notes
+      # disagree on what the notes for vX.Y.Z are. The extracted section is then
+      # run through the same external-audience gate with the same committed
+      # tracker prefixes, so a mirrored tag cannot publish on GitHub when the
+      # Forgejo gate would have rejected its notes.
+      - name: Generate and gate release notes
         id: release_notes
         run: |
           set -euo pipefail
@@ -114,6 +135,15 @@ jobs:
           VERSION="${TAG#v}"
 
           NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG")"
+
+          NOTES_FILE="$(mktemp)"
+          PREFIXES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE" "$PREFIXES_FILE"' EXIT
+          printf '%s\n' "$NOTES" > "$NOTES_FILE"
+          python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE"
+          python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
+            --ticket-prefixes "$PREFIXES_FILE" \
+            "$NOTES_FILE"
 
           {
             cat <<EOF
@@ -141,7 +171,7 @@ jobs:
 
           **Standalone binaries** — attached below for macOS, Linux, and Windows.
 
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${TAG}/CHANGELOG.md) for details.
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           EOF
           } > release_notes.md
 

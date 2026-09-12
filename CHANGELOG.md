@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Release notes come from the changelog, not the commit log.** Both the
+  Forgejo and GitHub release jobs publish the release body from the matching
+  tag's `CHANGELOG.md` section and fail before creating or editing a release
+  object when the tag has no entry, instead of generating notes from `git log`.
+- **External-audience gate on release notes.** A release body that names this
+  repository's own tracker is refused before publication. The vocabulary is the
+  committed `.ops.yaml` tracker-prefix list, parsed by one shared
+  stdlib-only parser the two jobs both invoke; the checker itself is the
+  pinned ops-engine helper.
+
 ## Capacium v1.1.1 — Publish outcomes you can act on (2026-09-09)
 
 If you publish capabilities from a script, `cap publish` was unusable as a
@@ -52,13 +64,11 @@ between the release and a green cross-platform validation.
   half-removed, `USERPROFILE`/`HOMEDRIVE` resolve the home directory rather than
   `HOME`, and 8.3 short names and `\\?\` extended-length prefixes are normalized
   before any containment check, so two spellings of one directory compare equal.
-- **Release and distribution verification.** The release pipeline now asserts
-  the canonical `Capacium vX.Y.Z` release title, and both the Forgejo release
-  job and the GitHub release job publish the release body from this changelog
-  and fail before creating anything when the tag has no entry. Standalone
-  binaries attach to a release that carries the same canonical title, and a
-  manually dispatched Windows validation job runs the release test command on
-  the candidate before tagging.
+- **Release and distribution verification.** The release pipeline asserts the
+  canonical `Capacium vX.Y.Z` release title, standalone binaries attach to a
+  release that carries that same canonical title, and a manually dispatched
+  Windows validation job runs the release test command on the candidate before
+  tagging.
 
 ### Notes on scope
 
@@ -86,7 +96,13 @@ Existing installs need no migration; the new exit codes are only observable to
 callers that inspect them, and a script that treated any non-zero exit as
 failure still does. Docker users should pull `ghcr.io/capacium/cap:1.1.1`.
 
-**Full changelog:** [CHANGELOG.md](https://github.com/Capacium/capacium/blob/v1.1.1/CHANGELOG.md) · **Diff:** [v1.1.0...v1.1.1](https://github.com/Capacium/capacium/compare/v1.1.0...v1.1.1)
+**Full changelog:** [CHANGELOG.md](https://github.com/Capacium/capacium/blob/main/CHANGELOG.md) · **Diff:** [v1.1.0...v1.1.1](https://github.com/Capacium/capacium/compare/v1.1.0...v1.1.1)
+
+> **Editorial note (2026-09-12):** this expanded entry was written after the
+> `v1.1.1` release. The immutable `v1.1.1` tag still carries the original, shorter
+> changelog entry, and the released artifacts and tag bytes were not modified.
+> The prose here — including the `Unreleased` section above — lives on `main`
+> and changes there, not in the tag.
 
 ## Capacium v1.1.0 — CLI payloads, mirror preflight, Forgejo releases (2026-09-08)
 

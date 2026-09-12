@@ -28,6 +28,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 EXTRACTOR = SCRIPTS_DIR / "extract_changelog_notes.py"
+PREFIX_EXTRACTOR = SCRIPTS_DIR / "extract_tracker_prefixes.py"
 OPS_YAML = REPO_ROOT / ".ops.yaml"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 FORGEJO_WORKFLOW = REPO_ROOT / ".forgejo" / "workflows" / "forgejo-release.yml"
@@ -43,6 +44,23 @@ def _load_extractor():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_prefix_extractor():
+    spec = importlib.util.spec_from_file_location(
+        "extract_tracker_prefixes", PREFIX_EXTRACTOR
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ops_engine_gate() -> Path | None:
+    gate = Path(
+        "/Users/andrelange/Documents/repositories/forgejo/langevc"
+        "/ops-engine/scripts/release_notes_audience_gate.py"
+    )
+    return gate if gate.is_file() else None
 
 
 def _workflow_text(path: Path) -> str:
@@ -114,14 +132,50 @@ class TestExternalAudienceVocabulary:
         text = OPS_YAML.read_text(encoding="utf-8")
         assert "tracker_prefixes:" in text
 
-    def test_current_v1_1_1_notes_pass_the_gate(self, tmp_path):
-        gate = (
-            Path(
-                "/Users/andrelange/Documents/repositories/forgejo/langevc"
-                "/ops-engine/scripts/release_notes_audience_gate.py"
-            )
+    def test_real_prefix_parser_reads_committed_ops_yaml(self):
+        prefix_extractor = _load_prefix_extractor()
+        prefixes = prefix_extractor.load_tracker_prefixes(
+            OPS_YAML.read_text(encoding="utf-8")
         )
-        if not gate.is_file():
+        assert prefixes
+        assert "CAP" in prefixes
+        assert "CI" in prefixes
+        assert all(prefix_extractor._PREFIX_TOKEN_RE.fullmatch(p) for p in prefixes)
+
+    def test_prefix_parser_handles_block_and_inline_forms(self):
+        prefix_extractor = _load_prefix_extractor()
+        block = "tracker_prefixes:\n  - CAP\n  - EX\n  - CI\n"
+        assert prefix_extractor.load_tracker_prefixes(block) == ["CAP", "EX", "CI"]
+        inline = "tracker_prefixes: [CAP, EX, CI]\n"
+        assert prefix_extractor.load_tracker_prefixes(inline) == ["CAP", "EX", "CI"]
+
+    def test_prefix_parser_fails_closed(self):
+        prefix_extractor = _load_prefix_extractor()
+        for bad in ("", "other_key: 1\n", "tracker_prefixes:\n"):
+            with pytest.raises(prefix_extractor.MissingTrackerPrefixesError):
+                prefix_extractor.load_tracker_prefixes(bad)
+
+    def test_prefix_parser_cli_missing_ops_fails(self):
+        result = _run_step_script(
+            "python3 scripts/extract_tracker_prefixes.py --ops /nope.yaml"
+        )
+        assert result.returncode == 2
+        assert "MissingTrackerPrefixesError" in result.stderr
+
+    def test_prefix_parser_cli_writes_one_prefix_per_line(self):
+        result = _run_step_script(
+            "python3 scripts/extract_tracker_prefixes.py"
+        )
+        assert result.returncode == 0
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        assert "CAP" in lines
+        assert all(
+            re.fullmatch(r"[A-Z]{2,5}", ln) for ln in lines
+        )
+
+    def test_current_v1_1_1_notes_pass_the_gate(self, tmp_path):
+        gate = _ops_engine_gate()
+        if gate is None:
             pytest.skip("ops-engine canonical checkout not present")
         notes = _load_extractor().extract_notes_for_tag("v1.1.1", CHANGELOG)
         notes_file = tmp_path / "notes.md"
@@ -134,14 +188,38 @@ class TestExternalAudienceVocabulary:
         )
         assert result.returncode == 0, result.stderr
 
-    def test_a_body_naming_this_tracker_is_rejected(self, tmp_path):
-        gate = (
-            Path(
-                "/Users/andrelange/Documents/repositories/forgejo/langevc"
-                "/ops-engine/scripts/release_notes_audience_gate.py"
-            )
+    def test_committed_prefixes_feed_the_gate_and_reject(self, tmp_path):
+        """The real .ops.yaml vocabulary, fed through the shared parser, makes
+        the gate reject a body naming this repository's tracker."""
+        gate = _ops_engine_gate()
+        if gate is None:
+            pytest.skip("ops-engine canonical checkout not present")
+        prefix_extractor = _load_prefix_extractor()
+        prefixes = prefix_extractor.load_tracker_prefixes(
+            OPS_YAML.read_text(encoding="utf-8")
         )
-        if not gate.is_file():
+        prefixes_file = tmp_path / "prefixes.txt"
+        prefixes_file.write_text("\n".join(prefixes) + "\n", encoding="utf-8")
+        notes_file = tmp_path / "bad.md"
+        notes_file.write_text("This fixes CAP-123 end to end.\n", encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(gate),
+                "--ticket-prefixes",
+                str(prefixes_file),
+                str(notes_file),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "ReleaseNotesAudienceError" in result.stderr
+
+    def test_a_body_naming_this_tracker_is_rejected(self, tmp_path):
+        gate = _ops_engine_gate()
+        if gate is None:
             pytest.skip("ops-engine canonical checkout not present")
         notes_file = tmp_path / "bad.md"
         notes_file.write_text("This fixes CAP-CI-003.\n", encoding="utf-8")
@@ -199,6 +277,17 @@ class TestNoCommitDumpGeneration:
         for path in (FORGEJO_WORKFLOW, GITHUB_WORKFLOW):
             assert "scripts/extract_changelog_notes.py" in _workflow_text(path)
 
+    def test_both_workflows_use_the_shared_prefix_parser(self):
+        for path in (FORGEJO_WORKFLOW, GITHUB_WORKFLOW):
+            assert "scripts/extract_tracker_prefixes.py" in _workflow_text(path)
+
+    def test_no_inline_duplicated_prefix_parser_remains(self):
+        # The first version embedded its own .ops.yaml parser as a heredoc; that
+        # drifted from the real block-list syntax. Both forges must call the one
+        # committed parser instead of carrying a second copy.
+        for path in (FORGEJO_WORKFLOW, GITHUB_WORKFLOW):
+            assert "tracker_prefixes:" not in _workflow_text(path)
+
 
 class TestForgejoIdempotentPath:
     def test_patch_writes_title_and_body(self):
@@ -224,6 +313,20 @@ class TestGateFetchIsProvenBeforeExecution:
         assert "--ticket-prefixes" in text
         assert ".ops.yaml" in text
 
+    def test_github_fetches_ast_checks_and_runs_gate(self):
+        text = _workflow_text(GITHUB_WORKFLOW)
+        assert "release_notes_audience_gate.py" in text
+        assert "ast.parse" in text
+        assert "--ticket-prefixes" in text
+        # The gate must run BEFORE the release is created, i.e. in the same
+        # "Generate and gate release notes" step that precedes action-gh-release.
+        workflow = yaml.safe_load(text)
+        steps = workflow["jobs"]["create-release"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        gate_idx = names.index("Generate and gate release notes")
+        release_idx = names.index("Create GitHub Release")
+        assert gate_idx < release_idx
+
     def test_no_hardcoded_credentials_in_release_workflows(self):
         for path in (FORGEJO_WORKFLOW, GITHUB_WORKFLOW):
             text = _workflow_text(path)
@@ -237,3 +340,37 @@ class TestGateFetchIsProvenBeforeExecution:
                     assert (
                         "${{" in line or "${GITHUB_TOKEN}" in line
                     ), line
+
+
+class TestPostTagTruth:
+    def test_full_changelog_links_to_main_not_tag(self):
+        text = CHANGELOG.read_text(encoding="utf-8")
+        # The expanded entry is post-tag; the tag still holds the short entry,
+        # so the "full changelog" link must resolve to main, never the tag blob.
+        assert "blob/main/CHANGELOG.md" in text
+        assert "blob/v1.1.1/CHANGELOG.md" not in text
+
+    def test_editorial_correction_note_present(self):
+        text = CHANGELOG.read_text(encoding="utf-8")
+        assert "Editorial note" in text
+        assert "immutable" in text and "v1.1.1" in text
+        assert "after the" in text
+
+    def test_gate_mechanics_moved_to_unreleased(self):
+        # The changelog-extraction and audience-gate tooling was not in the
+        # v1.1.1 tag; it is future work, so it belongs under "Unreleased", not
+        # inside the v1.1.1 entry.
+        text = CHANGELOG.read_text(encoding="utf-8")
+        unreleased = text.split("## Unreleased", 1)[1].split("## Capacium v1.1.1", 1)[0]
+        assert "changelog" in unreleased.lower()
+        assert "audience" in unreleased.lower()
+        v1_1_1 = text.split("## Capacium v1.1.1", 1)[1].split("## Capacium v1.1.0", 1)[0]
+        assert "External-audience gate" not in v1_1_1
+        assert "from this changelog" not in v1_1_1
+
+    def test_v1_1_1_entry_is_reader_facing(self):
+        v1_1_1 = CHANGELOG.read_text(encoding="utf-8").split(
+            "## Capacium v1.1.1", 1
+        )[1].split("## Capacium v1.1.0", 1)[0]
+        # No internal ticket identifiers of the form PREFIX-digits.
+        assert not re.search(r"[A-Z]{2,5}-\d+", v1_1_1)

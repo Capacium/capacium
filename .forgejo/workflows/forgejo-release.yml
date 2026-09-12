@@ -117,41 +117,7 @@ jobs:
           PREFIXES_FILE="$(mktemp)"
           trap 'rm -f "$NOTES_FILE" "$PREFIXES_FILE"' EXIT
           printf '%s\n' "$NOTES" > "$NOTES_FILE"
-          python3 - "$PREFIXES_FILE" <<'PREFIXES_PY'
-          import sys
-          from pathlib import Path
-
-          out = sys.argv[1]
-          prefixes = []
-          ops = Path(".ops.yaml")
-          if not ops.is_file():
-              sys.stderr.write(
-                  "MissingTrackerPrefixesError: no .ops.yaml at the repository "
-                  "root; the external-audience gate needs this repository's "
-                  "declared tracker prefixes. Refusing rather than releasing "
-                  "without the vocabulary the organisation chose.\n"
-              )
-              sys.exit(2)
-          for raw in ops.read_text(encoding="utf-8").splitlines():
-              line = raw.split("#", 1)[0].strip()
-              if not line.startswith("tracker_prefixes:"):
-                  continue
-              value = line[len("tracker_prefixes:"):].strip()
-              if value.startswith("[") and value.endswith("]"):
-                  value = value[1:-1]
-              for item in value.split(","):
-                  item = item.strip().strip("'\"")
-                  if item:
-                      prefixes.append(item)
-          if not prefixes:
-              sys.stderr.write(
-                  "MissingTrackerPrefixesError: .ops.yaml declares no "
-                  "tracker_prefixes; refusing to run the audience gate with no "
-                  "vocabulary.\n"
-              )
-              sys.exit(2)
-          Path(out).write_text("\n".join(prefixes) + "\n", encoding="utf-8")
-          PREFIXES_PY
+          python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE"
           python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
             --ticket-prefixes "$PREFIXES_FILE" \
             "$NOTES_FILE"
