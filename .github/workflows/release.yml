@@ -101,25 +101,25 @@ jobs:
           sha256sum -- *.whl *.tar.gz 2>/dev/null > checksums.txt || true
           cat checksums.txt
 
+      # The body is the CHANGELOG entry for this tag, never a commit-log dump.
+      # A tag whose version has no section — or an empty one — fails here,
+      # before the GitHub Release object is created. The extractor is the same
+      # committed implementation the Forgejo job uses, so the two forges cannot
+      # disagree on what the notes for vX.Y.Z are.
       - name: Generate release notes
         id: release_notes
         run: |
+          set -euo pipefail
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
-          LAST_TAG=$(git describe --tags --abbrev=0 --exclude="$TAG" 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            CHANGELOG=$(git log --oneline --no-merges "${LAST_TAG}..HEAD" 2>/dev/null || echo "")
-          else
-            CHANGELOG=$(git log --oneline --no-merges --max-count=20 2>/dev/null || echo "")
-          fi
 
-          cat > release_notes.md <<EOF
-          ## Capacium v${VERSION}
+          NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG")"
 
-          ### What's Changed
-          \`\`\`
-          ${CHANGELOG:-Initial release}
-          \`\`\`
+          {
+            cat <<EOF
+          ## Capacium ${TAG}
+
+          ${NOTES}
 
           ### Install
 
@@ -141,8 +141,9 @@ jobs:
 
           **Standalone binaries** — attached below for macOS, Linux, and Windows.
 
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${TAG}/CHANGELOG.md) for details.
           EOF
+          } > release_notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
