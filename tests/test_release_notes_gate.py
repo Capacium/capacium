@@ -107,7 +107,7 @@ class TestChangelogExtraction:
 
     def test_cli_missing_section_exits_nonzero(self):
         result = _run_step_script(
-            "python3 scripts/extract_changelog_notes.py v9.9.9"
+            "python scripts/extract_changelog_notes.py v9.9.9"
         )
         assert result.returncode == 2
         assert "MissingChangelogEntryError" in result.stderr
@@ -115,7 +115,7 @@ class TestChangelogExtraction:
 
     def test_cli_existing_section_exits_zero(self):
         result = _run_step_script(
-            "python3 scripts/extract_changelog_notes.py v1.1.1"
+            "python scripts/extract_changelog_notes.py v1.1.1"
         )
         assert result.returncode == 0
         assert result.stdout.startswith("If you publish capabilities")
@@ -157,14 +157,14 @@ class TestExternalAudienceVocabulary:
 
     def test_prefix_parser_cli_missing_ops_fails(self):
         result = _run_step_script(
-            "python3 scripts/extract_tracker_prefixes.py --ops /nope.yaml"
+            "python scripts/extract_tracker_prefixes.py --ops /nope.yaml"
         )
         assert result.returncode == 2
         assert "MissingTrackerPrefixesError" in result.stderr
 
     def test_prefix_parser_cli_writes_one_prefix_per_line(self):
         result = _run_step_script(
-            "python3 scripts/extract_tracker_prefixes.py"
+            "python scripts/extract_tracker_prefixes.py"
         )
         assert result.returncode == 0
         lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
