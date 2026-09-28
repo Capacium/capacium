@@ -25,10 +25,10 @@ Works fully offline from local paths. The Exchange layer (separate repo) adds re
 You can install Capacium globally in an isolated environment using `pipx`.
 
 ```bash
-pipx install git+https://github.com/Capacium/capacium.git@v1.1.1
+pipx install git+https://github.com/Capacium/capacium.git@v1.1.6
 
 # Or with optional signing and YAML support:
-pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v1.1.1"
+pipx install "capacium[yaml,signing] @ git+https://github.com/Capacium/capacium.git@v1.1.6"
 ```
 
 Or from PyPI:
