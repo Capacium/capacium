@@ -68,8 +68,13 @@ def _workflow_text(path: Path) -> str:
 
 
 def _run_step_script(script: str) -> subprocess.CompletedProcess:
+    # Use sys.executable for python commands to avoid bash on Windows MINGW
+    import sys
+    args = script.split()
+    if args[0] == "python" or args[0] == "python3":
+        args[0] = sys.executable
     return subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", script],
+        args,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
