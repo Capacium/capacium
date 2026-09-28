@@ -1,24 +1,3 @@
-## [1.1.6] - 2026-09-28
-
-### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)
-- **100% "One-Line Install" Compliance**: Added native support for 6 new AI harnesses, making Capacium fully compliant with the Egonex-AI *Understand-Anything* ecosystem.
-  - `pi` (`~/.agents/skills/`)
-  - `vibe` (`~/.vibe/skills/`)
-  - `kimi` (`~/.kimi-code/skills/`)
-  - `trae` (`~/.trae/skills/`)
-  - `nanobot` (`~/.nanobot/workspace/skills/`)
-  - `kiro` (`~/.kiro/skills/`)
-- **Framework Detector**: Upgraded the internal detection pipeline (`harness_link_roots`) to support 38 active AI agent environments.
-
-### 🛡️ Security & UX (The "Brew++" Update)
-- **Single Registry Fallback**: `cap install` now dynamically pulls fallback manifests from the PostgreSQL backend if the upstream repository lacks a `capability.yaml`.
-- **The Consent Gate**: Introduced a strict, interactive security prompt when installing `community-provided` manifests. Execution is blocked unless `--allow-community-manifest` is explicitly passed or manually confirmed.
-- **Enterprise Provenance**: Added `manifest_origin` to `.capacium-source.json` to track exactly which trust-tier (publisher vs. community) authorized the installation.
-- **Brew-level Transparency**: Completely overhauled the Terminal UI in `src/capacium/ui.py`. Implemented strict visual hierarchies (`==>`), hidden subprocess logs with spinners, and determinate ASCII progress bars.
-
-### ⚙️ Ops & Infrastructure
-- **Ops-Engine Pin**: Explicitly pinned the `capacium-ops` layover to `ops-engine v3.4.2` to guarantee stable PostgreSQL backend interactions for the registry payload.
-
 # Changelog
 
 ## Unreleased
@@ -508,7 +487,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
   with expected output, quality score factors, verified trust state, and
   version updates.
 
-## Capacium v0.9.0 — 2026-04-30
+## Capacium v0.9.0 — Maintenance Release (2026-04-30)
 
 ### cap install — Edge Cases & Conflict Detection
 
@@ -533,7 +512,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `ConflictState` enum (5 states) and `ConflictResult` dataclass added to `models.py`.
 - `CapaciumError` base exception class and schema migration framework prepared.
 
-## [Capacium v0.7.3] - 2026-04-26
+## Capacium v0.7.3 — Maintenance Release (2026-04-26)
 
 ### Fixed
 - **OpenCode MCP activation** — `opencode` now writes MCP servers to the active
@@ -553,7 +532,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `cap update --force` and `cap update --skip-runtime-check` for explicit
   adapter reconciliation and advanced runtime bypasses.
 
-## [0.7.2] - 2026-04-25
+## Capacium v0.7.2 — Maintenance Release (2026-04-25)
 
 ### Added
 - **Cursor MCP support** — `cursor` adapter now patches `.cursor/mcp.json`
@@ -573,7 +552,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - 6 new tests covering install, remove, and `capability_exists` semantics for
   the cursor + continue-dev MCP paths.
 
-## [0.7.1] - 2026-04-25
+## Capacium v0.7.1 — Maintenance Release (2026-04-25)
 
 ### Fixed
 - `cap --version` now reads from package metadata via `importlib.metadata`
@@ -587,7 +566,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - Made one `cap doctor` test platform-agnostic (was pinned to a macOS-only
   `brew install` install hint).
 
-## [0.7.0] - 2026-04-25
+## Capacium v0.7.0 — Maintenance Release (2026-04-25)
 
 ### Added
 - **Runtime resolver** — Capacium now models host runtimes (`uv`, `node`, `python`,
@@ -617,7 +596,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `Manifest` dataclass gains a `runtimes: Dict[str, str]` field; `dependencies:`
   is unchanged and continues to express capability-on-capability deps.
 
-## [0.6.1] - 2026-04-25
+## Capacium v0.6.1 — Maintenance Release (2026-04-25)
 
 ### Changed
 - Updated default registry URL from `registry.capacium.dev/v1` to `api.capacium.xyz/v2`.
@@ -625,7 +604,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 ### Removed
 - Internal planning artifacts (`prd/`, `specs/`) from public tracking.
 
-## [0.6.0] - 2026-04-24
+## Capacium v0.6.0 — Maintenance Release (2026-04-24)
 
 ### Added
 - **Universal MCP Client Parity**: Added support for 22+ new MCP clients/adapters.
@@ -646,6 +625,6 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - Fixed duplicate imports in legacy adapters.
 - Enhanced robustness of MCP server auto-detection (package.json, pyproject.toml, etc.).
 
-## [0.5.0] - 2026-04-24
+## Capacium v0.5.0 — Maintenance Release (2026-04-24)
 - Native MCP support.
 - Headless Client Architecture.

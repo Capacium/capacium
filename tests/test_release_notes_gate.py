@@ -85,13 +85,13 @@ class TestChangelogExtraction:
         assert "CLI payloads, mirror preflight" not in notes
         assert "### Upgrade" in notes
 
-    def test_extracts_bracketed_old_style_heading(self):
+    def test_rejects_bracketed_old_style_heading(self):
         extractor = _load_extractor()
-        notes = extractor.extract_notes(
-            "## [Capacium v0.7.3] - 2026-04-26\n\n### Fixed\n- thing\n",
-            "0.7.3",
-        )
-        assert notes == "### Fixed\n- thing"
+        with pytest.raises(extractor.MissingChangelogEntryError):
+            extractor.extract_notes(
+                "## [Capacium v0.7.3] - 2026-04-26\n\n### Fixed\n- thing\n",
+                "0.7.3",
+            )
 
     def test_missing_section_raises(self):
         extractor = _load_extractor()

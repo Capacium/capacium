@@ -31,14 +31,10 @@ from pathlib import Path
 #   ## Capacium v1.1.0 — CLI payloads, mirror preflight, Forgejo releases (2026-09-08)
 #   ## [Capacium v0.7.3] - 2026-04-26
 #   ## [2.1.2] — ...
-# The version is captured from the first MAJOR.MINOR.PATCH-shaped token, and a
-# bare heading must start with "## " at column 0 to count.
+# The version is captured from the first MAJOR.MINOR.PATCH-shaped token.
+# Enforces the strict format: "## Capacium vX.Y.Z — <Title> (YYYY-MM-DD)"
 HEADER_PATTERN = re.compile(
-    r"^##\s+"
-    r"(?:\[)?(?:Capacium\s+)?v?"
-    r"(\d+\.\d+\.\d+(?:[-.\w]*)?)"
-    r"(?:\])?"
-    r".*$",
+    r"^##\s+Capacium\s+v(\d+\.\d+\.\d+(?:[-.\w]*)?)\s+—\s+.+$",
     re.MULTILINE,
 )
 
