@@ -26,6 +26,12 @@ from .openclaw import OpenClawAdapter
 from .hermes import HermesAdapter
 from .qwen import QwenAdapter
 from .copilot import CopilotAdapter
+from .pi import PiAdapter
+from .vibe import VibeAdapter
+from .kimi import KimiAdapter
+from .trae import TraeAdapter
+from .nanobot import NanobotAdapter
+from .kiro import KiroAdapter
 from .langchain_bridge import LangChainToolAdapter, FlowiseAdapter
 
 _ADAPTER_REGISTRY: dict[str, type[FrameworkAdapter]] = {}
@@ -122,3 +128,11 @@ register_adapter("flowise", FlowiseAdapter)
 # ── Tier 5: SKILL.md-Capable Agents (2026 standard) ────────────────────
 register_adapter("hermes", HermesAdapter)
 register_adapter("copilot", CopilotAdapter)
+
+# ── Tier 6: Emerging / New Harnesses ───────────────────────────────────
+register_adapter("pi", PiAdapter)
+register_adapter("vibe", VibeAdapter)
+register_adapter("kimi", KimiAdapter)
+register_adapter("trae", TraeAdapter)
+register_adapter("nanobot", NanobotAdapter)
+register_adapter("kiro", KiroAdapter)

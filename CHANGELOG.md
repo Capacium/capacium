@@ -1,3 +1,24 @@
+## [1.1.6] - 2026-09-28
+
+### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)
+- **100% "One-Line Install" Compliance**: Added native support for 6 new AI harnesses, making Capacium fully compliant with the Egonex-AI *Understand-Anything* ecosystem.
+  - `pi` (`~/.agents/skills/`)
+  - `vibe` (`~/.vibe/skills/`)
+  - `kimi` (`~/.kimi-code/skills/`)
+  - `trae` (`~/.trae/skills/`)
+  - `nanobot` (`~/.nanobot/workspace/skills/`)
+  - `kiro` (`~/.kiro/skills/`)
+- **Framework Detector**: Upgraded the internal detection pipeline (`harness_link_roots`) to support 38 active AI agent environments.
+
+### 🛡️ Security & UX (The "Brew++" Update)
+- **Single Registry Fallback**: `cap install` now dynamically pulls fallback manifests from the PostgreSQL backend if the upstream repository lacks a `capability.yaml`.
+- **The Consent Gate**: Introduced a strict, interactive security prompt when installing `community-provided` manifests. Execution is blocked unless `--allow-community-manifest` is explicitly passed or manually confirmed.
+- **Enterprise Provenance**: Added `manifest_origin` to `.capacium-source.json` to track exactly which trust-tier (publisher vs. community) authorized the installation.
+- **Brew-level Transparency**: Completely overhauled the Terminal UI in `src/capacium/ui.py`. Implemented strict visual hierarchies (`==>`), hidden subprocess logs with spinners, and determinate ASCII progress bars.
+
+### ⚙️ Ops & Infrastructure
+- **Ops-Engine Pin**: Explicitly pinned the `capacium-ops` layover to `ops-engine v3.4.2` to guarantee stable PostgreSQL backend interactions for the registry payload.
+
 # Changelog
 
 ## Capacium v0.18.0 — One decision about what may be removed (2026-08-25)
