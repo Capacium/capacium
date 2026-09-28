@@ -43,7 +43,7 @@ If you don't use Python, you can download standalone executables directly from t
 ### 3. Docker (GHCR)
 Run Capacium safely in a container with your directories mounted:
 ```bash
-docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:1.1.1
+docker run --rm -v ~/.capacium:/root/.capacium -v $(pwd):/workspace ghcr.io/capacium/cap:1.1.6
 ```
 
 ### 4. macOS / Linux (Homebrew)
