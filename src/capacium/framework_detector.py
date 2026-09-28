@@ -28,6 +28,12 @@ def framework_skills_dirs() -> Dict[str, Path]:
         "hermes": Path.home() / ".hermes" / "skills",
         "copilot": Path.home() / ".config" / "github-copilot" / "skills",
         "qwen": Path.home() / ".qwen" / "skills",
+        "pi": Path.home() / ".agents" / "skills",
+        "vibe": Path.home() / ".vibe" / "skills",
+        "kimi": Path.home() / ".kimi-code" / "skills",
+        "trae": Path.home() / ".trae" / "skills",
+        "nanobot": Path.home() / ".nanobot" / "workspace" / "skills",
+        "kiro": Path.home() / ".kiro" / "skills",
     }
     project_root = get_project_root()
     if project_root is not None:
@@ -150,6 +156,30 @@ def _detect_qwen() -> bool:
     return (Path.home() / ".qwen").is_dir()
 
 
+def _detect_pi() -> bool:
+    return (Path.home() / ".agents" / "skills").is_dir()
+
+
+def _detect_vibe() -> bool:
+    return (Path.home() / ".vibe").is_dir()
+
+
+def _detect_kimi() -> bool:
+    return (Path.home() / ".kimi-code").is_dir()
+
+
+def _detect_trae() -> bool:
+    return (Path.home() / ".trae").is_dir()
+
+
+def _detect_nanobot() -> bool:
+    return (Path.home() / ".nanobot").is_dir()
+
+
+def _detect_kiro() -> bool:
+    return (Path.home() / ".kiro").is_dir()
+
+
 def _detect_claude_desktop() -> bool:
     # Check for the actual Claude Desktop config file
     import platform
@@ -176,6 +206,12 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "copilot": _detect_copilot,
     "qwen": _detect_qwen,
     "claude-desktop": _detect_claude_desktop,
+    "pi": _detect_pi,
+    "vibe": _detect_vibe,
+    "kimi": _detect_kimi,
+    "trae": _detect_trae,
+    "nanobot": _detect_nanobot,
+    "kiro": _detect_kiro,
 }
 
 
