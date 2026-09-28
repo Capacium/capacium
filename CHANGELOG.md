@@ -33,6 +33,24 @@
   stdlib-only parser the two jobs both invoke; the checker itself is the
   pinned ops-engine helper.
 
+## Capacium v1.1.6 — Universal ecosystem parity and secure defaults (2026-09-28)
+
+When connecting multiple AI agents and IDEs to your capabilities, ensuring absolute compatibility across the fragmented agent landscape is critical. Previously, users had to rely on external installation scripts or manual configuration to bridge the gap for emerging tools. Furthermore, discovering capabilities across different trust tiers (publisher-verified vs. community-provided) lacked strict, interactive security barriers.
+
+This release establishes native "one-line install" parity across the entire ecosystem, expanding the framework detector to support 38 active AI environments out-of-the-box. It also overhauls the terminal UX to introduce a strict Consent Gate, ensuring unverified community manifests are never installed silently. Finally, it unifies the registry architecture to pull fallback manifests directly from a single PostgreSQL backend, eliminating architectural fragmentation.
+
+### Added
+- **Ecosystem Parity**: Native support for 6 new AI harnesses (`pi`, `vibe`, `kimi`, `trae`, `nanobot`, `kiro`), making Capacium universally compatible out-of-the-box.
+- **The Consent Gate**: A strict, interactive security prompt when installing `community-provided` manifests. Execution is now blocked unless explicitly bypassed or manually confirmed.
+- **Enterprise Provenance Tracking**: The local `.capacium-source.json` now includes `manifest_origin`, securely tracking the trust-tier that authorized the installation.
+
+### Changed
+- **Terminal UX Transparency**: Completely overhauled `src/capacium/ui.py`. Introduced strict visual hierarchies (using `==>`), hidden subprocess logs with elegant spinners, and determinate ASCII progress bars, inspired by the transparency standards of top-tier package managers.
+- **Single Registry Fallback**: `cap install` dynamically delegates fallback lookups to the primary backend if the upstream repository lacks a capability manifest.
+
+### Fixed
+- **Stable Ops-Engine Constraints**: Explicitly pinned the `capacium-ops` layover to `ops-engine v3.4.2` to guarantee deterministic backend interactions for the registry payload.
+
 ## Capacium v1.1.1 — Publish outcomes you can act on (2026-09-09)
 
 If you publish capabilities from a script, `cap publish` was unusable as a
