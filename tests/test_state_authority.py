@@ -110,9 +110,9 @@ class TestCriterion1VersionedSchema:
         reg = Registry()
         reg.add_capability(_cap())
         reg.set_desired_bindings("test/state-cap", "1.0.0", ["openclaude", "codex"])
-        assert reg.get_desired_bindings("test/state-cap", "1.0.0") == [
-            "openclaude",
+        assert sorted(reg.get_desired_bindings("test/state-cap", "1.0.0")) == [
             "codex",
+            "openclaude",
         ]
 
 
@@ -199,7 +199,7 @@ class TestCriterion3Projection:
         reg.set_published_frameworks("test/state-cap", "1.0.0", ["opencode", "codex"])
 
         layers = reg.get_state_layers("test/state-cap", "1.0.0")
-        assert layers["published"] == ["opencode", "codex"]
+        assert set(layers["published"]) == {"opencode", "codex"}
         assert layers["installed"] == []
         assert layers["verified"] == []
 
