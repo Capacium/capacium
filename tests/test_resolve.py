@@ -1444,3 +1444,377 @@ class TestFixA_C4_BranchHeadAndRootPin:
         # Pin 2.0.0 does NOT satisfy the constraint >=1.0.0,<2.0.0
         with pytest.raises(ConflictError):
             resolver.resolve("alice/lib", ">=1.0.0,<2.0.0")
+
+
+# ---------------------------------------------------------------------------
+# Fix B red proofs: C5 harness inheritance + optional determinism,
+# C6 platform constraints + diamond paths in plan,
+# C7 offline replay source/deps/root/completeness verification
+# ---------------------------------------------------------------------------
+
+
+class TestFixB_C5_HarnessInheritance:
+    """C5 fix: harness_set threaded into each resolved node; optional
+    flag is deterministic (already fixed in A but verified here)."""
+
+    def test_harness_set_propagated_to_nodes(self):
+        """Each resolved node records the user-selected harness_set."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["alice/tool-a", "alice/tool-b"],
+                },
+            },
+            "alice/tool-a": {
+                "1.0.0": {"kind": "tool"},
+            },
+            "alice/tool-b": {
+                "1.0.0": {"kind": "tool"},
+            },
+        }
+        user_harness_set = {"claude-code"}
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve(
+            "alice/bundle", "1.0.0", harness_set=user_harness_set,
+        )
+        # Each node must carry the harness set
+        for coord, node in plan.nodes.items():
+            assert node.harness == user_harness_set, \
+                f"Node {coord} expected harness={user_harness_set}, got {node.harness}"
+
+    def test_harness_appears_in_json_plan_per_node(self):
+        """The JSON plan exposes harness for each node."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["alice/tool-a"],
+                },
+            },
+            "alice/tool-a": {
+                "1.0.0": {"kind": "tool"},
+            },
+        }
+        user_harness_set = {"claude-code"}
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve(
+            "alice/bundle", "1.0.0", harness_set=user_harness_set,
+        )
+        json_plan = plan.to_json_plan()
+        # Each selected node should carry harness info
+        for coord in plan.nodes:
+            selected = json_plan["plan"]["selected"].get(coord, {})
+            assert "harness" in selected, \
+                f"Node {coord} missing harness in JSON plan"
+            assert selected["harness"] == sorted(user_harness_set)
+
+    def test_optional_not_overwritten_by_later_required(self):
+        """A node first reached as optional that is later required
+        must be upgraded to required (not stay optional)."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "optional_deps": {"carol/tool": ">=1.0.0"},
+                },
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        # dan/shared is reached from both carol/tool (optional) and
+        # bob/util (required). It MUST be marked required.
+        shared = plan.nodes["dan/shared"]
+        assert shared.optional is False, \
+            f"dan/shared reached by required dep should not be optional"
+
+
+class TestFixB_C6_PlatformAndPaths:
+    """C6 fix: platform constraints emitted; diamond paths in JSON plan."""
+
+    def test_platform_constraint_in_plan(self):
+        """Platform constraint from catalog is exposed in the JSON plan."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "platform": "linux,darwin",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {"platform": "linux"},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+
+        # Root platform must be in selected
+        root_selected = json_plan["plan"]["selected"]["alice/lib"]
+        assert "platform" in root_selected, \
+            "Root node missing platform in JSON plan"
+        assert root_selected["platform"] == "linux,darwin"
+
+        # Dependency platform must be in selected
+        dep_selected = json_plan["plan"]["selected"]["bob/util"]
+        assert "platform" in dep_selected, \
+            "Dependency node missing platform in JSON plan"
+        assert dep_selected["platform"] == "linux"
+
+    def test_diamond_paths_in_json_plan(self):
+        """Diamond dependency paths are recorded in the JSON plan
+        for each selected node."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        selected_dan = json_plan["plan"]["selected"]["dan/shared"]
+        assert "paths" in selected_dan, \
+            "Diamond node dan/shared missing paths in JSON plan"
+        assert len(selected_dan["paths"]) == 2, \
+            f"Expected 2 paths, got {len(selected_dan['paths'])}"
+
+
+class TestFixB_C7_ReplayVerification:
+    """C7 fix: replay verifies source URI, dependency set, root,
+    and lock completeness."""
+
+    def test_replay_verifies_source_uri(self):
+        """Replay fails when catalog source URI differs from lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Catalog with different source URI
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://EVIL/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "source" in str(exc_info.value).lower()
+
+    def test_replay_verifies_dependency_set(self):
+        """Replay fails when catalog dependency set differs from lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Catalog with tampered dependencies on alice/lib
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"evil/pkg": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "dependenc" in str(exc_info.value).lower()
+
+    def test_replay_detects_incomplete_lock(self):
+        """Replay fails when lock is missing transitive dependencies."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "deps": {"carol/tool": ">=1.0.0"},
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+            "carol/tool": {
+                "1.0.0": {
+                    "source": "https://c",
+                    "source_revision": "r3",
+                    "artifact_digest": "d3",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        full_lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+        # carol/tool should be in the full lock
+        assert "carol/tool" in full_lock["nodes"], \
+            "precondition: carol/tool must be in full lock"
+
+        # Remove carol/tool from lock to make it incomplete
+        incomplete_lock = dict(full_lock)
+        incomplete_lock["nodes"] = {
+            k: v for k, v in full_lock["nodes"].items()
+            if k != "carol/tool"
+        }
+
+        with pytest.raises(ResolveError) as exc_info:
+            Resolver.replay_from_lock(incomplete_lock, catalog=catalog)
+        assert "incomplete" in str(exc_info.value).lower() or \
+            "missing" in str(exc_info.value).lower()
+
+    def test_replay_rejects_extra_nodes(self):
+        """Replay rejects a lock with nodes not reachable from root."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Inject an extra node not reachable from root
+        lock["nodes"]["evil/pkg"] = {
+            "coordinate": "evil/pkg",
+            "version": "1.0.0",
+            "source": "https://evil",
+            "source_revision": "e1",
+            "artifact_digest": "sha256:evil",
+        }
+
+        with pytest.raises(ResolveError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=catalog)
+        assert "extra" in str(exc_info.value).lower() or \
+            "unreachable" in str(exc_info.value).lower() or \
+            "not reachable" in str(exc_info.value).lower()
+
+    def test_replay_verifies_root_exists_in_catalog(self):
+        """Replay fails when root coordinate is not in the catalog."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Use a lock with root not in catalog
+        fake_lock = {
+            "root": "evil/hack",
+            "root_version": "1.0.0",
+            "nodes": {
+                "evil/hack": {
+                    "coordinate": "evil/hack",
+                    "version": "1.0.0",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        with pytest.raises(MissingReleaseError) as exc_info:
+            Resolver.replay_from_lock(fake_lock, catalog=catalog)
+        assert "evil/hack" in str(exc_info.value) or \
+            "root" in str(exc_info.value).lower()
+
+    def test_replay_verifies_root_version_exists_in_catalog(self):
+        """Replay fails when root version is not in the catalog."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Tamper root version
+        lock["root_version"] = "9.9.9"
+
+        with pytest.raises(MissingReleaseError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=catalog)
+        assert "9.9.9" in str(exc_info.value) or \
+            "root" in str(exc_info.value).lower()

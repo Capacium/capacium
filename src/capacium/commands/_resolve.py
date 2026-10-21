@@ -183,6 +183,12 @@ class ResolveNode:
     paths: List[List[str]] = field(default_factory=list)
     # The intersected constraint that selected this version
     constraint: Optional[str] = None
+    # The user-selected harness set inherited by this node
+    harness: Optional[Set[str]] = None
+    # Platform constraint from the manifest
+    platform: Optional[str] = None
+    # Bundle members (for bundle nodes only)
+    bundle_members: List[str] = field(default_factory=list)
 
     def owner_identity(self) -> str:
         """Return the owner portion of the coordinate, or '' if none."""
@@ -209,6 +215,12 @@ class ResolveNode:
             entry["dependencies"] = dict(self.dependencies)
         if self.optional:
             entry["optional"] = True
+        if self.harness:
+            entry["harness"] = sorted(self.harness)
+        if self.platform:
+            entry["platform"] = self.platform
+        if self.bundle_members:
+            entry["bundle_members"] = list(self.bundle_members)
         return entry
 
 
@@ -254,6 +266,10 @@ class ResolvePlan:
                 entry["optional"] = True
             if node.paths:
                 entry["paths"] = [list(p) for p in node.paths]
+            if node.harness:
+                entry["harness"] = sorted(node.harness)
+            if node.platform:
+                entry["platform"] = node.platform
             selected[coord] = entry
 
         plan: Dict[str, Any] = {
@@ -668,6 +684,9 @@ class Resolver:
                 paths=[chain],
                 optional=is_optional,
                 constraint=dep_constraint,
+                harness=harness_set,
+                platform=meta.get("platform"),
+                bundle_members=meta.get("bundle_members", []),
             )
             plan.nodes[coordinate] = node
 
@@ -839,9 +858,11 @@ class Resolver:
         """Replay a complete lock against a catalog without network access.
 
         Every locked node must be present in *catalog* with the exact same
-        coordinate, version, artifact digest and source revision. Any
-        mismatch fails with a rejection plan — no network access is ever
-        performed.
+        coordinate, version, source, artifact digest, source revision and
+        dependencies. The lock must be complete (all transitive dependencies
+        reachable from root are included) and free of extra (unreachable)
+        nodes. Any mismatch fails with a rejection plan — no network access
+        is ever performed.
 
         Args:
             lock: The lock dict produced by :meth:`ResolvePlan.to_lock`.
@@ -853,18 +874,83 @@ class Resolver:
 
         Raises:
             MissingReleaseError: A locked coordinate or version is absent
-                from the catalog.
-            ConflictError: An artifact digest or source revision in the
-                catalog does not match the locked value.
+                from the catalog, or the lock is incomplete.
+            ConflictError: An artifact digest, source revision, source URI,
+                or dependency set in the catalog does not match the locked
+                value, or the lock has extra unreachable nodes.
         """
         root = lock["root"]
         root_version = lock["root_version"]
         locked_nodes: Dict[str, Dict[str, Any]] = lock.get("nodes", {})
 
+        # Verify root coordinate exists in catalog
+        if root not in catalog:
+            raise MissingReleaseError(
+                f"Offline replay: root coordinate {root!r} not found in catalog",
+                plan=Resolver._rejection_plan(
+                    "missing",
+                    f"Root coordinate {root!r} not in catalog",
+                ),
+            )
+
+        # Verify root version exists in catalog
+        if root_version not in catalog[root]:
+            raise MissingReleaseError(
+                f"Offline replay: root {root}@{root_version} not found in catalog "
+                f"(available: {sorted(catalog[root].keys())})",
+                plan=Resolver._rejection_plan(
+                    "missing",
+                    f"Root {root}@{root_version} not in catalog",
+                ),
+            )
+
         plan = ResolvePlan(
             root_coordinate=root,
             root_version=root_version,
         )
+
+        # Build the set of coordinates reachable from root through the
+        # locked dependency graph and bundle members (for completeness checks).
+        reachable: Set[str] = {root}
+        worklist = [root]
+        while worklist:
+            coord = worklist.pop()
+            if coord in locked_nodes:
+                deps = locked_nodes[coord].get("dependencies", {})
+                for dep_coord in deps:
+                    if dep_coord not in reachable:
+                        reachable.add(dep_coord)
+                        worklist.append(dep_coord)
+                # Also follow bundle members
+                members = locked_nodes[coord].get("bundle_members", [])
+                for member_coord in members:
+                    if member_coord not in reachable:
+                        reachable.add(member_coord)
+                        worklist.append(member_coord)
+
+        # Check completeness: every reachable coordinate must be in the lock
+        for coord in reachable:
+            if coord not in locked_nodes:
+                raise MissingReleaseError(
+                    f"Offline replay: incomplete lock — {coord!r} is "
+                    f"reachable from root but missing from lock nodes",
+                    plan=Resolver._rejection_plan(
+                        "missing",
+                        f"Incomplete lock: {coord!r} reachable but not locked",
+                    ),
+                )
+
+        # Check for extra nodes not reachable from root
+        for coord in locked_nodes:
+            if coord not in reachable:
+                raise ConflictError(
+                    f"Offline replay: extra node {coord!r} in lock "
+                    f"not reachable from root {root!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Extra node {coord!r} not reachable from root",
+                    ),
+                )
 
         for coordinate, locked in locked_nodes.items():
             version = locked["version"]
@@ -891,6 +977,22 @@ class Resolver:
                 )
 
             meta = catalog[coordinate][version]
+
+            # Verify source URI if locked
+            locked_source = locked.get("source")
+            catalog_source = meta.get("source")
+            if locked_source is not None:
+                if catalog_source != locked_source:
+                    raise ConflictError(
+                        f"Offline replay: source URI mismatch for "
+                        f"{coordinate}@{version}: lock has {locked_source!r}, "
+                        f"catalog has {catalog_source!r}",
+                        plan=Resolver._rejection_plan(
+                            "conflict",
+                            f"Source URI mismatch: {coordinate}@{version} "
+                            f"lock={locked_source!r} catalog={catalog_source!r}",
+                        ),
+                    )
 
             # Verify artifact digest if locked
             locked_digest = locked.get("artifact_digest")
@@ -924,6 +1026,24 @@ class Resolver:
                         ),
                     )
 
+            # Verify dependency set if locked
+            locked_deps = locked.get("dependencies", {})
+            catalog_deps = meta.get("deps", {})
+            if locked_deps:
+                if set(locked_deps.keys()) != set(catalog_deps.keys()):
+                    raise ConflictError(
+                        f"Offline replay: dependency set mismatch for "
+                        f"{coordinate}@{version}: lock has deps "
+                        f"{sorted(locked_deps.keys())!r}, catalog has "
+                        f"{sorted(catalog_deps.keys())!r}",
+                        plan=Resolver._rejection_plan(
+                            "conflict",
+                            f"Dependency mismatch: {coordinate}@{version} "
+                            f"lock deps={sorted(locked_deps.keys())!r} "
+                            f"catalog deps={sorted(catalog_deps.keys())!r}",
+                        ),
+                    )
+
             node = ResolveNode(
                 node_type=Resolver._node_type_from_meta(meta, coordinate),
                 coordinate=coordinate,
@@ -934,6 +1054,9 @@ class Resolver:
                 artifact_digest=catalog_digest,
                 dependencies=meta.get("deps", {}),
                 optional=locked.get("optional", False),
+                harness=set(locked["harness"]) if locked.get("harness") else None,
+                platform=meta.get("platform"),
+                bundle_members=meta.get("bundle_members", []),
             )
             plan.nodes[coordinate] = node
 
