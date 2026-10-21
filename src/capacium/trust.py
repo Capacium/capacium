@@ -531,10 +531,11 @@ class EvidenceRecord:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class ApprovedIngest:
-    """An approved ingest that enters the normal resolver and transaction path.
+class IngestHandoff:
+    """A digest-bound handoff that enters the normal resolver and transaction path.
 
-    Carries an exact digest. Never executes package hooks.
+    Carries an exact digest. Never executes package hooks. This is a factual
+    boundary value only — it grants no authority and makes no product decision.
     """
 
     exact_digest: str                       # sha256:<hex>
@@ -557,7 +558,7 @@ class ApprovedIngest:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ApprovedIngest":
+    def from_dict(cls, data: dict) -> "IngestHandoff":
         return cls(
             exact_digest=data["exact_digest"],
             source_revision=data["source_revision"],
@@ -565,10 +566,11 @@ class ApprovedIngest:
 
 
 class IngestPipeline:
-    """Stateless ingest pipeline that produces an ApprovedIngest with exact digest.
+    """Stateless ingest pipeline that produces an IngestHandoff with exact digest.
 
-    No ingest path executes package hooks. An approved install enters the
-    normal resolver and transaction path only with an exact digest.
+    No ingest path executes package hooks. A digest-bound install enters the
+    normal resolver and transaction path only with an exact digest. The pipeline
+    emits a factual handoff value; it grants no authority.
     """
 
     def ingest(
@@ -577,8 +579,8 @@ class IngestPipeline:
         manifest_digest: str,
         source_revision: str,
         has_hooks: bool = False,
-    ) -> ApprovedIngest:
-        """Process evidence and produce an ApprovedIngest with exact digest.
+    ) -> IngestHandoff:
+        """Process evidence and produce an IngestHandoff with exact digest.
 
         Args:
             evidence: The EvidenceRecord for the capability being ingested.
@@ -587,7 +589,7 @@ class IngestPipeline:
             has_hooks: If True, the ingest is rejected (no hooks allowed).
 
         Returns:
-            An ApprovedIngest ready for the resolver and transaction path.
+            An IngestHandoff ready for the resolver and transaction path.
 
         Raises:
             ValueError: If the manifest_digest is missing/invalid or hooks are present.
@@ -601,7 +603,7 @@ class IngestPipeline:
             raise ValueError(
                 "IngestPipeline: manifest_digest must not be empty"
             )
-        return ApprovedIngest(
+        return IngestHandoff(
             exact_digest=manifest_digest,
             source_revision=source_revision,
         )

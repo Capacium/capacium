@@ -540,11 +540,11 @@ def test_c6_ingest_disposition_round_trip():
 # ---------------------------------------------------------------------------
 
 def test_c7_approved_ingest_requires_exact_digest():
-    """ApprovedIngest must carry an exact digest — no digest means no approved path."""
-    from src.capacium.trust import ApprovedIngest
+    """IngestHandoff must carry an exact digest — no digest means no approved path."""
+    from src.capacium.trust import IngestHandoff
 
-    # ApprovedIngest must require an exact_digest field
-    ai = ApprovedIngest(
+    # IngestHandoff must require an exact_digest field
+    ai = IngestHandoff(
         exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         source_revision="abc123def456",
     )
@@ -553,10 +553,10 @@ def test_c7_approved_ingest_requires_exact_digest():
 
 
 def test_c7_approved_ingest_immutable():
-    """ApprovedIngest is frozen."""
-    from src.capacium.trust import ApprovedIngest
+    """IngestHandoff is frozen."""
+    from src.capacium.trust import IngestHandoff
 
-    ai = ApprovedIngest(
+    ai = IngestHandoff(
         exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         source_revision="abc123def456",
     )
@@ -566,7 +566,7 @@ def test_c7_approved_ingest_immutable():
 
 def test_c7_ingest_pipeline_no_hooks():
     """IngestPipeline must never execute package hooks."""
-    from src.capacium.trust import IngestPipeline, ApprovedIngest, EvidenceRecord
+    from src.capacium.trust import IngestPipeline, IngestHandoff, EvidenceRecord
     from src.capacium.trust import PublisherAuthority, SecurityAssessment
     from src.capacium.trust import DistributionAuthority, Lifecycle
 
@@ -588,8 +588,8 @@ def test_c7_ingest_pipeline_no_hooks():
         source_revision="abc123",
     )
 
-    # The result must be an ApprovedIngest with an exact digest
-    assert isinstance(result, ApprovedIngest)
+    # The result must be an IngestHandoff with an exact digest
+    assert isinstance(result, IngestHandoff)
     assert result.exact_digest is not None
     # The pipeline did NOT execute any hooks (by construction)
 
@@ -622,17 +622,17 @@ def test_c7_ingest_pipeline_rejects_missing_digest():
 
 
 def test_c7_ingest_pipeline_round_trip():
-    """ApprovedIngest round-trips through dict."""
-    from src.capacium.trust import ApprovedIngest
+    """IngestHandoff round-trips through dict."""
+    from src.capacium.trust import IngestHandoff
 
-    ai = ApprovedIngest(
+    ai = IngestHandoff(
         exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         source_revision="abc123def456",
     )
     d = ai.to_dict()
     assert d["exact_digest"] == ai.exact_digest
     assert d["source_revision"] == ai.source_revision
-    rt = ApprovedIngest.from_dict(d)
+    rt = IngestHandoff.from_dict(d)
     assert rt.exact_digest == ai.exact_digest
     assert rt.source_revision == ai.source_revision
 
