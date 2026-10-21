@@ -1,3 +1,4 @@
+import json as _json_mod
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -182,6 +183,7 @@ def update_capability(
     cap_spec: str,
     force: bool = False,
     skip_runtime_check: bool = False,
+    json_output: bool = False,
 ) -> bool:
     # Recover any orphaned journals before starting a new mutation.
     recover_orphaned_journals()
@@ -194,11 +196,27 @@ def update_capability(
 
     cap = _resolve_installed_capability(registry, cap_spec, cap_id, cap_name, version_spec)
     if cap is None:
-        print(f"Capability {cap_id} not found. Use 'cap install' first.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "status": "error",
+                "error": f"capability '{cap_id}' not found",
+            }))
+        else:
+            print(f"Capability {cap_id} not found. Use 'cap install' first.")
         return False
 
     if not cap.install_path or not cap.install_path.exists():
-        print(f"Source path {cap.install_path} no longer exists. Use 'cap install' to re-install.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "status": "error",
+                "error": f"source path '{cap.install_path}' no longer exists",
+            }))
+        else:
+            print(f"Source path {cap.install_path} no longer exists. Use 'cap install' to re-install.")
         return False
 
     manifest = Manifest.detect_from_directory(cap.install_path)
@@ -232,9 +250,11 @@ def update_capability(
 
     try:
         if not fingerprint_drift and not force:
-            print(f"{cap_label} content is already up to date; reconciling adapters...")
+            if not json_output:
+                print(f"{cap_label} content is already up to date; reconciling adapters...")
         else:
-            print(f"Updating {cap_label} from {cap.install_path}...")
+            if not json_output:
+                print(f"Updating {cap_label} from {cap.install_path}...")
 
         success = _reconcile_adapter_config(cap, manifest)
         if not success:
@@ -246,26 +266,54 @@ def update_capability(
         cap.framework = frameworks[0]
         cap.frameworks = frameworks
         cap.installed_at = datetime.now()
-        registry.update_capability(cap)
+        # Write metadata first; if it fails the registry is not yet committed.
         StorageManager.write_meta(cap)
+        registry.update_capability(cap)
     except BaseException as exc:
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
             journal.restore()
             raise
-        print(f"Update of {cap_label} failed: {exc}")
-        print("  Rolling back — all changes restored.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "version": cap.version,
+                "status": "rolled_back",
+                "error": str(exc),
+                "reverted": {
+                    "files_restored": len(journal._files),
+                    "registry_restored": journal._prior_cap is not None,
+                },
+            }))
+        else:
+            print(f"Update of {cap_label} failed: {exc}")
+            print("  Rolling back — all changes restored.")
         journal.restore()
         return False
 
     journal.commit()
-    print(f"Updated {cap_label}")
+    if json_output:
+        print(_json_mod.dumps({
+            "operation": "update",
+            "cap_id": cap_id,
+            "version": cap.version,
+            "status": "applied",
+            "fingerprint": current_fingerprint[:16],
+            "applied": {
+                "registry_upserted": True,
+                "files_modified": len(journal._files),
+            },
+        }))
+    else:
+        print(f"Updated {cap_label}")
 
     if version_spec in ("latest", "stable"):
         if fingerprint_drift and not force:
             # V8: local modifications would be wiped by a force-reinstall.
-            print("  Local modifications detected (fingerprint drift).")
-            print("  Skipping newer-version fetch — keep the patch with 'cap hold'")
-            print("  or overwrite explicitly with 'cap update --force'.")
+            if not json_output:
+                print("  Local modifications detected (fingerprint drift).")
+                print("  Skipping newer-version fetch — keep the patch with 'cap hold'")
+                print("  or overwrite explicitly with 'cap update --force'.")
         else:
             _check_for_newer_version(cap_id, cap.version, cap.source_url)
 

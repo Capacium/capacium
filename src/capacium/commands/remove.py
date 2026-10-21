@@ -229,7 +229,15 @@ def remove_capability(
     if version_spec in ["latest", "stable"]:
         cap = registry.get_capability(cap_id)
         if cap is None:
-            print(f"Capability {bare_id} not found.")
+            if json_output:
+                print(_json_mod.dumps({
+                    "operation": "remove",
+                    "cap_id": bare_id,
+                    "status": "error",
+                    "error": f"capability '{bare_id}' not found",
+                }))
+            else:
+                print(f"Capability {bare_id} not found.")
             return False
         version = cap.version
     else:
@@ -237,15 +245,33 @@ def remove_capability(
         cap = registry.get_capability(bare_id, version)
 
     if cap is None:
-        print(f"Capability {bare_id}@{version} not found.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": f"capability '{bare_id}@{version}' not found",
+            }))
+        else:
+            print(f"Capability {bare_id}@{version} not found.")
         return False
 
     cap_kind = cap.kind.value if cap.kind else None
     if not cap_kind or cap_kind == "unknown":
-        print(
-            f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
-            "Cannot dispatch to adapter without a valid Capacium Kind."
-        )
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": f"invalid kind '{cap_kind}'",
+            }))
+        else:
+            print(
+                f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
+                "Cannot dispatch to adapter without a valid Capacium Kind."
+            )
         return False
 
     # ── Dependency guard (CAP117-TRANSACT-004 criterion 4) ──────────
@@ -254,14 +280,24 @@ def remove_capability(
     dependents = registry.get_dependents(bare_id)
     if dependents and not force and not cascade:
         dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
-        print(
-            f"Refusing to remove {bare_id}@{version}: it is a required dependency "
-            f"of {len(dep_ids)} installed capability(s): {', '.join(dep_ids[:8])}"
-        )
-        if len(dep_ids) > 8:
-            print(f"  ... and {len(dep_ids) - 8} more.")
-        print("  Use --cascade to accept a cascade plan and remove dependents too,")
-        print("  or --force to remove only this capability (may break dependents).")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": "required dependency",
+                "dependents": dep_ids,
+            }))
+        else:
+            print(
+                f"Refusing to remove {bare_id}@{version}: it is a required dependency "
+                f"of {len(dep_ids)} installed capability(s): {', '.join(dep_ids[:8])}"
+            )
+            if len(dep_ids) > 8:
+                print(f"  ... and {len(dep_ids) - 8} more.")
+            print("  Use --cascade to accept a cascade plan and remove dependents too,")
+            print("  or --force to remove only this capability (may break dependents).")
         return False
 
     if cascade and dependents:
@@ -283,12 +319,22 @@ def remove_capability(
     other_versions = _other_registered_versions(registry, owner, cap_name, version)
 
     if harness_target and not force and other_versions:
-        print(
-            f"Refusing to remove {bare_id}@{version}: a harness symlink still "
-            f"links to this version. Remove a different version, relink "
-            f"{bare_id} to another version first, or pass --force to remove it "
-            f"anyway. Other installed versions: {', '.join(sorted(other_versions))}."
-        )
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": "harness symlink still links to this version",
+                "other_versions": sorted(other_versions),
+            }))
+        else:
+            print(
+                f"Refusing to remove {bare_id}@{version}: a harness symlink still "
+                f"links to this version. Remove a different version, relink "
+                f"{bare_id} to another version first, or pass --force to remove it "
+                f"anyway. Other installed versions: {', '.join(sorted(other_versions))}."
+            )
         return False
 
     # Transactional remove (V14/STAB-002): snapshot every write surface

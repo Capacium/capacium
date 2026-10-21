@@ -98,6 +98,7 @@ def main():
         action="store_true",
         help="Skip the pre-flight runtime check (advanced)",
     )
+    update_parser.add_argument("--json", action="store_true", help="Output plan and result as stable JSON")
 
     remove_parser = subparsers.add_parser("remove", help="Remove a capability")
     remove_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -610,6 +611,7 @@ def main():
                 args.capability,
                 force=getattr(args, "force", False),
                 skip_runtime_check=getattr(args, "skip_runtime_check", False),
+                json_output=getattr(args, "json", False),
             )
             sys.exit(0 if success else 1)
 

@@ -226,6 +226,10 @@ class _InstallJournal:
             except OSError:
                 pass
 
+        # 4b. Remove empty parent directories left by the rollback.
+        from ._journal import _remove_empty_parents
+        _remove_empty_parents([str(p) for p in self._new_paths])
+
     def commit(self) -> None:
         """Mark the transaction committed — delete the durable journal."""
         if self._journal_path is not None:
@@ -393,8 +397,16 @@ def install_capability(
         and not _validate_install_name(owner)
     )
     if invalid:
-        print(f"Error: invalid capability or owner name '{owner}/{cap_name}'.")
-        print("  Capability and owner names must be safe path components.")
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_spec": cap_spec,
+                "status": "error",
+                "error": f"invalid capability or owner name '{owner}/{cap_name}'",
+            }))
+        else:
+            print(f"Error: invalid capability or owner name '{owner}/{cap_name}'.")
+            print("  Capability and owner names must be safe path components.")
         return False
 
     # Resolve bare name (no owner prefix) via Exchange search
@@ -577,8 +589,17 @@ def install_capability(
             ):
                 source_dir = cwd
             else:
-                print(f"  Capability '{cap_id}' not found.")
-                print("  Use --source to install from a local path.")
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "cap_id": cap_id,
+                        "version": version_spec,
+                        "status": "error",
+                        "error": f"capability '{cap_id}' not found",
+                    }))
+                else:
+                    print(f"  Capability '{cap_id}' not found.")
+                    print("  Use --source to install from a local path.")
                 return False
 
     source_provenance = _read_source_provenance(Path(source_dir))
@@ -692,8 +713,18 @@ def install_capability(
 
     _ALLOWED_KINDS = {k.value for k in Kind}
     if source_manifest.kind not in _ALLOWED_KINDS:
-        print(f"Error: unsupported kind '{source_manifest.kind}'.")
-        print(f"  Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_id": cap_id,
+                "version": version,
+                "status": "error",
+                "error": f"unsupported kind '{source_manifest.kind}'",
+                "allowed_kinds": sorted(_ALLOWED_KINDS),
+            }))
+        else:
+            print(f"Error: unsupported kind '{source_manifest.kind}'.")
+            print(f"  Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
         return False
 
     # ── Transaction journal (CAP117-TRANSACT-004) ──────────────────────

@@ -58,6 +58,30 @@ def _delete_journal(path: Path) -> None:
     tmp.unlink(missing_ok=True)
 
 
+def _remove_empty_parents(paths: List[str]) -> None:
+    """Remove empty parent directories left after rollback.
+
+    After removing created paths during rollback, the package directory
+    tree may leave empty parent dirs (e.g. ~/.capacium/packages/global/<name>/).
+    Walk up from each removed leaf and rmdir empty ancestors up to (but not
+    including) the Capacium home directory.
+    """
+    capacium_home = Path.home() / ".capacium"
+    candidates: set = set()
+    for key in paths:
+        parent = Path(key).parent
+        while parent != Path("/") and parent != capacium_home and str(parent).startswith(str(capacium_home)):
+            candidates.add(parent)
+            parent = parent.parent
+    # Process deepest first so children are removed before parents.
+    for candidate in sorted(candidates, key=lambda p: len(str(p)), reverse=True):
+        try:
+            if candidate.is_dir() and not any(candidate.iterdir()):
+                candidate.rmdir()
+        except OSError:
+            pass
+
+
 # ── Capability serialization ─────────────────────────────────────────
 
 def _serialize_cap(cap) -> Optional[Dict[str, Any]]:
@@ -199,6 +223,9 @@ def _rollback_from_journal(data: Dict[str, Any]) -> None:
                 path.unlink()
         except OSError:
             pass
+
+    # 4b. Remove empty parent directories left by the rollback
+    _remove_empty_parents(data.get("new_paths", []))
 
     # 5. Restore parked trees (remove-specific)
     for original_str, parked_str in reversed(data.get("moves", [])):
