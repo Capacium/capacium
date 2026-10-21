@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from .models import Capability, Kind, AdapterStatus
 
+# Local-state schema version. 1 = single conflated ``frameworks`` column with
+# inferred adapter statuses; 2 = separate published/desired/verified authority
+# layers (CAP117-STATE-001).
+STATE_SCHEMA_VERSION = 2
+
 
 class RelocationCycleError(Exception):
     """A relocation alias chain closes on itself instead of terminating.
@@ -25,6 +30,8 @@ class Registry:
         self.db_path = db_path
         self._init_db()
         self._migrate_old_schema()
+        self._migrate_state_authority()
+
     @contextmanager
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path)
@@ -306,6 +313,389 @@ class Registry:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    # -- state authority (CAP117-STATE-001) ---------------------------------
+    #
+    # Local state carries three authorities that must never be conflated:
+    #   published  -- immutable package manifest (publisher recommendation)
+    #   desired    -- local user configuration ("install into X and Y")
+    #   verified   -- adapter inspection (files/config entries actually present)
+    # ``installed`` is an observed fact, never derived from a recommendation.
+
+    _ATTESTED_STATUSES = ("installed", "verified")
+    _FINDING_STATUSES = ("blocked", "error", "stale")
+    _STATE_LIST_COLUMNS = ("published_frameworks", "desired_bindings")
+    _BINDING_STATES = ("present", "missing", "foreign", "broken")
+
+    def get_state_schema_version(self) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT value FROM local_state_schema WHERE key = 'schema_version'"
+            )
+            row = cursor.fetchone()
+            if not row:
+                return 1
+            try:
+                return int(row[0])
+            except (TypeError, ValueError):
+                return 1
+
+    def _migrate_state_authority(self) -> None:
+        """Version the local state and split the conflated v1 columns.
+
+        Idempotent and deterministic: a v1 row's single ``frameworks`` column
+        becomes both ``published_frameworks`` and ``desired_bindings``, and an
+        inferred ``installed`` adapter status (no attestation behind it) is
+        demoted to ``unknown`` so the package no longer silently reads healthy.
+        Explicit findings (``blocked``/``error``/``stale``) and statuses written
+        by an install are preserved.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_state_schema (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("PRAGMA table_info(capabilities)")
+            col_names = [col[1] for col in cursor.fetchall()]
+
+            added_published = "published_frameworks" not in col_names
+            added_desired = "desired_bindings" not in col_names
+            if added_published:
+                cursor.execute(
+                    "ALTER TABLE capabilities ADD COLUMN published_frameworks TEXT"
+                )
+            if added_desired:
+                cursor.execute(
+                    "ALTER TABLE capabilities ADD COLUMN desired_bindings TEXT"
+                )
+
+            cursor.execute(
+                "SELECT value FROM local_state_schema WHERE key = 'schema_version'"
+            )
+            row = cursor.fetchone()
+            if row is None:
+                self._split_state_columns(cursor)
+                cursor.execute(
+                    "INSERT OR REPLACE INTO local_state_schema (key, value) VALUES ('schema_version', ?)",
+                    (str(STATE_SCHEMA_VERSION),),
+                )
+            elif added_published or added_desired:
+                # Version row exists but columns were lost/recreated; re-split
+                # deterministically from whatever source column is available.
+                self._split_state_columns(cursor)
+            conn.commit()
+
+    def _split_state_columns(self, cursor) -> None:
+        """Populate the v2 layers from the v1 ``frameworks`` column."""
+        cursor.execute(
+            "SELECT id, frameworks, published_frameworks, desired_bindings, adapter_statuses FROM capabilities"
+        )
+        for row in cursor.fetchall():
+            row_id, frameworks_json, published, desired, statuses_json = row
+            try:
+                frameworks = _json.loads(frameworks_json) if frameworks_json else []
+            except _json.JSONDecodeError:
+                frameworks = []
+            if not isinstance(frameworks, list):
+                frameworks = []
+            normalized = _json.dumps(sorted(str(f) for f in frameworks))
+
+            if published is None or published == "":
+                cursor.execute(
+                    "UPDATE capabilities SET published_frameworks = ? WHERE id = ?",
+                    (normalized, row_id),
+                )
+            if desired is None or desired == "":
+                cursor.execute(
+                    "UPDATE capabilities SET desired_bindings = ? WHERE id = ?",
+                    (normalized, row_id),
+                )
+
+            try:
+                statuses = _json.loads(statuses_json) if statuses_json else {}
+            except _json.JSONDecodeError:
+                statuses = {}
+            if not isinstance(statuses, dict):
+                continue
+            changed = False
+            for fw, data in list(statuses.items()):
+                value = data.get("status") if isinstance(data, dict) else data
+                if value in self._ATTESTED_STATUSES:
+                    statuses[fw] = {
+                        "status": "unknown",
+                        "last_error": data.get("last_error") if isinstance(data, dict) else None,
+                        "last_verified": data.get("last_verified") if isinstance(data, dict) else None,
+                    }
+                    changed = True
+            if changed:
+                cursor.execute(
+                    "UPDATE capabilities SET adapter_statuses = ? WHERE id = ?",
+                    (_json.dumps(statuses), row_id),
+                )
+
+    def set_published_frameworks(self, cap_id: str, version: str, frameworks: List[str]) -> bool:
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE capabilities SET published_frameworks = ? WHERE owner = ? AND name = ? AND version = ?",
+                (_json.dumps(sorted(set(frameworks))), owner, name, version),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_published_frameworks(self, cap_id: str, version: Optional[str] = None) -> List[str]:
+        return self._get_state_list("published_frameworks", cap_id, version)
+
+    def set_desired_bindings(self, cap_id: str, version: str, frameworks: List[str]) -> bool:
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE capabilities SET desired_bindings = ? WHERE owner = ? AND name = ? AND version = ?",
+                (_json.dumps(sorted(set(frameworks))), owner, name, version),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_desired_bindings(self, cap_id: str, version: Optional[str] = None) -> List[str]:
+        return self._get_state_list("desired_bindings", cap_id, version)
+
+    def _update_desired_bindings(self, cap_id: str, version: str, mutate) -> bool:
+        """Apply ``mutate`` to one row's desired bindings.
+
+        Only the local ``desired_bindings`` column is written, so adding,
+        removing or replacing a desired harness target never touches the
+        published recommendation or the manifest on disk.
+        """
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, desired_bindings FROM capabilities"
+                " WHERE owner = ? AND name = ? AND version = ?",
+                (owner, name, version),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            row_id, raw = row[0], row[1]
+            try:
+                current = _json.loads(raw) if raw else []
+            except _json.JSONDecodeError:
+                current = []
+            if not isinstance(current, list):
+                current = []
+            updated = mutate(sorted({str(f).strip() for f in current if str(f).strip()}))
+            cursor.execute(
+                "UPDATE capabilities SET desired_bindings = ? WHERE id = ?",
+                (_json.dumps(sorted({str(f).strip() for f in updated if str(f).strip()})), row_id),
+            )
+            conn.commit()
+            return True
+
+    def add_desired_binding(self, cap_id: str, version: str, framework: str) -> bool:
+        """Add one desired harness target. Idempotent; no manifest edit."""
+        target = str(framework).strip()
+        if not target:
+            return False
+        return self._update_desired_bindings(
+            cap_id, version, lambda cur: list(cur) + ([target] if target not in cur else [])
+        )
+
+    def remove_desired_binding(self, cap_id: str, version: str, framework: str) -> bool:
+        """Drop one desired harness target. Idempotent; no manifest edit."""
+        target = str(framework).strip()
+        return self._update_desired_bindings(
+            cap_id, version, lambda cur: [f for f in cur if f != target]
+        )
+
+    def replace_desired_binding(
+        self, cap_id: str, version: str, old: str, new: str
+    ) -> bool:
+        """Swap one desired harness target for another. Idempotent; no manifest
+        edit. ``old`` absent means ``new`` is simply added."""
+        old_target = str(old).strip()
+        new_target = str(new).strip()
+        if not new_target:
+            return False
+        return self._update_desired_bindings(
+            cap_id,
+            version,
+            lambda cur: [f for f in cur if f != old_target] + [new_target],
+        )
+
+    def get_binding_states(
+        self, cap_id: str, version: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Classify every desired harness target against what is actually there.
+
+        Per target the state is exactly one of:
+
+        * ``present``  -- a Capacium-attested entry for this owner/name/version
+        * ``foreign``  -- an entry the harness has that Capacium did not write
+        * ``broken``   -- an entry that carries a Capacium mark but does not
+          match this owner/name/version (mismatched or unreadable mark)
+        * ``missing``  -- nothing at the harness location
+
+        ``location`` names where the binding was found; it is ``None`` for a
+        missing binding, which has no location to report. Classification reads
+        files only; it never installs and never edits a manifest, and it holds
+        no platform branch so the same fixtures run on macOS, Linux and Windows.
+        """
+        from .framework_detector import framework_skills_dirs
+
+        owner, name = self.parse_cap_id(cap_id)
+        desired = self.get_desired_bindings(cap_id, version)
+
+        target_version = version
+        if target_version is None:
+            cap = self.get_capability(cap_id)
+            target_version = cap.version if cap else None
+
+        try:
+            skills_dirs = framework_skills_dirs()
+        except Exception:
+            skills_dirs = {}
+
+        states: Dict[str, Dict[str, Any]] = {}
+        for fw in desired:
+            base = skills_dirs.get(fw)
+            location = base / name if base is not None else None
+            state = self._classify_binding(location, owner, name, target_version)
+            states[fw] = {
+                "desired": True,
+                "state": state,
+                "location": None if state == "missing" else str(location),
+            }
+        return states
+
+    @staticmethod
+    def _classify_binding(
+        location: Optional[Path], owner: str, name: str, target_version: Optional[str]
+    ) -> str:
+        if location is None:
+            return "missing"
+        try:
+            exists = location.exists()
+        except OSError:
+            return "missing"
+        if not exists:
+            # A dangling symlink is a broken binding, not an absent one.
+            return "broken" if location.is_symlink() else "missing"
+
+        meta_path = location / ".cap-meta.json"
+        if not meta_path.exists():
+            return "foreign"
+        try:
+            meta = _json.loads(meta_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            return "broken"
+        if not isinstance(meta, dict):
+            return "broken"
+        if (
+            meta.get("owner") == owner
+            and meta.get("name") == name
+            and target_version is not None
+            and meta.get("version") == target_version
+        ):
+            return "present"
+        return "broken"
+
+    def _get_state_list(self, column: str, cap_id: str, version: Optional[str]) -> List[str]:
+        if column not in self._STATE_LIST_COLUMNS:
+            raise ValueError(f"unsupported state column: {column!r}")
+        owner, name = self.parse_cap_id(cap_id)
+        sql = f"SELECT {column} FROM capabilities WHERE owner = ? AND name = ?"
+        params: List[Any] = [owner, name]
+        if version:
+            sql += " AND version = ?"
+            params.append(version)
+        sql += " ORDER BY installed_at DESC LIMIT 1"
+        with self._get_connection() as conn:
+            row = conn.cursor().execute(sql, params).fetchone()
+        if not row or not row[0]:
+            return []
+        try:
+            value = _json.loads(row[0])
+        except _json.JSONDecodeError:
+            return []
+        return sorted(str(v) for v in value) if isinstance(value, list) else []
+
+    def get_state_layers(self, cap_id: str, version: Optional[str] = None) -> Dict[str, Any]:
+        """Project the local state for one capability without conflating layers.
+
+        ``installed`` and ``verified`` are observed facts: they come only from
+        adapter state written by an install and from live adapter inspection
+        (a ``.cap-meta.json`` for this exact owner/name/version under a harness
+        skills dir). A publisher recommendation never enters either, so a
+        capability whose manifest merely *recommends* a harness reads as not
+        installed. Any desired binding that is not verified is ``drifted``.
+        """
+        from .framework_detector import framework_skills_dirs
+
+        owner, name = self.parse_cap_id(cap_id)
+        published = self.get_published_frameworks(cap_id, version)
+        desired = self.get_desired_bindings(cap_id, version)
+        statuses = self.get_adapter_statuses(cap_id, version)
+
+        installed = sorted(
+            fw for fw, s in statuses.items() if s.status in self._ATTESTED_STATUSES
+        )
+        verified = set(
+            fw for fw, s in statuses.items()
+            if s.status == "verified"
+        )
+
+        target_version = version
+        if target_version is None:
+            cap = self.get_capability(cap_id)
+            target_version = cap.version if cap else None
+
+        if target_version is not None:
+            candidates = set(published) | set(desired) | set(installed)
+            try:
+                skills_dirs = framework_skills_dirs()
+            except Exception:
+                skills_dirs = {}
+            for fw, skills_dir in skills_dirs.items():
+                if fw not in candidates:
+                    continue
+                meta_path = skills_dir / name / ".cap-meta.json"
+                if not meta_path.exists():
+                    continue
+                try:
+                    meta = _json.loads(meta_path.read_text())
+                except (_json.JSONDecodeError, OSError):
+                    continue
+                if (
+                    meta.get("owner") == owner
+                    and meta.get("name") == name
+                    and meta.get("version") == target_version
+                ):
+                    verified.add(fw)
+
+        verified_sorted = sorted(verified)
+        drifted = sorted(set(desired) - verified)
+        unavailable = sorted(
+            fw for fw, s in statuses.items()
+            if s.status in self._FINDING_STATUSES or s.status == "unknown"
+        )
+
+        return {
+            "schema_version": self.get_state_schema_version(),
+            "published": published,
+            "desired": desired,
+            "installed": installed,
+            "verified": verified_sorted,
+            "drifted": drifted,
+            "unavailable": unavailable,
+        }
 
     def _backfill_source_urls(self):
         """Attempt to backfill source_url from install_path/.git config for existing entries."""

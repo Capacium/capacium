@@ -26,6 +26,26 @@ FRONTEND_ORDER = [
     "junie",
 ]
 
+# Criterion 3: the observed local-state layers reported alongside a listing.
+_STATE_KEYS = ("desired", "installed", "verified", "drifted", "unavailable")
+
+
+def _state_fields(registry, cap) -> dict:
+    """State layers for one capability, as top-level JSON keys.
+
+    ``installed`` and ``verified`` are attestations recorded by an install or
+    observed on disk; the manifest's recommended frameworks never enter them.
+    """
+    fields = {key: [] for key in _STATE_KEYS}
+    if registry is None:
+        return fields
+    layers = registry.get_state_layers(f"{cap.owner}/{cap.name}", cap.version)
+    for key in _STATE_KEYS:
+        value = layers.get(key)
+        if isinstance(value, list):
+            fields[key] = value
+    return fields
+
 
 def _get_valid_frameworks(cap) -> list:
     if not cap.install_path:
@@ -153,7 +173,7 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
                     }
                 else:
                     adapter_statuses[fw] = {"status": "not-installed", "last_error": None, "last_verified": None}
-        result.append({
+        entry = {
             "owner": cap.owner,
             "name": cap.name,
             "version": cap.version,
@@ -169,7 +189,9 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
             "previous_identities": previous_by_new.get(
                 f"{cap.owner}/{cap.name}", []
             ),
-        })
+        }
+        entry.update(_state_fields(registry, cap))
+        result.append(entry)
     print(json.dumps(result, indent=2, default=str))
 
 

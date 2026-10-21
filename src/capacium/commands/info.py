@@ -92,35 +92,60 @@ def _wrap_description(text: str, width: int, indent: int = 2) -> str:
     return "\n".join(prefix + line for line in wrapped.splitlines())
 
 
+# Criterion 3: observed local-state layers reported in the JSON projection.
+_STATE_KEYS = ("desired", "installed", "verified", "drifted", "unavailable")
+
+
+def _state_fields(detail: Dict[str, Any]) -> Dict[str, List[str]]:
+    """State layers for the resolved capability, as top-level JSON keys.
+
+    ``installed`` and ``verified`` are attestations recorded by an install or
+    observed on disk; the manifest's recommended frameworks never enter them.
+    An unknown or remote identity has no local state, so every layer is empty.
+    """
+    fields: Dict[str, List[str]] = {key: [] for key in _STATE_KEYS}
+    owner = detail.get("owner", "")
+    name = detail.get("name", "")
+    if not owner or not name:
+        return fields
+    from ..registry import Registry
+
+    registry = Registry()
+    layers = registry.get_state_layers(f"{owner}/{name}", detail.get("version") or None)
+    for key in _STATE_KEYS:
+        value = layers.get(key)
+        if isinstance(value, list):
+            fields[key] = value
+    return fields
+
+
 def _to_info_json(detail: Dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "$schema": _JSON_SCHEMA,
-            "name": detail.get("name", ""),
-            "owner": detail.get("owner", ""),
-            "kind": detail.get("kind") or "unknown",
-            "trust": detail.get("trust", "discovered"),
-            "version": detail.get("version", ""),
-            "description": detail.get("description", ""),
-            "stars": detail.get("stars"),
-            "forks": detail.get("forks"),
-            "license": detail.get("license", ""),
-            "categories": detail.get("categories", []),
-            "tags": detail.get("tags", []),
-            "frameworks": detail.get("frameworks", []),
-            "runtimes": detail.get("runtimes", {}),
-            "dependencies": detail.get("dependencies", {}),
-            "fingerprint": detail.get("fingerprint", ""),
-            "source_url": detail.get("source_url", ""),
-            "source_ref": detail.get("source_ref", ""),
-            "source_commit": detail.get("source_commit", ""),
-            "publisher": detail.get("publisher", ""),
-            "updated_at": detail.get("updated_at", ""),
-            "aliases": detail.get("aliases", []),
-        },
-        indent=2,
-        default=str,
-    )
+    payload = {
+        "$schema": _JSON_SCHEMA,
+        "name": detail.get("name", ""),
+        "owner": detail.get("owner", ""),
+        "kind": detail.get("kind") or "unknown",
+        "trust": detail.get("trust", "discovered"),
+        "version": detail.get("version", ""),
+        "description": detail.get("description", ""),
+        "stars": detail.get("stars"),
+        "forks": detail.get("forks"),
+        "license": detail.get("license", ""),
+        "categories": detail.get("categories", []),
+        "tags": detail.get("tags", []),
+        "frameworks": detail.get("frameworks", []),
+        "runtimes": detail.get("runtimes", {}),
+        "dependencies": detail.get("dependencies", {}),
+        "fingerprint": detail.get("fingerprint", ""),
+        "source_url": detail.get("source_url", ""),
+        "source_ref": detail.get("source_ref", ""),
+        "source_commit": detail.get("source_commit", ""),
+        "publisher": detail.get("publisher", ""),
+        "updated_at": detail.get("updated_at", ""),
+        "aliases": detail.get("aliases", []),
+    }
+    payload.update(_state_fields(detail))
+    return json.dumps(payload, indent=2, default=str)
 
 
 def _render_info(detail: Dict[str, Any]) -> str:
