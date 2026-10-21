@@ -9,6 +9,13 @@ VerificationStatus semantics (CAP-A11 — disambiguated):
 - REVOKED: trust-anchor or key revoked (distinct from product entitlement revocation)
 - INCONCLUSIVE: SPI unable to determine truth (e.g. network timeout, SP unreachable)
 - UNAVAILABLE: no configured provider or provider unavailable
+
+Evidence & consent model (CAP117-EVIDENCE-005):
+- Independent axes: origin, publisher authority, technical verification, security
+  assessment, distribution authority, lifecycle, and install consent.
+- Generated manifests default to NULL publisher authority and NONE security
+  assessment; transitions to reviewed/publisher-adopted require a signed event.
+- Seed and unknown-capability installs share one durable EvidenceRecord schema.
 """
 
 import re
@@ -16,6 +23,12 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Protocol, runtime_checkable
+
+# ---------------------------------------------------------------------------
+# Evidence & consent schema version
+# ---------------------------------------------------------------------------
+
+EVIDENCE_SCHEMA_VERSION = "v1"
 
 EVR_SCHEMA_VERSION = "v1alpha1"
 
@@ -213,3 +226,203 @@ class TrustProvider(Protocol):
     def provider_id(self) -> str:
         """Unique provider identifier."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# Evidence & consent model — CAP117-EVIDENCE-005
+# ---------------------------------------------------------------------------
+
+class PublisherAuthority(str, Enum):
+    """Origin-based authority level for a capability listing.
+
+    NULL: generated or community manifest — no publisher claim.
+    SELF_ASSERTED: publisher declared ownership but no verification.
+    REVIEWED: a signed event attested the publisher identity.
+    PUBLISHER_ADOPTED: an existing publisher accepted the listing.
+    """
+    NULL = "null"
+    SELF_ASSERTED = "self_asserted"
+    REVIEWED = "reviewed"
+    PUBLISHER_ADOPTED = "publisher_adopted"
+
+    @staticmethod
+    def can_transition(current: "PublisherAuthority", target: "PublisherAuthority") -> bool:
+        """Return True only if the transition is valid."""
+        return current in _PUBLISHER_AUTHORITY_TRANSITIONS.get(target, frozenset())
+
+    def transition_to(self, target: "PublisherAuthority", signed_event=None) -> "PublisherAuthority":
+        """Transition to *target*. Requires a signed_event for protected targets."""
+        if target in (PublisherAuthority.REVIEWED, PublisherAuthority.PUBLISHER_ADOPTED):
+            if signed_event is None:
+                raise ValueError(
+                    f"Transition from {self.value} to {target.value} requires a signed event"
+                )
+        elif not self.can_transition(self, target):
+            raise ValueError(
+                f"Cannot transition publisher authority from {self.value} to {target.value}"
+            )
+        return target
+
+
+# Valid inbound transitions per target level (without signed event).
+# REVIEWED and PUBLISHER_ADOPTED always require a signed event and are
+# excluded from bare structural transitions.
+_PUBLISHER_AUTHORITY_TRANSITIONS: dict[PublisherAuthority, frozenset[PublisherAuthority]] = {
+    PublisherAuthority.NULL: frozenset(),
+    PublisherAuthority.SELF_ASSERTED: frozenset({PublisherAuthority.NULL}),
+    PublisherAuthority.REVIEWED: frozenset(),
+    PublisherAuthority.PUBLISHER_ADOPTED: frozenset(),
+}
+
+
+class SecurityAssessment(str, Enum):
+    """Security posture of a capability listing.
+
+    NONE: no assessment performed.
+    REVIEWED: a signed event attested a security review.
+    QUARANTINED: known issues — install requires explicit consent.
+    """
+    NONE = "none"
+    REVIEWED = "reviewed"
+    QUARANTINED = "quarantined"
+
+    @staticmethod
+    def can_transition(current: "SecurityAssessment", target: "SecurityAssessment") -> bool:
+        return current in _SECURITY_ASSESSMENT_TRANSITIONS.get(target, frozenset())
+
+    def transition_to(self, target: "SecurityAssessment", signed_event=None) -> "SecurityAssessment":
+        if target == SecurityAssessment.REVIEWED:
+            if signed_event is None:
+                raise ValueError(
+                    f"Transition from {self.value} to reviewed requires a signed event"
+                )
+        if not self.can_transition(self, target):
+            raise ValueError(
+                f"Cannot transition security assessment from {self.value} to {target.value}"
+            )
+        return target
+
+
+_SECURITY_ASSESSMENT_TRANSITIONS: dict[SecurityAssessment, frozenset[SecurityAssessment]] = {
+    SecurityAssessment.NONE: frozenset(),
+    SecurityAssessment.REVIEWED: frozenset(),
+    SecurityAssessment.QUARANTINED: frozenset({SecurityAssessment.NONE, SecurityAssessment.REVIEWED}),
+}
+
+
+class DistributionAuthority(str, Enum):
+    """How the artifact reached the registry."""
+    UNKNOWN = "unknown"
+    DIRECT = "direct"
+    MIRROR = "mirror"
+    FORK = "fork"
+
+
+class Lifecycle(str, Enum):
+    """Capability lifecycle state."""
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    SUPERSEDED = "superseded"
+    RETIRED = "retired"
+
+
+@dataclass(frozen=True)
+class ConsentRecord:
+    """Install consent binds exact manifest, source revision and artifact digests.
+
+    Stored separately from EvidenceRecord trust axes. Never mutates registry trust.
+    """
+
+    manifest_digest: str          # sha256:<hex>
+    source_revision: str          # git commit or equivalent
+    artifact_digest: str          # sha256:<hex>
+
+    def to_dict(self) -> dict:
+        return {
+            "manifest_digest": self.manifest_digest,
+            "source_revision": self.source_revision,
+            "artifact_digest": self.artifact_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConsentRecord":
+        return cls(
+            manifest_digest=data["manifest_digest"],
+            source_revision=data["source_revision"],
+            artifact_digest=data["artifact_digest"],
+        )
+
+
+@dataclass(frozen=True)
+class EvidenceRecord:
+    """Durable evidence record for a capability listing.
+
+    Origin, publisher authority, technical verification, security assessment,
+    distribution authority, lifecycle and install consent are stored as
+    independent axes.
+
+    Seed and unknown-capability installs share this schema.
+    """
+
+    origin: str                                  # "seed" | "unknown-install" | "registry" | ...
+    publisher_authority: PublisherAuthority
+    technical_verification: Optional[str]        # digest reference or None
+    security_assessment: SecurityAssessment
+    distribution_authority: DistributionAuthority
+    lifecycle: Lifecycle
+    install_consent: Optional[ConsentRecord]     # None until consent is recorded
+
+    _KNOWN_FIELDS = frozenset({
+        "schema_version", "origin", "publisher_authority", "technical_verification",
+        "security_assessment", "distribution_authority", "lifecycle", "install_consent",
+    })
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "origin": self.origin,
+            "publisher_authority": self.publisher_authority.value,
+            "technical_verification": self.technical_verification,
+            "security_assessment": self.security_assessment.value,
+            "distribution_authority": self.distribution_authority.value,
+            "lifecycle": self.lifecycle.value,
+            "install_consent": self.install_consent.to_dict() if self.install_consent else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EvidenceRecord":
+        unknown = [k for k in data if k not in cls._KNOWN_FIELDS]
+        if unknown:
+            raise ValueError(
+                f"Unknown field(s) in EvidenceRecord: {', '.join(sorted(unknown))}"
+            )
+
+        if "schema_version" not in data:
+            raise ValueError("EvidenceRecord missing required field: schema_version")
+        schema_version = data["schema_version"]
+        if not isinstance(schema_version, str):
+            raise ValueError(f"schema_version must be a string, got: {schema_version!r}")
+        if schema_version != EVIDENCE_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported schema_version: {schema_version!r} (expected {EVIDENCE_SCHEMA_VERSION!r})"
+            )
+
+        if "origin" not in data:
+            raise ValueError("EvidenceRecord missing required field: origin")
+        if "publisher_authority" not in data:
+            raise ValueError("EvidenceRecord missing required field: publisher_authority")
+
+        install_consent = None
+        raw_consent = data.get("install_consent")
+        if raw_consent is not None:
+            install_consent = ConsentRecord.from_dict(raw_consent)
+
+        return cls(
+            origin=data["origin"],
+            publisher_authority=PublisherAuthority(data["publisher_authority"]),
+            technical_verification=data.get("technical_verification"),
+            security_assessment=SecurityAssessment(data.get("security_assessment", "none")),
+            distribution_authority=DistributionAuthority(data.get("distribution_authority", "unknown")),
+            lifecycle=Lifecycle(data.get("lifecycle", "active")),
+            install_consent=install_consent,
+        )
