@@ -194,6 +194,21 @@ def main():
         "--registry",
         help="Target registry URL (default: https://api.capacium.xyz). Use for non-default or self-hosted registries.",
     )
+    publish_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json",
+        help="Emit one stable JSON diagnostics document on stdout (prose moves to stderr)",
+    )
+    publish_parser.add_argument(
+        "--authority-events",
+        metavar="PATH",
+        help=(
+            "Path to a JSON file with the signed authority events that prove a "
+            "previous-identity transition (same object schema as the "
+            "publisher/listing API v1 transition_evidence entries)"
+        ),
+    )
 
     marketplace_parser = subparsers.add_parser("marketplace", help="Open the Capacium marketplace in your browser")
     marketplace_parser.add_argument(
@@ -738,10 +753,15 @@ def main():
             registry_arg = args.registry
             if registry_arg and registry_arg.lower() == "false":
                 registry_arg = None
+            authority_events_path = getattr(args, "authority_events", None)
             success = publish_capability(
                 Path(args.package_path),
                 registry_url=registry_arg,
                 token=token,
+                json_output=getattr(args, "json", False),
+                authority_events_path=(
+                    Path(authority_events_path) if authority_events_path else None
+                ),
             )
             sys.exit(0 if success else 1)
 

@@ -5,11 +5,20 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .. import listing_identity as identity
 from ..manifest import Manifest
 from ..registry_client import RegistryClient, RegistryClientError
+
+#: The ``--authority-events`` file cannot be read as a list of signed events.
+#: An unusable event file must fail closed: without it the preflight cannot
+#: prove a transition, and uploading anyway would carry unverified claims.
+PUBLISH_AUTHORITY_EVENTS_INVALID = "publish.authority-events.invalid"
+
+#: Accepted keys are exactly the fields of the event dataclass, so the accepted
+#: document shape and the reported ``transition_evidence`` shape cannot drift.
+_AUTHORITY_EVENT_FIELDS = frozenset(identity.AuthorityEvent.__dataclass_fields__)
 
 
 def _printer(json_output: bool):
@@ -44,15 +53,77 @@ def _fail(
     return False
 
 
+def _authority_events_from_file(
+    path: Path,
+) -> Tuple[Optional[List["identity.AuthorityEvent"]], Optional[str]]:
+    """Read signed authority events from a JSON file.
+
+    Returns ``(events, error)``. The file is a JSON list of objects shaped like
+    the ``transition_evidence`` entries the preflight reports, so a publisher
+    Action can round-trip the very evidence it was handed. An unreadable,
+    malformed or non-conforming file yields ``events=None`` with an error: the
+    caller must fail closed rather than treat an unusable proof as "no proof".
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"could not read authority events from {path}: {exc}"
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"authority events at {path} are not valid JSON: {exc}"
+
+    if isinstance(parsed, dict):
+        parsed = parsed.get("transition_evidence", parsed)
+    if not isinstance(parsed, list):
+        return None, (
+            f"authority events at {path} must be a JSON list of signed events"
+        )
+
+    events: List["identity.AuthorityEvent"] = []
+    for index, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            return None, (
+                f"authority event #{index} at {path} is not a JSON object"
+            )
+        unknown = set(entry) - _AUTHORITY_EVENT_FIELDS
+        if unknown:
+            return None, (
+                f"authority event #{index} at {path} has unknown field(s): "
+                + ", ".join(sorted(unknown))
+            )
+        try:
+            events.append(identity.AuthorityEvent(**entry))
+        except TypeError as exc:
+            return None, f"authority event #{index} at {path} is malformed: {exc}"
+
+    return events, None
+
+
 def publish_capability(
     package_path: Path,
     registry_url: str | None = None,
     token: str | None = None,
     json_output: bool = False,
     authority_events: Optional[Sequence["identity.AuthorityEvent"]] = None,
+    authority_events_path: Optional[Path] = None,
 ) -> bool:
     emit = _printer(json_output)
     report = identity.empty_report()
+
+    if authority_events_path is not None:
+        loaded, load_error = _authority_events_from_file(authority_events_path)
+        if loaded is None:
+            return _fail(
+                report,
+                PUBLISH_AUTHORITY_EVENTS_INVALID,
+                "authority_events",
+                load_error or "authority events are unusable",
+                json_output=json_output,
+                emit=emit,
+            )
+        authority_events = loaded
 
     if not package_path.exists():
         return _fail(
