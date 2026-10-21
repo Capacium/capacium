@@ -21,6 +21,93 @@ from ..commands.install import (
 )
 from .hold import get_hold
 from ._resolve import resolve_cap_id
+from ._journal import (
+    _make_journal_path, _write_journal, _delete_journal,
+    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+)
+
+
+class _UpdateJournal:
+    """Rollback journal for transactional update (CAP117-TRANSACT-004).
+
+    Snapshots adapter config files and the prior registry row before
+    any mutation. Persisted to disk so orphan recovery after a crash
+    or signal can roll back incomplete operations.
+    """
+
+    def __init__(self, cap_id: str, version: str):
+        self.cap_id = cap_id
+        self.version = version
+        self._files: dict = {}
+        self._prior_cap = None
+        self._journal_path: Optional[Path] = None
+
+    def snapshot_adapter_surfaces(self, cap, manifest) -> None:
+        """Record adapter config files that update may touch."""
+        frameworks = _reconcile_frameworks(cap, manifest)
+        config_backed = set(frameworks) | {
+            "claude-desktop", "codex", "gemini-cli", "antigravity", "opencode",
+        }
+        for fw_name in config_backed:
+            try:
+                adapter = get_adapter(fw_name)
+            except Exception:
+                continue
+            config_path = getattr(adapter, "config_path", None)
+            if config_path is not None:
+                path = Path(config_path)
+                if path not in self._files:
+                    self._files[path] = _encode_file_content(path)
+
+    def set_prior_cap(self, cap) -> None:
+        """Record the pre-update registry row so it can be restored."""
+        self._prior_cap = cap
+
+    def persist(self) -> Path:
+        """Write the journal to disk before the first mutation."""
+        self._journal_path = _make_journal_path(
+            self.cap_id, self.version, "update"
+        )
+        data = {
+            "cap_id": self.cap_id,
+            "version": self.version,
+            "files": {str(k): v for k, v in self._files.items()},
+            "prior_cap": _serialize_cap(self._prior_cap),
+            "committed": False,
+        }
+        _write_journal(self._journal_path, data)
+        return self._journal_path
+
+    def restore(self) -> None:
+        """Roll back adapter config files and the registry row."""
+        registry = Registry()
+
+        # 1. Restore registry row
+        if self._prior_cap is not None:
+            try:
+                registry.upsert_capability(self._prior_cap)
+            except Exception:
+                pass
+
+        # 2. Restore adapter config files
+        import base64
+        for path, content_b64 in self._files.items():
+            path = Path(path)
+            try:
+                if content_b64 is None:
+                    if path.is_file():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(base64.b64decode(content_b64))
+            except OSError:
+                pass
+
+    def commit(self) -> None:
+        """Delete the durable journal — the operation completed."""
+        if self._journal_path is not None:
+            _delete_journal(self._journal_path)
+            self._journal_path = None
 
 
 FINGERPRINT_EXCLUDES = [
@@ -96,6 +183,9 @@ def update_capability(
     force: bool = False,
     skip_runtime_check: bool = False,
 ) -> bool:
+    # Recover any orphaned journals before starting a new mutation.
+    recover_orphaned_journals()
+
     registry = Registry()
     spec = VersionManager.parse_version_spec(cap_spec)
     cap_id = resolve_cap_id(cap_spec)
@@ -134,24 +224,40 @@ def update_capability(
     )
     fingerprint_drift = current_fingerprint != cap.fingerprint
 
-    if not fingerprint_drift and not force:
-        print(f"{cap_label} content is already up to date; reconciling adapters...")
-    else:
-        print(f"Updating {cap_label} from {cap.install_path}...")
+    # ── Transaction journal (CAP117-TRANSACT-004 criterion 1) ─────────
+    journal = _UpdateJournal(cap_id, cap.version)
+    journal.snapshot_adapter_surfaces(cap, manifest)
+    journal.set_prior_cap(cap)
+    journal.persist()
 
-    success = _reconcile_adapter_config(cap, manifest)
-    if not success:
+    try:
+        if not fingerprint_drift and not force:
+            print(f"{cap_label} content is already up to date; reconciling adapters...")
+        else:
+            print(f"Updating {cap_label} from {cap.install_path}...")
+
+        success = _reconcile_adapter_config(cap, manifest)
+        if not success:
+            raise RuntimeError("Adapter reconciliation failed")
+
+        frameworks = _reconcile_frameworks(cap, manifest)
+        cap.fingerprint = current_fingerprint
+        cap.kind = Kind(manifest.kind) if manifest.kind else cap.kind
+        cap.framework = frameworks[0]
+        cap.frameworks = frameworks
+        cap.installed_at = datetime.now()
+        registry.update_capability(cap)
+        StorageManager.write_meta(cap)
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            journal.restore()
+            raise
+        print(f"Update of {cap_label} failed: {exc}")
+        print("  Rolling back — all changes restored.")
+        journal.restore()
         return False
 
-    frameworks = _reconcile_frameworks(cap, manifest)
-    cap.fingerprint = current_fingerprint
-    cap.kind = Kind(manifest.kind) if manifest.kind else cap.kind
-    cap.framework = frameworks[0]
-    cap.frameworks = frameworks
-    cap.installed_at = datetime.now()
-    registry.update_capability(cap)
-    StorageManager.write_meta(cap)
-
+    journal.commit()
     print(f"Updated {cap_label}")
 
     if version_spec in ("latest", "stable"):

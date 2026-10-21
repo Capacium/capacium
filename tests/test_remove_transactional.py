@@ -145,3 +145,43 @@ class TestErrorInjection:
         config = json.loads(installed_mcp["config_path"].read_text())
         assert "tx-mcp" not in config.get("mcpServers", {})
         assert "other-server" in config.get("mcpServers", {})
+
+    def test_keyboard_interrupt_rolls_back_and_reraises(
+        self, tmp_home, installed_skill, monkeypatch
+    ):
+        """KeyboardInterrupt during remove triggers rollback and re-raises."""
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        def interrupt(self, *a, **kw):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(OpenCodeAdapter, "remove_capability", interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            remove_capability("acme/tx-skill", force=False)
+
+        # Rollback must have restored state
+        assert installed_skill["registry"].get_capability("acme/tx-skill") is not None
+        assert installed_skill["package_dir"].exists()
+        for link in installed_skill["links"]:
+            assert link.is_symlink(), f"link not restored: {link}"
+
+    def test_system_exit_rolls_back_and_reraises(
+        self, tmp_home, installed_skill, monkeypatch
+    ):
+        """SystemExit during remove triggers rollback and re-raises."""
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        def exit_(self, *a, **kw):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(OpenCodeAdapter, "remove_capability", exit_)
+
+        with pytest.raises(SystemExit) as exc_info:
+            remove_capability("acme/tx-skill", force=False)
+
+        assert exc_info.value.code == 1
+
+        # Rollback must have restored state
+        assert installed_skill["registry"].get_capability("acme/tx-skill") is not None
+        assert installed_skill["package_dir"].exists()

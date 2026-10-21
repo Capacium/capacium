@@ -26,6 +26,10 @@ from ..runtimes import (
 from ..framework_detector import resolve_frameworks, create_framework_symlinks, detect_active_frameworks
 from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+from ._journal import (
+    _make_journal_path, _write_journal, _delete_journal,
+    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+)
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 _CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -37,6 +41,10 @@ class _InstallJournal:
 
     Records the immutable plan and every write surface before mutation.
     On failure, restores pre-install state. On success, commits the journal.
+
+    The journal is persisted to disk (~/.capacium/journal/) before the first
+    mutation, so orphan recovery after a crash or signal can roll back
+    incomplete operations.
     """
 
     def __init__(self, cap_id: str, version: str):
@@ -48,6 +56,9 @@ class _InstallJournal:
         self._new_paths: list = []    # Paths created (dirs/files) for rollback removal
         self._prior_cap: Optional[Capability] = None  # Capability row replaced by upsert
         self._adapter_statuses: list = []  # (cap_id, version, framework) set
+        self._json_output: bool = False
+        self._resolved_frameworks: list = []
+        self._journal_path: Optional[Path] = None
 
     # ── plan ───────────────────────────────────────────────────────────
     def set_plan(self, **kwargs) -> None:
@@ -58,6 +69,46 @@ class _InstallJournal:
             "version": self.version,
             "timestamp": datetime.now().isoformat(),
             **kwargs,
+        }
+
+    # ── durable persistence ────────────────────────────────────────────
+    def persist(self) -> Path:
+        """Write the journal to disk before the first mutation.
+
+        Returns the journal file path. Must be called after set_plan()
+        and snapshot_adapter_surfaces() but before any mutation.
+        """
+        self._journal_path = _make_journal_path(
+            self.cap_id, self.version, "install"
+        )
+        data = {
+            "cap_id": self.cap_id,
+            "version": self.version,
+            "plan": self._plan,
+            "files": {
+                str(k): _encode_file_content(k) for k in self._files
+            },
+            "links": {str(k): v for k, v in self._links.items()},
+            "new_paths": [str(p) for p in self._new_paths],
+            "prior_cap": _serialize_cap(self._prior_cap),
+            "committed": False,
+        }
+        _write_journal(self._journal_path, data)
+        return self._journal_path
+
+    def _to_disk_data(self) -> dict:
+        """Build a complete serializable snapshot for the durable journal."""
+        return {
+            "cap_id": self.cap_id,
+            "version": self.version,
+            "plan": self._plan,
+            "files": {
+                str(k): _encode_file_content(k) for k in self._files
+            },
+            "links": {str(k): v for k, v in self._links.items()},
+            "new_paths": [str(p) for p in self._new_paths],
+            "prior_cap": _serialize_cap(self._prior_cap),
+            "committed": False,
         }
 
     # ── recording ──────────────────────────────────────────────────────
@@ -176,8 +227,10 @@ class _InstallJournal:
                 pass
 
     def commit(self) -> None:
-        """Mark the transaction committed — the journal is complete."""
-        pass
+        """Mark the transaction committed — delete the durable journal."""
+        if self._journal_path is not None:
+            _delete_journal(self._journal_path)
+            self._journal_path = None
 
 
 def _install_disposition(existing_before, fingerprint: str):
@@ -268,6 +321,9 @@ def install_capability(
     prune: bool = False,
     json_output: bool = False,
 ) -> bool:
+    # Recover any orphaned journals before starting a new mutation.
+    recover_orphaned_journals()
+
     local_source_manifest = None
     if source_dir is not None:
         source_raw = str(source_dir)
@@ -656,6 +712,9 @@ def install_capability(
     existing_before = registry.get_capability(cap_id, version)
     journal.set_prior_cap(existing_before)
 
+    # Persist the journal to disk before the first mutation (criterion 1).
+    journal.persist()
+
     try:
         from ..adapters.base import ensure_package_dir
 
@@ -834,7 +893,14 @@ def install_capability(
                     )
             prune_superseded_versions(owner, cap_name, version)
 
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException includes KeyboardInterrupt and SystemExit, which
+        # must also trigger rollback (criterion 2 — no partial mutation).
+        # Re-raise SystemExit and KeyboardInterrupt so the CLI exit code
+        # propagates correctly (130 for SIGINT).
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            journal.restore()
+            raise
         print(f"Install of {cap_id}@{version} failed: {exc}")
         print("  Rolling back — all changes restored.")
         journal.restore()

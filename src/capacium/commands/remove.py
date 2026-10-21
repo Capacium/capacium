@@ -10,6 +10,10 @@ from ..versioning import VersionManager
 from ..models import SKILL_LAYER_KIND_VALUES
 from ..adapters import get_adapter
 from ._resolve import resolve_cap_id
+from ._journal import (
+    _make_journal_path, _write_journal, _delete_journal,
+    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+)
 
 
 class _RemovalSnapshot:
@@ -19,6 +23,10 @@ class _RemovalSnapshot:
     files, skills-dir links, package trees, registry rows) before any
     mutation. ``restore()`` puts everything back; ``commit()`` purges the
     parked package trees once all steps succeeded.
+
+    The journal is persisted to disk (~/.capacium/journal/) before the
+    first mutation, so orphan recovery after a crash or signal can roll
+    back incomplete operations.
     """
 
     def __init__(self, registry: Registry):
@@ -28,6 +36,7 @@ class _RemovalSnapshot:
         self._moves: List[tuple] = [] # (original Path, parked Path)
         self._rows: List = []         # Capability objects removed from registry
         self._members: List[tuple] = []  # (bundle_id, [member_id, ...])
+        self._journal_path: Path = None  # durable journal path
 
     # ── recording ──────────────────────────────────────────────────────
     def record_file(self, path: Path) -> None:
@@ -67,6 +76,25 @@ class _RemovalSnapshot:
             parked = path.with_name(f"{path.name}.removing{idx}")
         path.rename(parked)
         self._moves.append((path, parked))
+
+    # ── durable persistence ────────────────────────────────────────────
+    def persist(self, cap_id: str, version: str) -> Path:
+        """Write the journal to disk before the first mutation."""
+        self._journal_path = _make_journal_path(cap_id, version, "remove")
+        data = {
+            "cap_id": cap_id,
+            "version": version,
+            "files": {
+                str(k): _encode_file_content(k) for k in self._files
+            },
+            "links": {str(k): v for k, v in self._links.items()},
+            "moves": [(str(o), str(p)) for o, p in self._moves],
+            "rows": [_serialize_cap(r) for r in self._rows],
+            "members": [(bid, list(mids)) for bid, mids in self._members],
+            "committed": False,
+        }
+        _write_journal(self._journal_path, data)
+        return self._journal_path
 
     # ── outcome ────────────────────────────────────────────────────────
     def restore(self) -> None:
@@ -111,6 +139,9 @@ class _RemovalSnapshot:
     def commit(self) -> None:
         for _original, parked in self._moves:
             StorageManager.remove_package_path(parked)
+        if self._journal_path is not None:
+            _delete_journal(self._journal_path)
+            self._journal_path = None
 
 
 def _snapshot_cap_surfaces(snapshot: _RemovalSnapshot, cap_name: str,
@@ -182,6 +213,9 @@ def remove_capability(
     cascade: bool = False,
     json_output: bool = False,
 ) -> bool:
+    # Recover any orphaned journals before starting a new mutation.
+    recover_orphaned_journals()
+
     spec = VersionManager.parse_version_spec(cap_spec)
     version_spec = spec["version"]
     cap_id = resolve_cap_id(cap_spec)
@@ -263,6 +297,9 @@ def remove_capability(
     snapshot = _RemovalSnapshot(registry)
     _snapshot_cap_surfaces(snapshot, cap_name, list(cap.frameworks or []))
 
+    # Persist the journal to disk before the first mutation (criterion 1).
+    snapshot.persist(bare_id, version)
+
     # When removing a version the harness does not currently link to, leave
     # the harness symlink (and its command link) intact — it points at a
     # different, still-installed version.
@@ -325,7 +362,12 @@ def remove_capability(
 
         if force:
             _purge_all_adapter_symlinks(cap_name)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException includes KeyboardInterrupt and SystemExit, which
+        # must also trigger rollback (criterion 2 — no partial mutation).
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            snapshot.restore()
+            raise
         snapshot.restore()
         print(f"Remove of {bare_id}@{version} failed: {exc}")
         print("  All changes rolled back — state restored.")

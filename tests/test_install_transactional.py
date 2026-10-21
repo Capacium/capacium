@@ -8,7 +8,6 @@ plan and executes with a rollback journal:
   - plan and apply results use stable JSON schemas and exit codes
 """
 import json
-import os
 
 import pytest
 
@@ -289,6 +288,55 @@ class TestInstallErrorInjection:
         after = registry.get_capability("global/tx-install-skill", "1.0.0")
         assert after is not None
         assert after.fingerprint == before_fingerprint
+
+    def test_keyboard_interrupt_rolls_back_and_reraises(
+        self, tmp_home, source_skill_dir, monkeypatch
+    ):
+        """KeyboardInterrupt (BaseException) triggers rollback and re-raises."""
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        def interrupt(self, *a, **kw):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(OpenCodeAdapter, "install_capability", interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            install_capability(
+                "tx-install-skill",
+                source_dir=source_skill_dir,
+                skip_runtime_check=True,
+                yes=True,
+            )
+
+        # Rollback must have restored state: no registry row
+        registry = Registry()
+        assert registry.get_capability("global/tx-install-skill", "1.0.0") is None
+
+    def test_system_exit_rolls_back_and_reraises(
+        self, tmp_home, source_skill_dir, monkeypatch
+    ):
+        """SystemExit (BaseException) triggers rollback and re-raises."""
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        def exit_(self, *a, **kw):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(OpenCodeAdapter, "install_capability", exit_)
+
+        with pytest.raises(SystemExit) as exc_info:
+            install_capability(
+                "tx-install-skill",
+                source_dir=source_skill_dir,
+                skip_runtime_check=True,
+                yes=True,
+            )
+
+        # Exit code propagates
+        assert exc_info.value.code == 1
+
+        # Rollback must have restored state: no registry row
+        registry = Registry()
+        assert registry.get_capability("global/tx-install-skill", "1.0.0") is None
 
 
 # ── CAP117-TRANSACT-004 Criterion 4 ───────────────────────────────────

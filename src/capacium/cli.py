@@ -1060,8 +1060,9 @@ def main():
 
     except KeyboardInterrupt:
         # A user interrupt must not leave a traceback or a half-finished
-        # multi-step command; mutating commands (install/remove) already
-        # roll back via their own journals, so exiting cleanly is sufficient.
+        # multi-step command; mutating commands (install/remove) catch
+        # BaseException and roll back via their own journals, so exiting
+        # cleanly is sufficient.
         print("Interrupted.", file=sys.stderr)
         sys.exit(130)
     except ImportError as e:
