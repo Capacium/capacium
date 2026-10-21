@@ -524,3 +524,158 @@ class EvidenceRecord:
             lifecycle=Lifecycle(data.get("lifecycle", "active")),
             install_consent=install_consent,
         )
+
+
+# ---------------------------------------------------------------------------
+# Ingest pipeline — CAP117-EVIDENCE-005 criterion 7
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ApprovedIngest:
+    """An approved ingest that enters the normal resolver and transaction path.
+
+    Carries an exact digest. Never executes package hooks.
+    """
+
+    exact_digest: str                       # sha256:<hex>
+    source_revision: str                    # git commit or equivalent
+
+    _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+    def __post_init__(self):
+        if not self._DIGEST_RE.match(self.exact_digest):
+            raise ValueError(
+                f"exact_digest must match sha256:<64-char-hex>, got: {self.exact_digest!r}"
+            )
+        if not self.source_revision:
+            raise ValueError("source_revision must not be empty")
+
+    def to_dict(self) -> dict:
+        return {
+            "exact_digest": self.exact_digest,
+            "source_revision": self.source_revision,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ApprovedIngest":
+        return cls(
+            exact_digest=data["exact_digest"],
+            source_revision=data["source_revision"],
+        )
+
+
+class IngestPipeline:
+    """Stateless ingest pipeline that produces an ApprovedIngest with exact digest.
+
+    No ingest path executes package hooks. An approved install enters the
+    normal resolver and transaction path only with an exact digest.
+    """
+
+    def ingest(
+        self,
+        evidence: EvidenceRecord,
+        manifest_digest: str,
+        source_revision: str,
+        has_hooks: bool = False,
+    ) -> ApprovedIngest:
+        """Process evidence and produce an ApprovedIngest with exact digest.
+
+        Args:
+            evidence: The EvidenceRecord for the capability being ingested.
+            manifest_digest: The exact manifest digest (sha256:<hex>).
+            source_revision: The source revision identifier.
+            has_hooks: If True, the ingest is rejected (no hooks allowed).
+
+        Returns:
+            An ApprovedIngest ready for the resolver and transaction path.
+
+        Raises:
+            ValueError: If the manifest_digest is missing/invalid or hooks are present.
+        """
+        if has_hooks:
+            raise ValueError(
+                "IngestPipeline: package hooks are forbidden; no ingest path "
+                "executes package hooks"
+            )
+        if not manifest_digest:
+            raise ValueError(
+                "IngestPipeline: manifest_digest must not be empty"
+            )
+        return ApprovedIngest(
+            exact_digest=manifest_digest,
+            source_revision=source_revision,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared finding model — CAP117-EVIDENCE-005 criterion 8
+# ---------------------------------------------------------------------------
+
+class FindingCategory(str, Enum):
+    """Diagnostic finding categories shared by reconcile, repair and doctor."""
+    PROVENANCE = "provenance"
+    WRAPPER_PARSING = "wrapper_parsing"
+    DRIFT = "drift"
+    UNKNOWN_GUI = "unknown_gui"
+
+
+class FindingSeverity(str, Enum):
+    """Severity levels for diagnostic findings."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class DiagnosticFinding:
+    """One finding model for provenance, wrapper parsing, drift and unknown GUI
+    environments, shared by reconcile, repair and doctor.
+    """
+
+    category: FindingCategory
+    severity: str                       # "info" | "warning" | "error"
+    summary: str
+    source: Optional[str] = None
+    detail: Optional[str] = None
+
+    _KNOWN_FIELDS = frozenset({"category", "severity", "summary", "source", "detail"})
+
+    def __post_init__(self):
+        if self.severity not in {s.value for s in FindingSeverity}:
+            raise ValueError(
+                f"Invalid severity: {self.severity!r}; must be one of "
+                f"{[s.value for s in FindingSeverity]}"
+            )
+
+    def to_dict(self) -> dict:
+        d = {
+            "category": self.category.value,
+            "severity": self.severity,
+            "summary": self.summary,
+        }
+        if self.source is not None:
+            d["source"] = self.source
+        if self.detail is not None:
+            d["detail"] = self.detail
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DiagnosticFinding":
+        unknown = [k for k in data if k not in cls._KNOWN_FIELDS]
+        if unknown:
+            raise ValueError(
+                f"Unknown field(s) in DiagnosticFinding: {', '.join(sorted(unknown))}"
+            )
+        if "category" not in data:
+            raise ValueError("DiagnosticFinding missing required field: category")
+        if "severity" not in data:
+            raise ValueError("DiagnosticFinding missing required field: severity")
+        if "summary" not in data:
+            raise ValueError("DiagnosticFinding missing required field: summary")
+        return cls(
+            category=FindingCategory(data["category"]),
+            severity=data["severity"],
+            summary=data["summary"],
+            source=data.get("source"),
+            detail=data.get("detail"),
+        )

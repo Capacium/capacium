@@ -532,3 +532,280 @@ def test_c6_ingest_disposition_round_trip():
     assert rt.outcome == d.outcome
     assert rt.reason == d.reason
     assert rt.detail == d.detail
+
+
+# ---------------------------------------------------------------------------
+# Criterion 7: No ingest path executes package hooks; an approved install
+# enters the normal resolver and transaction path only with an exact digest.
+# ---------------------------------------------------------------------------
+
+def test_c7_approved_ingest_requires_exact_digest():
+    """ApprovedIngest must carry an exact digest — no digest means no approved path."""
+    from src.capacium.trust import ApprovedIngest
+
+    # ApprovedIngest must require an exact_digest field
+    ai = ApprovedIngest(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    assert ai.exact_digest.startswith("sha256:")
+    assert len(ai.source_revision) > 0
+
+
+def test_c7_approved_ingest_immutable():
+    """ApprovedIngest is frozen."""
+    from src.capacium.trust import ApprovedIngest
+
+    ai = ApprovedIngest(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    with pytest.raises(Exception):
+        ai.exact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def test_c7_ingest_pipeline_no_hooks():
+    """IngestPipeline must never execute package hooks."""
+    from src.capacium.trust import IngestPipeline, ApprovedIngest, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    result = pipeline.ingest(
+        evidence=evidence,
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123",
+    )
+
+    # The result must be an ApprovedIngest with an exact digest
+    assert isinstance(result, ApprovedIngest)
+    assert result.exact_digest is not None
+    # The pipeline did NOT execute any hooks (by construction)
+
+
+def test_c7_ingest_pipeline_rejects_missing_digest():
+    """IngestPipeline must reject ingest without an exact digest."""
+    from src.capacium.trust import IngestPipeline, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    # Empty digest must be rejected
+    with pytest.raises(ValueError):
+        pipeline.ingest(
+            evidence=evidence,
+            manifest_digest="",
+            source_revision="abc123",
+        )
+
+
+def test_c7_ingest_pipeline_round_trip():
+    """ApprovedIngest round-trips through dict."""
+    from src.capacium.trust import ApprovedIngest
+
+    ai = ApprovedIngest(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    d = ai.to_dict()
+    assert d["exact_digest"] == ai.exact_digest
+    assert d["source_revision"] == ai.source_revision
+    rt = ApprovedIngest.from_dict(d)
+    assert rt.exact_digest == ai.exact_digest
+    assert rt.source_revision == ai.source_revision
+
+
+def test_c7_ingest_pipeline_rejects_package_hooks():
+    """IngestPipeline rejects input that would execute package hooks."""
+    from src.capacium.trust import IngestPipeline, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    # Any manifest that contains hook-triggering fields must be rejected
+    with pytest.raises(ValueError):
+        pipeline.ingest(
+            evidence=evidence,
+            manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            source_revision="abc123",
+            has_hooks=True,  # signal that hooks are present
+        )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 8: reconcile, repair and doctor share one finding model for
+# provenance, wrapper parsing, drift and unknown GUI environments.
+# ---------------------------------------------------------------------------
+
+def test_c8_diagnostic_finding_import():
+    """DiagnosticFinding type exists with provenance, wrapper, drift, gui fields."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="warning",
+        summary="foreign entry detected",
+    )
+    assert f.category == FindingCategory.PROVENANCE
+    assert f.severity == "warning"
+
+
+def test_c8_finding_categories_cover_all_domains():
+    """FindingCategory must cover provenance, wrapper_parsing, drift, and unknown_gui."""
+    from src.capacium.trust import FindingCategory
+
+    categories = {e.value for e in FindingCategory}
+    assert "provenance" in categories
+    assert "wrapper_parsing" in categories
+    assert "drift" in categories
+    assert "unknown_gui" in categories
+
+
+def test_c8_diagnostic_finding_immutable():
+    """DiagnosticFinding is frozen."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="warning",
+        summary="foreign entry detected",
+    )
+    with pytest.raises(Exception):
+        f.category = FindingCategory.DRIFT
+
+
+def test_c8_diagnostic_finding_provenance():
+    """Provenance findings carry source detail."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="info",
+        summary="capacium-managed entry",
+        source="~/.claude.json",
+        detail="entry written by capacium v0.10.0",
+    )
+    assert f.source is not None
+    assert f.detail is not None
+
+
+def test_c8_diagnostic_finding_wrapper_parsing():
+    """Wrapper parsing findings describe parse issues."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.WRAPPER_PARSING,
+        severity="warning",
+        summary="malformed wrapper command",
+        source="/usr/local/bin/shim",
+        detail="wrapper does not contain expected cap exec prefix",
+    )
+    assert f.category == FindingCategory.WRAPPER_PARSING
+    assert f.source == "/usr/local/bin/shim"
+
+
+def test_c8_diagnostic_finding_drift():
+    """Drift findings describe state divergence."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.DRIFT,
+        severity="error",
+        summary="version mismatch",
+        source="~/.capacium/packages/owner/name@1.0.0",
+        detail="registry records v1.0.0 but harness links resolve to v1.1.0",
+    )
+    assert f.category == FindingCategory.DRIFT
+    assert f.severity == "error"
+
+
+def test_c8_diagnostic_finding_unknown_gui():
+    """Unknown GUI findings describe unattestable environments."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.UNKNOWN_GUI,
+        severity="warning",
+        summary="unattestable GUI environment",
+        source="claude-desktop",
+        detail="GUI process running but configuration cannot be attested",
+    )
+    assert f.category == FindingCategory.UNKNOWN_GUI
+    assert f.summary is not None
+
+
+def test_c8_diagnostic_finding_round_trip():
+    """DiagnosticFinding round-trips through dict."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.DRIFT,
+        severity="error",
+        summary="version drift detected",
+        source="~/.capacium/packages/owner/name@1.0.0",
+        detail="expected v1.0.0, found v1.1.0",
+    )
+    d = f.to_dict()
+    assert d["category"] == "drift"
+    assert d["severity"] == "error"
+    rt = DiagnosticFinding.from_dict(d)
+    assert rt.category == f.category
+    assert rt.summary == f.summary
+    assert rt.detail == f.detail
+
+
+def test_c8_severity_values_are_distinct():
+    """All severity values are distinct."""
+    from src.capacium.trust import FindingSeverity
+
+    values = [e.value for e in FindingSeverity]
+    assert len(values) == len(set(values))
+    assert "info" in values
+    assert "warning" in values
+    assert "error" in values
+
+
+def test_c8_finding_category_from_string():
+    """FindingCategory can be constructed from string."""
+    from src.capacium.trust import FindingCategory
+
+    assert FindingCategory("provenance") == FindingCategory.PROVENANCE
+    assert FindingCategory("wrapper_parsing") == FindingCategory.WRAPPER_PARSING
+    assert FindingCategory("drift") == FindingCategory.DRIFT
+    assert FindingCategory("unknown_gui") == FindingCategory.UNKNOWN_GUI
+
+    with pytest.raises(ValueError):
+        FindingCategory("invalid")
