@@ -432,6 +432,73 @@ def test_event_about_another_subject_is_not_authority(tmp_path, capsys):
     assert all(not c["authority_granted"] for c in report["claims"])
 
 
+def test_event_with_mismatched_endpoints_is_not_authority(tmp_path, capsys):
+    """A signed event authorizes *one* transition: an event whose endpoints do
+    not name the claim's from/to coordinates cannot lend authority to it."""
+    from capacium.listing_identity import AuthorityEvent
+
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    event = AuthorityEvent(
+        subject_id="LangeVC/skillweave",
+        from_id="attacker/other",
+        to_id="LangeVC/skillweave",
+        from_authority=AUTH_VERIFIED,
+        to_authority=AUTH_VERIFIED,
+        evidence_digest="sha256:" + "f" * 64,
+        issued_at="2026-10-21T00:00:00Z",
+        issuer="exchange-review",
+    )
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        assert (
+            publish_capability(
+                manifest, json_output=True, authority_events=[event]
+            )
+            is True
+        )
+
+    report = _json_result(capsys)
+    assert report["transition_evidence"] == []
+    assert all(not c["authority_granted"] for c in report["claims"])
+    assert all(
+        CLAIM_AUTHORITY_UNVERIFIED in c["codes"] for c in report["claims"]
+    )
+
+
+def test_event_needs_authenticated_authority_not_merely_truthy(
+    tmp_path, capsys
+):
+    """Both ends must carry the authenticated ``verified`` marker: a truthy
+    but unauthenticated marker (e.g. ``pending``) is not authority."""
+    from capacium.listing_identity import AuthorityEvent
+
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    event = AuthorityEvent(
+        subject_id="LangeVC/skillweave",
+        from_id="typelicious/skillweave",
+        to_id="LangeVC/skillweave",
+        from_authority="pending",
+        to_authority="pending",
+        evidence_digest="sha256:" + "1" * 64,
+        issued_at="2026-10-21T00:00:00Z",
+        issuer="exchange-review",
+    )
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        assert (
+            publish_capability(
+                manifest, json_output=True, authority_events=[event]
+            )
+            is True
+        )
+
+    report = _json_result(capsys)
+    assert report["transition_evidence"] == []
+    assert all(not c["authority_granted"] for c in report["claims"])
+
+
 def test_scalar_replaces_is_one_malformed_claim_not_a_crash(tmp_path, capsys):
     """A manifest that carries a scalar where the schema wants a list must
     still produce the machine contract: one malformed entry, a hard reject,
