@@ -2,7 +2,7 @@
 
 Criterion 7 (verbatim):
 
-    No ingest path executes package hooks; an approved ingest enters the normal
+    No ingest path executes package hooks; an approved install enters the normal
     resolver and transaction path only with an exact digest.
 
 Fix round B shipped the verified :class:`IngestPipeline` but stopped at the
