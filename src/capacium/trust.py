@@ -24,7 +24,10 @@ import re
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:  # pragma: no cover - annotation-only, avoids an import cycle
+    from .commands._resolve import ResolvePlan
 
 # ---------------------------------------------------------------------------
 # Evidence & consent schema version
@@ -1105,6 +1108,153 @@ class IngestPipeline:
             exact_digest=observed_digest,
             source_revision=source_revision,
         )
+
+
+#: Named contact point the typed ingest handoff enters. ``install_capability``
+#: is where the transaction (owned by TRANSACT-004) takes over: it consumes the
+#: ``ResolverPlan`` this binding resolves to and commits it. Naming the seam
+#: keeps the ingest/evidence lane and the transaction lane contracted in one
+#: place instead of two code paths agreeing by convention.
+RESOLVER_CONTACT_POINT = "install.install_capability:resolve"
+
+
+@dataclass(frozen=True)
+class ResolverHandoff:
+    """An :class:`IngestHandoff` bound to the resolver input it enters.
+
+    Criterion 7 requires that an approved ingest enters the *normal resolver
+    path* with an exact digest — not a private re-implementation. This value
+    carries the digest-verified handoff plus the exact catalog, root coordinate
+    and root version that :class:`~capacium.commands._resolve.Resolver` consumes:
+
+        plan = Resolver(handoff.catalog).resolve(
+            handoff.root, handoff.root_version
+        )
+
+    The resulting ``ResolvePlan`` is the value the transaction at
+    :data:`RESOLVER_CONTACT_POINT` commits. This is a factual binding only: it
+    grants no authority and executes no package hooks.
+    """
+
+    exact_digest: str
+    source_revision: str
+    catalog: dict
+    root: str
+    root_version: str
+
+    def __post_init__(self):
+        if not EvidenceVerificationResult._EVIDENCE_DIGEST_RE.match(self.exact_digest):
+            raise ValueError(
+                f"exact_digest must match sha256:<64-char-hex>, got: {self.exact_digest!r}"
+            )
+        if not self.source_revision:
+            raise ValueError("source_revision must not be empty")
+        if not self.root:
+            raise ValueError("root must not be empty")
+        if not self.root_version:
+            raise ValueError("root_version must not be empty")
+
+
+def bind_handoff_to_resolver(
+    handoff: IngestHandoff,
+    catalog: dict,
+    root: str,
+) -> ResolverHandoff:
+    """Bind a digest-verified handoff to the exact resolver input it enters.
+
+    Selects the root version whose catalog ``artifact_digest`` matches
+    ``handoff.exact_digest``. The digest is what gates the path: a catalog that
+    carries the coordinate only under different bytes, or not at all, fails
+    closed rather than resolving an unapproved version.
+
+    Args:
+        handoff: The :class:`IngestHandoff` the pipeline produced from bytes
+            on disk. A bare digest string is refused — only a value the
+            pipeline actually verified may enter the resolver path.
+        catalog: The resolver catalog ``{coordinate: {version: metadata}}``.
+        root: The root coordinate to resolve.
+
+    Returns:
+        A :class:`ResolverHandoff` whose ``catalog``/``root``/``root_version``
+        feed :class:`~capacium.commands._resolve.Resolver`.
+
+    Raises:
+        TypeError: If *handoff* is not an :class:`IngestHandoff`.
+        ValueError: If *root* is absent from *catalog*, or no version of
+            *root* carries the handoff's exact digest.
+    """
+    if not isinstance(handoff, IngestHandoff):
+        raise TypeError(
+            "bind_handoff_to_resolver requires an IngestHandoff produced by "
+            f"IngestPipeline, got {type(handoff).__name__}"
+        )
+
+    versions = catalog.get(root)
+    if not versions:
+        raise ValueError(
+            f"root {root!r} is not in the catalog — no resolver path for this handoff"
+        )
+
+    matching = sorted(
+        (
+            version
+            for version, meta in versions.items()
+            if meta.get("artifact_digest") == handoff.exact_digest
+        ),
+        key=_stable_version_key,
+    )
+    if not matching:
+        raise ValueError(
+            f"no version of {root!r} carries the exact_digest "
+            f"{handoff.exact_digest!r} — refusing to resolve unmatched bytes"
+        )
+
+    return ResolverHandoff(
+        exact_digest=handoff.exact_digest,
+        source_revision=handoff.source_revision,
+        catalog=catalog,
+        root=root,
+        root_version=matching[-1],
+    )
+
+
+def _stable_version_key(version: str) -> tuple:
+    """Order versions for root selection without importing the version manager."""
+    parts = []
+    for chunk in version.split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def resolve_ingest_handoff(
+    handoff: IngestHandoff,
+    catalog: dict,
+    root: str,
+) -> "ResolvePlan":
+    """Resolve a digest-verified handoff through the normal resolver path.
+
+    This is the entry criterion 7 asks for: the ingest does not fork its own
+    planner — it binds to the exact catalog and runs the *same*
+    :class:`~capacium.commands._resolve.Resolver` that ``install`` uses, so the
+    value that reaches the transaction has already passed the real resolver's
+    conflict, cycle and branch-head checks.
+
+    The transaction half of the path lives at :data:`RESOLVER_CONTACT_POINT`
+    and is owned by TRANSACT-004; this function stops at the ``ResolvePlan``
+    that transaction commits.
+
+    Raises:
+        TypeError: If *handoff* is not an :class:`IngestHandoff`.
+        ValueError: If the catalog does not carry the handoff's exact digest
+            for *root* (see :func:`bind_handoff_to_resolver`).
+        ResolveError: Propagated from the resolver (conflict, cycle, missing
+            release, branch head) — before any mutation.
+    """
+    from .commands._resolve import Resolver
+
+    bound = bind_handoff_to_resolver(handoff, catalog, root)
+    return Resolver(bound.catalog).resolve(bound.root, bound.root_version)
 
 
 # ---------------------------------------------------------------------------
