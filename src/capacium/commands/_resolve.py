@@ -191,6 +191,9 @@ class ResolveNode:
     bundle_members: List[str] = field(default_factory=list)
     # Optional dependency edges: coordinate -> version constraint
     optional_deps: Dict[str, str] = field(default_factory=dict)
+    # Optional edges that were considered but skipped (unsatisfiable with
+    # the mandatory solution) — recorded for plan transparency.
+    skipped_optional_deps: List[Tuple[str, str, str]] = field(default_factory=list)
 
     def owner_identity(self) -> str:
         """Return the owner portion of the coordinate, or '' if none."""
@@ -225,6 +228,10 @@ class ResolveNode:
             entry["platform"] = self.platform
         if self.bundle_members:
             entry["bundle_members"] = list(self.bundle_members)
+        if self.skipped_optional_deps:
+            entry["skipped_optional_deps"] = [
+                list(item) for item in self.skipped_optional_deps
+            ]
         return entry
 
 
@@ -536,10 +543,20 @@ class Resolver:
     ) -> ResolvePlan:
         """Resolve *root* with *version_spec* to a complete immutable plan.
 
-        Uses deterministic backtracking: candidates are tried highest-first,
-        constraints are recomputed from currently selected assignments at every
-        step (no stale edges), and nodes unreachable from the root are pruned
-        before the plan is built.
+        Resolution happens in two phases:
+
+        1. **Mandatory phase**: ``deps`` and ``bundle_members`` are solved
+           through deterministic backtracking. These edges alone decide
+           success or failure — if the mandatory graph is unsolvable the
+           resolution fails regardless of optional edges.
+
+        2. **Optional phase**: ``optional_deps`` edges from the mandatory
+           solution are collected and sorted by ``(coordinate, constraint)``.
+           Each optional edge is tried in order; it is accepted only if the
+           graph stays solvable with it (the edge is temporarily treated as
+           a mandatory dep and the solver is re-run). If adding it would make
+           the graph unsolvable, the edge is **skipped** and recorded in the
+           plan as ``skipped_optional_deps``.
 
         Raises:
             MissingReleaseError: no version of *root* satisfies the spec.
@@ -602,67 +619,179 @@ class Resolver:
                     ),
                 )
 
-        # Try root candidates highest-first with full backtracking
+        # ── Phase 1: mandatory resolution (deps + bundle_members only) ──────
         root_branch_head_seen = False
         last_failure: Optional[Dict[str, str]] = None
+        selected: Optional[Dict[str, str]] = None
         for candidate_root in root_candidates:
             if self._has_branch_head(root, candidate_root):
                 root_branch_head_seen = True
                 continue
 
-            selected: Dict[str, str] = {root: candidate_root}
-            success, selected, failure_info = self._backtrack(selected, harness_set)
+            current_selected: Dict[str, str] = {root: candidate_root}
+            success, current_selected, failure_info = self._backtrack(
+                current_selected, harness_set,
+            )
             if success:
-                try:
-                    return self._build_plan(
-                        selected, root, candidate_root, version_spec, harness_set,
-                    )
-                except CycleError as ce:
-                    # Cycle detected at build time — try next root version
-                    last_failure = {"reason": "cycle", "detail": str(ce)}
-                    continue
+                selected = current_selected
+                break
             last_failure = failure_info
 
-        # All root candidates failed
-        # Propagate branch_head errors from deeper levels
-        if last_failure and last_failure.get("reason") == "branch_head":
-            raise BranchHeadError(
-                last_failure.get("detail", "Resolution failed"),
-                plan=self._rejection_plan("branch_head", last_failure.get("detail", "Resolution failed")),
-            )
-        if root_branch_head_seen and len(root_candidates) == 1:
-            raise BranchHeadError(
-                f"Versioned install of {root}@{root_candidates[0]} "
-                f"cannot resolve to branch head",
-                plan=self._rejection_plan(
-                    "branch_head",
+        if selected is None:
+            # All root candidates failed
+            if last_failure and last_failure.get("reason") == "branch_head":
+                raise BranchHeadError(
+                    last_failure.get("detail", "Resolution failed"),
+                    plan=self._rejection_plan("branch_head", last_failure.get("detail", "Resolution failed")),
+                )
+            if root_branch_head_seen and len(root_candidates) == 1:
+                raise BranchHeadError(
                     f"Versioned install of {root}@{root_candidates[0]} "
                     f"cannot resolve to branch head",
-                ),
-            )
-        if last_failure:
-            reason = last_failure.get("reason", "conflict")
-            detail = last_failure.get("detail", "Resolution failed")
-            if reason == "missing":
-                raise MissingReleaseError(
-                    detail,
-                    plan=self._rejection_plan("missing", detail),
+                    plan=self._rejection_plan(
+                        "branch_head",
+                        f"Versioned install of {root}@{root_candidates[0]} "
+                        f"cannot resolve to branch head",
+                    ),
                 )
-            elif reason == "cycle":
-                raise CycleError(
-                    detail,
-                    plan=self._rejection_plan("cycle", detail),
-                )
-            else:
-                raise ConflictError(
-                    detail,
-                    plan=self._rejection_plan("conflict", detail),
-                )
+            if last_failure:
+                reason = last_failure.get("reason", "conflict")
+                detail = last_failure.get("detail", "Resolution failed")
+                if reason == "missing":
+                    raise MissingReleaseError(
+                        detail,
+                        plan=self._rejection_plan("missing", detail),
+                    )
+                elif reason == "cycle":
+                    raise CycleError(
+                        detail,
+                        plan=self._rejection_plan("cycle", detail),
+                    )
+                else:
+                    raise ConflictError(
+                        detail,
+                        plan=self._rejection_plan("conflict", detail),
+                    )
 
-        raise ConflictError(
-            f"No version of {root} leads to a complete solution",
-            plan=self._rejection_plan("conflict", f"No version of {root} leads to a complete solution"),
-        )
+            raise ConflictError(
+                f"No version of {root} leads to a complete solution",
+                plan=self._rejection_plan("conflict", f"No version of {root} leads to a complete solution"),
+            )
+
+        # ── Phase 2: optional edges (post-mandatory) ────────────────────────
+        # Collect optional edges from the mandatory solution and try each
+        # in sorted (coordinate, constraint) order. Accepted edges become
+        # part of the selection; rejected edges are recorded as skipped.
+        skipped_optional: List[Tuple[str, str, str]] = []
+        processed: Set[Tuple[str, str, str]] = set()
+        accepted_optional_coords: Set[str] = set()
+
+        while True:
+            # Collect all optional edges from currently selected nodes
+            candidates: List[Tuple[str, str, str]] = []
+            for s_coord, s_version in selected.items():
+                meta = self._catalog.get(s_coord, {}).get(s_version, {})
+                for opt_coord, opt_constraint in sorted(
+                    meta.get("optional_deps", {}).items(),
+                ):
+                    edge = (opt_coord, opt_constraint, s_coord)
+                    if edge not in processed:
+                        candidates.append(edge)
+
+            candidates.sort(key=lambda x: (x[0], x[1]))
+
+            made_progress = False
+            for opt_coord, opt_constraint, source_coord in candidates:
+                edge = (opt_coord, opt_constraint, source_coord)
+                processed.add(edge)
+
+                # If already selected with a satisfying version, keep it
+                if opt_coord in selected:
+                    if _version_satisfies(selected[opt_coord], opt_constraint):
+                        accepted_optional_coords.add(opt_coord)
+                        made_progress = True
+                        continue
+                    skipped_optional.append(edge)
+                    continue
+
+                # Try to add this optional edge by temporarily treating
+                # it as a mandatory dep in the catalog. On success, commit
+                # the catalog mutation (dep added, optional_dep removed) so
+                # the lock reflects the accepted edge.
+                source_version = selected[source_coord]
+                source_meta = self._catalog[source_coord][source_version]
+                saved_deps = dict(source_meta.get("deps", {}))
+                saved_opt_deps = dict(source_meta.get("optional_deps", {}))
+
+                new_deps = dict(saved_deps)
+                new_deps[opt_coord] = opt_constraint
+                source_meta["deps"] = new_deps
+
+                new_opt_deps = {
+                    oc: c for oc, c in saved_opt_deps.items()
+                    if oc != opt_coord
+                }
+                if new_opt_deps:
+                    source_meta["optional_deps"] = new_opt_deps
+                else:
+                    source_meta.pop("optional_deps", None)
+
+                try:
+                    trial_selected = dict(selected)
+                    success, trial_selected, _ = self._backtrack(
+                        trial_selected, harness_set,
+                    )
+                    if success:
+                        selected = trial_selected
+                        accepted_optional_coords.add(opt_coord)
+                        made_progress = True
+                        break  # Restart collection after a successful addition
+                    else:
+                        # Revert catalog change
+                        if saved_deps:
+                            source_meta["deps"] = saved_deps
+                        else:
+                            source_meta.pop("deps", None)
+                        if saved_opt_deps:
+                            source_meta["optional_deps"] = saved_opt_deps
+                        skipped_optional.append(edge)
+                except Exception:
+                    # Revert catalog change on any error
+                    if saved_deps:
+                        source_meta["deps"] = saved_deps
+                    else:
+                        source_meta.pop("deps", None)
+                    if saved_opt_deps:
+                        source_meta["optional_deps"] = saved_opt_deps
+                    skipped_optional.append(edge)
+
+            if not made_progress:
+                break
+
+        # Build the final plan with skipped optional edges recorded
+        try:
+            plan = self._build_plan(
+                selected, root, selected[root], version_spec, harness_set,
+            )
+        except CycleError as ce:
+            raise CycleError(
+                str(ce),
+                plan=self._rejection_plan("cycle", str(ce)),
+            )
+
+        # Mark nodes that were added via optional edges
+        for coord in accepted_optional_coords:
+            node = plan.nodes.get(coord)
+            if node is not None:
+                node.optional = True
+
+        # Record skipped optional edges on the plan's root node
+        if skipped_optional:
+            root_node = plan.nodes.get(root)
+            if root_node is not None:
+                root_node.skipped_optional_deps = skipped_optional
+
+        return plan
 
     # ── backtracking solver ─────────────────────────────────────────────────
 
@@ -673,20 +802,21 @@ class Resolver:
         self,
         selected: Dict[str, str],
         harness_set: Optional[Set[str]],
-        abandoned_optional: Optional[Set[str]] = None,
         _depth: int = 0,
     ) -> Tuple[bool, Optional[Dict[str, str]], Dict[str, str]]:
         """Recursive backtracking CSP solver with node re-selection.
 
         At each step, finds the frontier of unassigned coordinates reachable
-        from already-selected nodes, picks the first (sorted), and tries
-        versions in descending order. If a selected node must be re-selected
-        (its version no longer satisfies the combined incoming constraints),
-        it is removed and placed at the front of the frontier.
+        from already-selected nodes through mandatory edges (deps +
+        bundle_members only), picks the first (sorted), and tries versions in
+        descending order. If a selected node must be re-selected (its version
+        no longer satisfies the combined incoming mandatory constraints), it
+        is removed and placed at the front of the frontier.
 
-        Purely-optional coordinates that cannot be satisfied are tracked in
-        *abandoned_optional* to prevent unbounded recursion. A depth guard
-        raises a typed ResolveError instead of a RecursionError.
+        Optional dependencies are **never** included here — they are handled
+        in a separate post-resolution phase (see ``resolve()``).
+
+        A depth guard raises a typed ResolveError instead of a RecursionError.
 
         Returns:
             (success, selected_dict, failure_info).
@@ -696,18 +826,14 @@ class Resolver:
                 "reason": "missing",
                 "detail": (
                     f"Backtrack depth exceeded ({_depth}); graph is too "
-                    f"complex or contains an unsolvable optional chain"
+                    f"complex or contains an unsolvable chain"
                 ),
             }
 
-        if abandoned_optional is None:
-            abandoned_optional = set()
-
-        # Collect frontier: unassigned coordinates with incoming edges from
-        # selected nodes, plus any selected node whose version no longer
-        # satisfies its recomputed effective constraint.
+        # Collect frontier: unassigned coordinates with incoming mandatory
+        # edges from selected nodes, plus any selected node whose version
+        # no longer satisfies its recomputed effective constraint.
         frontier: Set[str] = set()
-        optional_only: Dict[str, bool] = {}
         reselect: Optional[str] = None
 
         # First, check for selected nodes that need re-selection
@@ -722,32 +848,21 @@ class Resolver:
                     ),
                 }
             if not _version_satisfies(s_version, constraint):
-                # This node must be re-selected
                 reselect = s_coord
                 break
 
         if reselect is not None:
             del selected[reselect]
-            # Put reselect at front of frontier
             frontier = {reselect}
-            optional_only[reselect] = False
-            # But also add any unassigned deps from other selected nodes
         else:
             for s_coord, s_version in selected.items():
                 meta = self._catalog.get(s_coord, {}).get(s_version, {})
                 for dep_coord in meta.get("deps", {}):
                     if dep_coord not in selected:
                         frontier.add(dep_coord)
-                        optional_only[dep_coord] = False
                 for member_coord in meta.get("bundle_members", []):
                     if member_coord not in selected:
                         frontier.add(member_coord)
-                        optional_only[member_coord] = False
-                for opt_coord in meta.get("optional_deps", {}):
-                    if opt_coord not in selected:
-                        frontier.add(opt_coord)
-                        if opt_coord not in optional_only:
-                            optional_only[opt_coord] = True
 
         if not frontier:
             # Reject assignments with mandatory cycles — backtracking
@@ -761,47 +876,9 @@ class Resolver:
                 }
             return True, dict(selected), {}
 
-        # Skip purely-optional deps with no available versions, and
-        # previously abandoned optional coordinates (break the recursion).
-        frontier_to_skip: Set[str] = set()
-        for fc in frontier:
-            is_purely_optional = optional_only.get(fc, False)
-            if is_purely_optional:
-                if fc in abandoned_optional:
-                    frontier_to_skip.add(fc)
-                    continue
-                fv = self._available_versions(fc)
-                if not fv:
-                    frontier_to_skip.add(fc)
-                    abandoned_optional.add(fc)
-                    continue
-                fc_constraint = self._compute_effective_constraint(fc, selected)
-                if fc_constraint is not None:
-                    satisfied = any(
-                        _version_satisfies(v, fc_constraint)
-                        for v in reversed(fv)
-                        if not self._has_branch_head(fc, v)
-                    )
-                    if not satisfied:
-                        frontier_to_skip.add(fc)
-                        abandoned_optional.add(fc)
+        coord = sorted(frontier)[0]
 
-        effective_frontier = sorted(frontier - frontier_to_skip)
-        if not effective_frontier:
-            # All remaining frontier nodes are optional-only — but we
-            # must still verify the mandatory graph is acyclic before
-            # accepting the assignment.
-            cycle_path = self._find_mandatory_cycle(selected)
-            if cycle_path is not None:
-                return False, None, {
-                    "reason": "cycle",
-                    "detail": f"Dependency cycle: {' -> '.join(cycle_path)}",
-                }
-            return True, dict(selected), {}
-
-        coord = effective_frontier[0]
-
-        # Compute effective constraint from all selected nodes
+        # Compute effective constraint from all selected nodes (mandatory only)
         constraint = self._compute_effective_constraint(coord, selected)
         if constraint is None:
             return False, None, {
@@ -813,13 +890,8 @@ class Resolver:
             }
 
         versions = self._available_versions(coord)
-        is_purely_optional = optional_only.get(coord, False)
 
         if not versions:
-            if is_purely_optional:
-                abandoned_optional.add(coord)
-                return self._backtrack(selected, harness_set,
-                                       abandoned_optional, _depth + 1)
             return False, None, {
                 "reason": "missing",
                 "detail": f"No releases found for {coord}",
@@ -869,7 +941,7 @@ class Resolver:
 
             selected[coord] = version
             success, result, failure = self._backtrack(
-                selected, harness_set, abandoned_optional, _depth + 1,
+                selected, harness_set, _depth + 1,
             )
             if success:
                 return True, result, {}
@@ -878,12 +950,6 @@ class Resolver:
             selected.clear()
             selected.update(snapshot)
             last_failure = failure
-
-        # No version worked
-        if is_purely_optional:
-            abandoned_optional.add(coord)
-            return self._backtrack(selected, harness_set,
-                                   abandoned_optional, _depth + 1)
 
         # Propagate branch_head errors from deeper levels
         if last_failure and last_failure.get("reason") == "branch_head":
@@ -924,46 +990,33 @@ class Resolver:
         coord: str,
         selected: Dict[str, str],
     ) -> Optional[str]:
-        """Intersect all constraints on *coord* from *selected* nodes.
+        """Intersect all mandatory constraints on *coord* from *selected* nodes.
 
-        ``deps`` and ``bundle_members`` are always mandatory. ``optional_deps``
-        constraints are soft: they only contribute when there are *no* mandatory
-        edges for *coord* across all selected nodes. When at least one mandatory
-        edge exists, optional constraints are ignored — they must not narrow
-        a mandatory range, because that would turn a solvable catalog into a
-        false conflict/cycle.
+        Only ``deps`` and ``bundle_members`` are considered — they are always
+        mandatory. ``optional_deps`` are **never** included here; they are
+        handled in a separate post-resolution phase (see ``resolve()``).
 
         Returns the narrowest combined constraint, ``"*"`` if there are
         no constraints, or ``None`` if the intersection is empty.
         """
-        mandatory_result: Optional[str] = None
-        optional_result: Optional[str] = None
+        result: Optional[str] = None
 
         for s_coord, s_version in selected.items():
             meta = self._catalog.get(s_coord, {}).get(s_version, {})
             deps = meta.get("deps", {})
             bundle_members = meta.get("bundle_members", [])
-            optional_deps = meta.get("optional_deps", {})
 
             if coord in deps:
                 c = deps[coord]
-                mandatory_result = c if mandatory_result is None else \
-                    _intersect_constraints(mandatory_result, c)
-                if mandatory_result is None:
+                result = c if result is None else \
+                    _intersect_constraints(result, c)
+                if result is None:
                     return None
             if coord in bundle_members:
-                mandatory_result = ("*" if mandatory_result is None
-                                    else _intersect_constraints(mandatory_result, "*"))
-            if coord in optional_deps:
-                c = optional_deps[coord]
-                optional_result = c if optional_result is None else \
-                    _intersect_constraints(optional_result, c)
-                if optional_result is None:
-                    optional_result = None
+                result = ("*" if result is None
+                          else _intersect_constraints(result, "*"))
 
-        if mandatory_result is not None:
-            return mandatory_result
-        return optional_result or "*"
+        return result or "*"
 
     def _has_branch_head(self, coordinate: str, version: str) -> bool:
         """Return True if *coordinate*@*version* has a branch-head revision."""
