@@ -10,6 +10,7 @@ This module provides:
 * a small registry mapping well-known runtime names → detection + install hints,
 * a stdlib-only ``RuntimeResolver`` that probes the host with ``shutil.which``
   and a version subprocess call,
+* typed runtime-unit, source-lock and generation models for CAP117-RUNTIME-010,
 * helpers used by ``cap install`` (pre-flight) and ``cap doctor``.
 
 Conventions
@@ -25,12 +26,176 @@ Conventions
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# RuntimeUnit, SourceLock, RuntimeGeneration (CAP117-RUNTIME-010)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SourceLock:
+    """Exact source binding for a runtime generation.
+
+    Every field is digest-bound: source artifacts, interpreter/platform
+    constraints, dependency lock, build inputs, probes and entrypoints all
+    carry content-addressable digests so offline replay verifies identical
+    bytes and no branch head can satisfy an exact runtime lock.
+    """
+
+    source_url: str
+    digest: str
+    interpreter: str = ""
+    platforms: List[str] = field(default_factory=list)
+    dependency_lock_digest: str = ""
+    build_inputs: Dict[str, str] = field(default_factory=dict)
+    probes: Dict[str, str] = field(default_factory=dict)
+    entrypoints: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+
+    def to_descriptor(self) -> str:
+        """Canonical JSON descriptor for digest computation."""
+        return json.dumps({
+            "source_url": self.source_url,
+            "digest": self.digest,
+            "interpreter": self.interpreter,
+            "platforms": sorted(self.platforms),
+            "dependency_lock_digest": self.dependency_lock_digest,
+            "build_inputs": dict(sorted(self.build_inputs.items())),
+            "probes": dict(sorted(self.probes.items())),
+            "entrypoints": dict(sorted(
+                (k, list(v)) for k, v in self.entrypoints.items()
+            )),
+        }, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class RuntimeGeneration:
+    """An immutable, content-addressed runtime generation.
+
+    Identified by its content digest. Carries the full ``SourceLock`` that
+    produced it so offline verification and replay are deterministic.
+    """
+
+    digest: str
+    source_lock: SourceLock
+
+
+@dataclass(frozen=True)
+class RuntimeUnit:
+    """Typed component representing an executable runtime.
+
+    A ``RuntimeUnit`` models an executable component with identity
+    (owner/name), a descriptor digest (SHA-256 of the canonical descriptor),
+    entrypoints and an optional generation identity.  Public package kinds
+    remain ``capability`` and ``bundle`` — ``RuntimeUnit`` is a typed
+    component, not a public Kind.
+    """
+
+    owner: str
+    name: str
+    descriptor_digest: str = ""
+    entrypoints: Dict[str, str] = field(default_factory=dict)
+    generation_id: Optional[str] = None
+
+    @property
+    def id(self) -> str:
+        return f"{self.owner}/{self.name}"
+
+    @classmethod
+    def from_manifest(
+        cls,
+        owner: str,
+        name: str,
+        version: str,
+        runtimes: Dict[str, str],
+        mcp_command: Optional[str] = None,
+    ) -> "RuntimeUnit":
+        """Build a RuntimeUnit from a capability manifest.
+
+        Computes the descriptor digest from the canonical descriptor JSON,
+        populates entrypoints from the MCP command when available.
+        """
+        entrypoints: Dict[str, str] = {}
+        if mcp_command:
+            entrypoints["main"] = mcp_command
+
+        descriptor = json.dumps({
+            "owner": owner,
+            "name": name,
+            "version": version,
+            "runtimes": dict(sorted(runtimes.items())),
+            "entrypoints": dict(sorted(entrypoints.items())),
+        }, sort_keys=True, separators=(",", ":"))
+
+        descriptor_digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
+
+        return cls(
+            owner=owner,
+            name=name,
+            descriptor_digest=descriptor_digest,
+            entrypoints=entrypoints,
+            generation_id=None,
+        )
+
+    @staticmethod
+    def needed_for(
+        runtimes: Dict[str, str],
+        kind: Optional[str] = None,
+        mcp_command: Optional[str] = None,
+    ) -> bool:
+        """Return True if this capability requires a RuntimeUnit.
+
+        Simple skills and recipes install without a runtime unit: only
+        capabilities with declared runtimes or an MCP command need one.
+        """
+        if runtimes:
+            return True
+        if mcp_command:
+            return True
+        return False
+
+
+def needs_runtime_unit(
+    runtimes: Dict[str, str],
+    mcp_command: Optional[str] = None,
+) -> bool:
+    """Return True if the given runtime requirements need a RuntimeUnit.
+
+    Simple skills and recipes with no runtimes and no MCP command install
+    without a runtime unit.
+    """
+    return RuntimeUnit.needed_for(runtimes, mcp_command=mcp_command)
+
+
+def verify_cache_digest(expected: str, actual: str) -> None:
+    """Verify that two digests match. Raises ValueError on mismatch.
+
+    Offline cache mismatch must fail closed: a digest mismatch is an
+    integrity error, not a silent fallback.
+    """
+    if expected != actual:
+        raise ValueError(
+            f"digest mismatch: expected {expected}, got {actual}"
+        )
+
+
+def is_exact_lock_satisfied(reference: str) -> bool:
+    """Return True only if *reference* is a full SHA-256 hex digest.
+
+    No branch head (main, feature/foo, HEAD) can satisfy an exact runtime
+    lock. Only a full 64-character hex SHA-256 qualifies.
+    """
+    if not reference:
+        return False
+    return bool(re.fullmatch(r"[0-9a-f]{64}", reference))
 
 
 # ──────────────────────────────────────────────────────────────────────────
