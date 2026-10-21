@@ -9,7 +9,7 @@ All commands that accept a capability spec should use
 """
 import re
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -754,3 +754,113 @@ class Resolver:
         """Return the sorted list of version strings for *coordinate*."""
         versions = self._catalog.get(coordinate, {})
         return sorted(versions.keys(), key=lambda v: VersionManager.semver_key(v) or (0, 0, 0))
+
+    # ── offline replay ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def replay_from_lock(
+        lock: Dict[str, Any],
+        catalog: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> "ResolvePlan":
+        """Replay a complete lock against a catalog without network access.
+
+        Every locked node must be present in *catalog* with the exact same
+        coordinate, version, artifact digest and source revision. Any
+        mismatch fails with a rejection plan — no network access is ever
+        performed.
+
+        Args:
+            lock: The lock dict produced by :meth:`ResolvePlan.to_lock`.
+            catalog: A local catalog ``{coordinate: {version: metadata}}``.
+
+        Returns:
+            A :class:`ResolvePlan` whose ``to_lock()`` output is identical
+            to the input *lock*.
+
+        Raises:
+            MissingReleaseError: A locked coordinate or version is absent
+                from the catalog.
+            ConflictError: An artifact digest or source revision in the
+                catalog does not match the locked value.
+        """
+        root = lock["root"]
+        root_version = lock["root_version"]
+        locked_nodes: Dict[str, Dict[str, Any]] = lock.get("nodes", {})
+
+        plan = ResolvePlan(
+            root_coordinate=root,
+            root_version=root_version,
+        )
+
+        for coordinate, locked in locked_nodes.items():
+            version = locked["version"]
+
+            # Verify coordinate exists in catalog
+            if coordinate not in catalog:
+                raise MissingReleaseError(
+                    f"Offline replay: coordinate {coordinate!r} not found in catalog",
+                    plan=Resolver._rejection_plan(
+                        "missing",
+                        f"Coordinate {coordinate!r} not in catalog",
+                    ),
+                )
+
+            # Verify version exists
+            if version not in catalog[coordinate]:
+                raise MissingReleaseError(
+                    f"Offline replay: {coordinate}@{version} not found in catalog "
+                    f"(available: {sorted(catalog[coordinate].keys())})",
+                    plan=Resolver._rejection_plan(
+                        "missing",
+                        f"{coordinate}@{version} not in catalog",
+                    ),
+                )
+
+            meta = catalog[coordinate][version]
+
+            # Verify artifact digest if locked
+            locked_digest = locked.get("artifact_digest")
+            catalog_digest = meta.get("artifact_digest")
+            if locked_digest is not None:
+                if catalog_digest != locked_digest:
+                    raise ConflictError(
+                        f"Offline replay: artifact digest mismatch for "
+                        f"{coordinate}@{version}: lock has {locked_digest!r}, "
+                        f"catalog has {catalog_digest!r}",
+                        plan=Resolver._rejection_plan(
+                            "conflict",
+                            f"Digest mismatch: {coordinate}@{version} "
+                            f"lock={locked_digest!r} catalog={catalog_digest!r}",
+                        ),
+                    )
+
+            # Verify source revision if locked
+            locked_revision = locked.get("source_revision")
+            catalog_revision = meta.get("source_revision")
+            if locked_revision is not None:
+                if catalog_revision != locked_revision:
+                    raise ConflictError(
+                        f"Offline replay: source revision mismatch for "
+                        f"{coordinate}@{version}: lock has {locked_revision!r}, "
+                        f"catalog has {catalog_revision!r}",
+                        plan=Resolver._rejection_plan(
+                            "conflict",
+                            f"Revision mismatch: {coordinate}@{version} "
+                            f"lock={locked_revision!r} catalog={catalog_revision!r}",
+                        ),
+                    )
+
+            node = ResolveNode(
+                node_type=NodeType.CAPABILITY,
+                coordinate=coordinate,
+                version=version,
+                kind=meta.get("kind"),
+                source=meta.get("source"),
+                source_revision=catalog_revision,
+                artifact_digest=catalog_digest,
+                dependencies=meta.get("deps", {}),
+                optional=locked.get("optional", False),
+            )
+            plan.nodes[coordinate] = node
+
+        return plan

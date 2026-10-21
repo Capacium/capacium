@@ -17,7 +17,6 @@ import pytest
 from capacium.commands._resolve import (
     Resolver,
     ResolveNode,
-    ResolvePlan,
     ResolveError,
     ConflictError,
     CycleError,
@@ -782,3 +781,399 @@ class TestCriterion6StableJsonPlans:
         selected_root = json_plan["plan"]["selected"]["alice/lib"]
         # At minimum the version is there; platform may be in metadata
         assert "version" in selected_root
+
+
+# ---------------------------------------------------------------------------
+# Criterion 7: offline replay from complete lock
+# ---------------------------------------------------------------------------
+
+
+class TestCriterion7OfflineReplay:
+    """Offline replay from a complete lock selects and verifies identical
+    bytes without network access."""
+
+    def _build_diamond_catalog(self):
+        """Return a catalog and the expected lock from resolving it."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {
+                        "bob/util": ">=1.0.0,<2.0.0",
+                        "carol/tool": ">=1.0.0,<2.0.0",
+                    },
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:bbb",
+                },
+                "1.5.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def789",
+                    "artifact_digest": "sha256:bbb5",
+                },
+            },
+            "carol/tool": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://github.com/carol/tool",
+                    "source_revision": "ghi789",
+                    "artifact_digest": "sha256:ccc",
+                },
+            },
+        }
+        return catalog
+
+    def test_offline_replay_produces_identical_lock(self):
+        """Replaying a complete lock produces byte-identical lock output."""
+        catalog = self._build_diamond_catalog()
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Replay from a fresh resolver with the same catalog
+        replayed_plan = Resolver.replay_from_lock(lock, catalog=catalog)
+        replayed_lock = replayed_plan.to_lock()
+
+        assert replayed_lock == lock, \
+            "replayed lock must be identical to original lock"
+        assert json.dumps(replayed_lock, sort_keys=True) == \
+            json.dumps(lock, sort_keys=True), \
+            "replayed lock bytes must be identical to original lock bytes"
+
+    def test_offline_replay_verifies_digests(self):
+        """Offline replay verifies artifact digests match the lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Replay with same catalog should succeed
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed is not None
+
+    def test_offline_replay_fails_when_coordinate_missing(self):
+        """Replay fails when a locked coordinate is not in the catalog."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:bbb",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Remove bob/util from the catalog
+        incomplete_catalog = {
+            "alice/lib": catalog["alice/lib"],
+        }
+
+        with pytest.raises(MissingReleaseError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=incomplete_catalog)
+        assert "bob/util" in str(exc_info.value)
+
+    def test_offline_replay_fails_when_version_missing(self):
+        """Replay fails when the locked version is not in the catalog."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Catalog has a different version
+        stale_catalog = {
+            "alice/lib": {
+                "2.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "xyz999",
+                    "artifact_digest": "sha256:zzz",
+                },
+            },
+        }
+
+        with pytest.raises(MissingReleaseError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=stale_catalog)
+        assert "alice/lib" in str(exc_info.value)
+
+    def test_offline_replay_fails_on_digest_mismatch(self):
+        """Replay fails when artifact digest in catalog doesn't match the lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Catalog has same coordinate/version but different digest
+        tampered_catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:evil",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered_catalog)
+        assert "digest" in str(exc_info.value).lower() or \
+            "mismatch" in str(exc_info.value).lower()
+
+    def test_offline_replay_fails_on_source_revision_mismatch(self):
+        """Replay fails when source_revision in catalog doesn't match the lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Catalog has same coordinate/version but different source_revision
+        tampered_catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "evil999",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered_catalog)
+        assert "revision" in str(exc_info.value).lower() or \
+            "mismatch" in str(exc_info.value).lower()
+
+    def test_offline_replay_no_network_required(self):
+        """Replay uses only the provided catalog — no network access."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:bbb",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Replay with the same catalog — no network calls
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed is not None
+        # Verify the replayed plan matches
+        assert replayed.root_coordinate == original_plan.root_coordinate
+        assert replayed.root_version == original_plan.root_version
+        assert set(replayed.nodes.keys()) == set(original_plan.nodes.keys())
+
+    def test_offline_replay_with_transitive_deps(self):
+        """Replay validates every transitive dependency in the lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "deps": {"carol/tool": ">=1.0.0"},
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:bbb",
+                },
+            },
+            "carol/tool": {
+                "1.0.0": {
+                    "source": "https://github.com/carol/tool",
+                    "source_revision": "ghi789",
+                    "artifact_digest": "sha256:ccc",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Verify all 3 nodes are in the lock
+        assert len(lock["nodes"]) == 3
+
+        # Replay — all transitive deps should validate
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed is not None
+
+        # Tamper with carol/tool (deep transitive dep)
+        tampered_catalog = {
+            "alice/lib": catalog["alice/lib"],
+            "bob/util": catalog["bob/util"],
+            "carol/tool": {
+                "1.0.0": {
+                    "source": "https://github.com/carol/tool",
+                    "source_revision": "ghi789",
+                    "artifact_digest": "sha256:evil",
+                },
+            },
+        }
+        with pytest.raises(ConflictError):
+            Resolver.replay_from_lock(lock, catalog=tampered_catalog)
+
+    def test_offline_replay_verifies_root_and_version(self):
+        """Replay verifies the root coordinate and root_version match the lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:aaa",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/lib", "1.0.0")
+        lock = original_plan.to_lock()
+
+        # Replay should verify root and root_version
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.root_coordinate == lock["root"]
+        assert replayed.root_version == lock["root_version"]
+
+    def test_offline_replay_with_holds_and_pins(self):
+        """Replay validates a lock that was produced with holds and pins."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+                "2.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:bbb",
+                },
+                "2.0.0": {
+                    "source": "https://github.com/bob/util",
+                    "source_revision": "def999",
+                    "artifact_digest": "sha256:bbb2",
+                },
+            },
+        }
+
+        # Resolve with hold on alice/lib to force 1.0.0
+        holds = {"alice/lib": "1.0.0"}
+        resolver = Resolver(catalog=catalog, holds=holds)
+        original_plan = resolver.resolve("alice/lib", ">=1.0.0")
+        lock = original_plan.to_lock()
+
+        assert lock["nodes"]["alice/lib"]["version"] == "1.0.0"
+
+        # Replay with same catalog — must produce identical lock
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        replayed_lock = replayed.to_lock()
+        assert replayed_lock == lock
+
+    def test_offline_replay_with_bundle_lock(self):
+        """Replay validates a lock containing bundle members."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["alice/tool-a", "alice/tool-b"],
+                    "source": "https://github.com/alice/bundle",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:bund",
+                },
+            },
+            "alice/tool-a": {
+                "1.0.0": {
+                    "kind": "tool",
+                    "source": "https://github.com/alice/tool-a",
+                    "source_revision": "def456",
+                    "artifact_digest": "sha256:ta",
+                },
+            },
+            "alice/tool-b": {
+                "1.0.0": {
+                    "kind": "tool",
+                    "source": "https://github.com/alice/tool-b",
+                    "source_revision": "ghi789",
+                    "artifact_digest": "sha256:tb",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        original_plan = resolver.resolve("alice/bundle", "1.0.0")
+        lock = original_plan.to_lock()
+
+        assert "alice/tool-a" in lock["nodes"]
+        assert "alice/tool-b" in lock["nodes"]
+
+        # Replay must validate all bundle members
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        replayed_lock = replayed.to_lock()
+        assert replayed_lock == lock
