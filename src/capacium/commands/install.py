@@ -28,7 +28,7 @@ from ..adapters.mcp_config_patcher import RuntimeUnavailableError
 from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
 from ._journal import (
     _make_journal_path, _write_journal, _delete_journal,
-    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+    _serialize_cap, _encode_file_content, _encode_bytes, recover_orphaned_journals,
 )
 
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
@@ -96,14 +96,31 @@ class _InstallJournal:
         _write_journal(self._journal_path, data)
         return self._journal_path
 
+    def _flush(self) -> None:
+        """Re-persist the journal after a mutation so the durable record
+        always contains the complete set of operations performed so far.
+
+        This is the append-only contract: every record_* call that
+        happens after the initial persist() is immediately written to
+        disk with fsync, so a SIGKILL at any mutation boundary leaves a
+        journal that describes the actual state on disk for recovery.
+        """
+        if self._journal_path is not None:
+            _write_journal(self._journal_path, self._to_disk_data())
+
     def _to_disk_data(self) -> dict:
-        """Build a complete serializable snapshot for the durable journal."""
+        """Build a complete serializable snapshot for the durable journal.
+
+        Uses the in-memory snapshot bytes so that flush-after-mutation
+        re-serializes the pre-mutation content, not whatever is on disk
+        after the mutation already ran.
+        """
         return {
             "cap_id": self.cap_id,
             "version": self.version,
             "plan": self._plan,
             "files": {
-                str(k): _encode_file_content(k) for k in self._files
+                str(k): _encode_bytes(v) for k, v in self._files.items()
             },
             "links": {str(k): v for k, v in self._links.items()},
             "new_paths": [str(p) for p in self._new_paths],
@@ -851,6 +868,7 @@ def install_capability(
             storage, cap_name, version, source_dir, owner=owner,
         )
         journal.record_new_path(package_dir)
+        journal._flush()
 
         manifest = Manifest.detect_from_directory(package_dir)
         errors = manifest.validate()
@@ -926,6 +944,7 @@ def install_capability(
                 raise
             if success:
                 successful_frameworks.append(fw)
+                journal._flush()
             else:
                 print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
 

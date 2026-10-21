@@ -12,7 +12,7 @@ from ..adapters import get_adapter
 from ._resolve import resolve_cap_id
 from ._journal import (
     _make_journal_path, _write_journal, _delete_journal,
-    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+    _serialize_cap, _encode_file_content, _encode_bytes, recover_orphaned_journals,
 )
 
 
@@ -81,11 +81,20 @@ class _RemovalSnapshot:
     def persist(self, cap_id: str, version: str) -> Path:
         """Write the journal to disk before the first mutation."""
         self._journal_path = _make_journal_path(cap_id, version, "remove")
-        data = {
+        _write_journal(self._journal_path, self._to_disk_data(cap_id, version))
+        return self._journal_path
+
+    def _to_disk_data(self, cap_id: str, version: str) -> dict:
+        """Build a complete serializable snapshot for the durable journal.
+
+        Uses in-memory snapshot bytes so flush-after-mutation
+        re-serializes the pre-mutation content, not whatever is on disk.
+        """
+        return {
             "cap_id": cap_id,
             "version": version,
             "files": {
-                str(k): _encode_file_content(k) for k in self._files
+                str(k): _encode_bytes(v) for k, v in self._files.items()
             },
             "links": {str(k): v for k, v in self._links.items()},
             "moves": [(str(o), str(p)) for o, p in self._moves],
@@ -93,8 +102,12 @@ class _RemovalSnapshot:
             "members": [(bid, list(mids)) for bid, mids in self._members],
             "committed": False,
         }
-        _write_journal(self._journal_path, data)
-        return self._journal_path
+
+    def _flush(self, cap_id: str, version: str) -> None:
+        """Re-persist the journal after a mutation so the durable record
+        always contains the complete set of operations performed so far."""
+        if self._journal_path is not None:
+            _write_journal(self._journal_path, self._to_disk_data(cap_id, version))
 
     # ── outcome ────────────────────────────────────────────────────────
     def restore(self) -> None:
@@ -373,8 +386,10 @@ def remove_capability(
                         adapter.remove_capability(dep_name, owner=dep_owner, kind=dep_kind)
                     dep_pkg = storage.get_package_dir(dep_name, dep_version, owner=dep_owner)
                     dep_snap.park_tree(dep_pkg)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
                     dep_snap.record_registry_row(dep)
                     registry.remove_capability(dep_cap_id, dep_version)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
                     removed_dependents.append(f"{dep_cap_id}@{dep_version}")
                     dep_snap.commit()
                 except Exception as dep_exc:
@@ -397,8 +412,11 @@ def remove_capability(
                 cap_name, owner=owner, kind=cap_kind
             )
 
+        snapshot._flush(bare_id, version)
+
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)
         snapshot.park_tree(package_dir)
+        snapshot._flush(bare_id, version)
 
         # Registry change only after all adapter + filesystem steps succeeded.
         snapshot.record_registry_row(cap)

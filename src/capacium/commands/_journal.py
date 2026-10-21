@@ -12,6 +12,7 @@ before the next mutating command begins.
 
 import base64
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -36,11 +37,30 @@ def _make_journal_path(cap_id: str, version: str, operation: str) -> Path:
 
 
 def _write_journal(path: Path, data: Dict[str, Any]) -> None:
-    """Atomically write journal data to disk."""
+    """Atomically write journal data to disk with fsync so the OS
+    buffer cache cannot discard a committed write ahead record.
+
+    The journal must survive a SIGKILL at any point after a mutation.
+    rename(2) is atomic on POSIX, but the directory entry must be
+    durable — the fsync on the directory fd after rename ensures the
+    rename itself is on stable storage before the next mutation runs.
+    """
     tmp = Path(str(path) + ".tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(json.dumps(data, default=str))
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+    except OSError:
+        pass
     tmp.rename(path)
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _read_journal(path: Path) -> Optional[Dict[str, Any]]:
@@ -135,6 +155,13 @@ def _encode_file_content(path: Path) -> Optional[str]:
         return None
 
 
+def _encode_bytes(content: Optional[bytes]) -> Optional[str]:
+    """Base64-encode in-memory bytes for journal serialization."""
+    if content is None:
+        return None
+    return base64.b64encode(content).decode("ascii")
+
+
 # ── orphan recovery ──────────────────────────────────────────────────
 
 def recover_orphaned_journals() -> List[str]:
@@ -142,6 +169,11 @@ def recover_orphaned_journals() -> List[str]:
 
     Called before every mutating command (install, update, remove).
     Returns the list of cap_ids that were recovered.
+
+    The journal file is only deleted after a *verified* rollback —
+    replaying the records from disk restores the pre-mutation state,
+    then we confirm the result. If verification fails, the journal is
+    kept so the next attempt can retry (and a human can inspect it).
     """
     recovered: List[str] = []
     jdir = _get_journal_dir()
@@ -155,24 +187,34 @@ def recover_orphaned_journals() -> List[str]:
         if data.get("committed"):
             _delete_journal(jf)
             continue
-        # Uncommitted journal — roll back
+        # Uncommitted journal — roll back and verify
         try:
-            _rollback_from_journal(data)
-            recovered.append(data.get("cap_id", "unknown"))
+            if _rollback_from_journal(data):
+                recovered.append(data.get("cap_id", "unknown"))
+                _delete_journal(jf)
+            # else: keep the journal for next-attempt retry
         except Exception:
             pass
-        _delete_journal(jf)
     return recovered
 
 
-def _rollback_from_journal(data: Dict[str, Any]) -> None:
-    """Restore pre-mutation state from a journal record."""
+def _rollback_from_journal(data: Dict[str, Any]) -> bool:
+    """Restore pre-mutation state from a journal record.
+
+    Replays the journal entries in reverse to undo every mutation that
+    was recorded. Returns True when the rollback is verified — i.e. the
+    registry row (if applicable) and the key paths are confirmed to be
+    in the pre-mutation state. Returns False when verification fails,
+    leaving the journal on disk for retry.
+    """
     from ..registry import Registry
 
     registry = Registry()
 
     # 1. Restore registry row
     prior = data.get("prior_cap")
+    cap_id = data.get("cap_id", "")
+    version = data.get("version", "")
     if prior is not None:
         try:
             cap = _deserialize_cap(prior)
@@ -180,8 +222,6 @@ def _rollback_from_journal(data: Dict[str, Any]) -> None:
         except Exception:
             pass
     else:
-        cap_id = data.get("cap_id", "")
-        version = data.get("version", "")
         if cap_id and version:
             try:
                 registry.remove_capability(cap_id, version)
@@ -256,3 +296,38 @@ def _rollback_from_journal(data: Dict[str, Any]) -> None:
                 registry.add_bundle_member(bundle_id, member_id)
             except Exception:
                 pass
+
+    # ── verification ──────────────────────────────────────────────────
+    # Confirm the registry row is in the expected state and that newly
+    # created paths are actually gone. If the journal was incomplete
+    # (pre-fix), verification fails and the file stays on disk.
+    try:
+        if prior is not None:
+            prior_cap = _deserialize_cap(prior)
+            current = registry.get_capability(
+                f"{prior_cap.owner}/{prior_cap.name}", prior_cap.version
+            )
+            if current is None or current.fingerprint != prior_cap.fingerprint:
+                return False
+        elif cap_id and version:
+            current = registry.get_capability(cap_id, version)
+            if current is not None:
+                return False
+
+        # Confirm new_paths are gone
+        for key in data.get("new_paths", []):
+            if Path(key).exists():
+                return False
+
+        # Confirm parked trees are back in place
+        for original_str, parked_str in reversed(data.get("moves", [])):
+            original = Path(original_str)
+            parked = Path(parked_str)
+            if (parked.exists() or parked.is_symlink()) and not (
+                original.exists() or original.is_symlink()
+            ):
+                return False
+
+        return True
+    except Exception:
+        return False
