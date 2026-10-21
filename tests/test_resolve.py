@@ -2708,60 +2708,73 @@ class TestFixG_BacktrackingOracle:
         root,
         version_spec,
     ):
-        """Brute-force solver that enumerates all version assignments.
+        """Brute-force solver: enumerate all version assignments.
+
+        Enumerates every coord-version combination across the full catalog,
+        then validates only the mandatory-reachable subgraph from the root
+        through each selected version's deps+bundle_members. Unreachable
+        coords are ignored.
 
         Returns:
             (solvable, solution) where solvable is True iff at least one
-            complete assignment satisfies all constraints, and solution
-            is the lexicographically highest valid assignment (for
-            deterministic comparison).
+            complete assignment satisfies all mandatory constraints.
         """
         from capacium.versioning import VersionManager
 
         def _skey(v):
             return VersionManager.semver_key(v) or (0, 0, 0)
 
-        # Collect all coordinates reachable from root transitively
-        all_coords: set = {root}
-        changed = True
-        while changed:
-            changed = False
-            for coord in list(all_coords):
-                for v in catalog.get(coord, {}):
-                    meta = catalog[coord][v]
-                    for dc in meta.get("deps", {}):
-                        if dc not in all_coords:
-                            all_coords.add(dc)
-                            changed = True
-                    for dc in meta.get("bundle_members", []):
-                        if dc not in all_coords:
-                            all_coords.add(dc)
-                            changed = True
+        all_coords = sorted(catalog.keys())
+        if root not in all_coords:
+            return False, {}
 
-        # Compute per-coordinate version candidates
+        # Per-coordinate version candidates
         coord_versions = {}
-        for coord in sorted(all_coords):
-            versions = list(catalog.get(coord, {}).keys())
-            if coord == root:
-                versions = [
-                    v for v in versions
-                    if _version_satisfies(v, version_spec)
-                ]
+        for coord in all_coords:
+            versions = sorted(catalog[coord].keys(), key=_skey)
             if not versions:
                 return False, {}
-            coord_versions[coord] = sorted(versions, key=_skey)
+            coord_versions[coord] = versions
 
         best: dict | None = None
 
-        def _has_cycle(assignments):
-            """Check if the dependency graph of *assignments* contains a cycle."""
+        def _mandatory_reachable(assignments):
+            """Compute coords reachable from root through mandatory edges
+            (deps + bundle_members) of selected versions."""
+            reachable = {root}
+            frontier = [root]
+            while frontier:
+                coord = frontier.pop()
+                sv = assignments.get(coord)
+                if sv is None:
+                    continue
+                meta = catalog.get(coord, {}).get(sv, {})
+                for nb in meta.get("deps", {}):
+                    if nb not in reachable and nb in assignments:
+                        reachable.add(nb)
+                        frontier.append(nb)
+                for nb in meta.get("bundle_members", []):
+                    if nb not in reachable and nb in assignments:
+                        reachable.add(nb)
+                        frontier.append(nb)
+            return reachable
+
+        def _has_cycle(assignments, reachable):
+            """Check mandatory dep graph (deps + bundle_members) for cycles."""
             WHITE, GRAY, BLACK = 0, 1, 2
-            color: dict = {c: WHITE for c in assignments}
+            color: dict = {c: WHITE for c in reachable}
 
             def dfs(coord):
                 color[coord] = GRAY
-                meta = catalog.get(coord, {}).get(assignments[coord], {})
-                for nb in meta.get("deps", {}):
+                sv = assignments.get(coord)
+                if sv is None:
+                    return False
+                meta = catalog.get(coord, {}).get(sv, {})
+                neighbours = (
+                    list(meta.get("deps", {}).keys())
+                    + list(meta.get("bundle_members", []))
+                )
+                for nb in neighbours:
                     if nb not in color:
                         continue
                     if color[nb] == GRAY:
@@ -2772,7 +2785,7 @@ class TestFixG_BacktrackingOracle:
                 color[coord] = BLACK
                 return False
 
-            for c in assignments:
+            for c in reachable:
                 if color[c] == WHITE:
                     if dfs(c):
                         return True
@@ -2781,17 +2794,26 @@ class TestFixG_BacktrackingOracle:
         def _generate(assignments, remaining):
             nonlocal best
             if not remaining:
-                # Reject solutions with cycles
-                if _has_cycle(assignments):
+                rv = assignments[root]
+                if not _version_satisfies(rv, version_spec):
                     return
-                # Verify all constraints
-                for s_coord, s_version in assignments.items():
+                reachable = _mandatory_reachable(assignments)
+                if _has_cycle(assignments, reachable):
+                    return
+                # Validate mandatory constraints within reachable set
+                for s_coord in reachable:
+                    s_version = assignments.get(s_coord)
+                    if s_version is None:
+                        return
                     meta = catalog.get(s_coord, {}).get(s_version, {})
                     for dc, dc_constraint in meta.get("deps", {}).items():
                         dv = assignments.get(dc)
                         if dv is None:
                             return
                         if not _version_satisfies(dv, dc_constraint):
+                            return
+                    for member in meta.get("bundle_members", []):
+                        if member not in assignments:
                             return
                 if best is None or _assignments_better(assignments, best):
                     best = dict(assignments)
@@ -2804,19 +2826,20 @@ class TestFixG_BacktrackingOracle:
                 del assignments[coord]
 
         def _assignments_better(a, b):
-            for coord in sorted(all_coords):
+            for coord in all_coords:
                 va = _skey(a.get(coord, "0.0.0"))
                 vb = _skey(b.get(coord, "0.0.0"))
                 if va != vb:
                     return va > vb
             return False
 
-        _generate({}, sorted(all_coords))
+        _generate({}, list(all_coords))
         return best is not None, best or {}
 
     @staticmethod
     def _random_catalog(seed, num_coords, max_versions):
-        """Generate a random small catalog.
+        """Generate a random small catalog with deps, optional_deps,
+        bundle_members, platform and source fields.
 
         Returns (catalog, root_coordinate, root_version_spec).
         """
@@ -2842,11 +2865,10 @@ class TestFixG_BacktrackingOracle:
                 major = num_versions - v_idx  # descending: higher major = fewer
                 version = f"{major}.{rng.randint(0, 3)}.0"
                 meta = {}
-                # Randomly add dependencies to other coordinates
+                # Randomly add plain dependencies to other coordinates
                 deps = {}
                 for other in coords[1:]:
-                    if other != coord and rng.random() < 0.4:
-                        # Random constraint
+                    if other != coord and rng.random() < 0.3:
                         c_major = rng.randint(1, max_versions)
                         c_minor = rng.randint(0, 1)
                         if rng.random() < 0.3:
@@ -2856,6 +2878,44 @@ class TestFixG_BacktrackingOracle:
                         deps[other] = constraint
                 if deps:
                     meta["deps"] = deps
+                # Randomly add optional deps (distinct from plain deps)
+                opt_deps = {}
+                for other in coords[1:]:
+                    if other != coord and other not in deps and rng.random() < 0.2:
+                        c_major = rng.randint(1, max_versions)
+                        c_minor = rng.randint(0, 1)
+                        constraint = f">={c_major}.{c_minor}.0"
+                        opt_deps[other] = constraint
+                if opt_deps:
+                    meta["optional_deps"] = opt_deps
+                # Randomly make this a bundle with member coordinates
+                if rng.random() < 0.15:
+                    member_count = rng.randint(1, 2)
+                    members = []
+                    for _ in range(member_count):
+                        member_owner = rng.choice(prefixes)
+                        member_name = f"m{rng.randint(0, 9)}"
+                        member_coord = f"{member_owner}/{member_name}"
+                        if member_coord not in catalog:
+                            catalog[member_coord] = {}
+                            # ensure at least one version
+                            for mv in range(1, rng.randint(1, max_versions) + 1):
+                                mv_str = f"{mv}.0.0"
+                                catalog[member_coord][mv_str] = {}
+                        members.append(member_coord)
+                        # Wire bundle_member into coords for reachability
+                        if member_coord not in coords:
+                            coords.append(member_coord)
+                    meta["bundle_members"] = members
+                    meta["kind"] = "bundle"
+                # Randomly add source, source_revision, artifact_digest
+                if rng.random() < 0.4:
+                    meta["source"] = f"https://src{seed % 100}/p/{coord.replace('/', '-')}"
+                    meta["source_revision"] = f"rev{seed % 1000}"
+                    meta["artifact_digest"] = f"sha256:{seed:x}{v_idx:x}"
+                # Randomly add platform
+                if rng.random() < 0.3:
+                    meta["platform"] = rng.choice(["linux", "darwin", "win32"])
                 catalog[coord][version] = meta
 
         # Root version spec
@@ -3094,3 +3154,275 @@ class TestFixG_BacktrackingOracle:
                 f"Seed {seed}: replayed lock differs from original. "
                 f"Root: {root}@{version_spec}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Fix H: nontermination guard + optional-edge replay
+# ---------------------------------------------------------------------------
+
+
+class TestFixH_C1_NonterminationGuard:
+    """C1 Fix H: backtracking terminates instead of recursing without bound
+    on unsatisfiable optional chains."""
+
+    def test_reviewer_nontermination_repro_terminates(self):
+        """Reviewer minimal repro: optional dep chain that is unsatisfiable
+        does NOT crash with RecursionError. The optional dep is abandoned
+        and resolve succeeds with just the root.
+
+        The fix-base greedy resolver raised MissingReleaseError; the
+        unpatched backtracking solver recursed without bound (RecursionError).
+        After Fix H, the resolver terminates — success with just root/pkg
+        because the optional dep chain is abandoned.
+        """
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"A/a": ">=2.0.0"}},
+            },
+            "A/a": {
+                "2.0.0": {"deps": {"B/b": ">=2.0.0"}},
+            },
+            "B/b": {
+                "1.0.0": {"deps": {"A/a": ">=3.0.0"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        # Optional chain is unsatisfiable — abandoned. Root succeeds alone.
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "A/a" not in plan.nodes
+        assert "B/b" not in plan.nodes
+        # Lock must replay byte-identically
+        lock = plan.to_lock()
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
+
+    def test_optional_chain_abandoned_no_recursion(self):
+        """An optional dep chain where the optional dep is unsatisfiable
+        is abandoned; resolve succeeds with just the root."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"a/opt": ">=99.0.0"}},
+            },
+            "a/opt": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "a/opt" not in plan.nodes
+
+    def test_depth_guard_raises_typed_error(self):
+        """When backtrack depth exceeds the limit on a pathological graph,
+        a typed ResolveError is raised, not RecursionError."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {"a/x": ">=1.0.0"}},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/x": ">=1.0.0"}},
+            },
+            "b/x": {
+                "1.0.0": {"deps": {"a/x": ">=2.0.0"}},
+            },
+            # No version satisfies a/x>=2.0.0, but the backtracker
+            # should not recurse without bound.
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError):
+            resolver.resolve("root/pkg", ">=1.0.0")
+
+
+class TestFixH_C7_OptionalEdgeReplay:
+    """C7 Fix H: locks produced by resolve() replay byte-identically
+    even when optional deps are involved."""
+
+    def test_reviewer_optional_edge_repro_replays(self):
+        """Reviewer minimal repro: root->optional A/a->deps B/b.
+        After Fix H, the lock must replay byte-identically."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"A/a": ">=1.0.0"}},
+            },
+            "A/a": {
+                "1.0.0": {"deps": {"B/b": ">=1.0.0"}},
+            },
+            "B/b": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        lock = plan.to_lock()
+
+        # Verify all three nodes are in the lock
+        assert "root/pkg" in lock["nodes"]
+        assert "A/a" in lock["nodes"]
+        assert "B/b" in lock["nodes"]
+
+        # Root entry must not have dependencies (the only edge is optional)
+        root_entry = lock["nodes"]["root/pkg"]
+        assert "dependencies" not in root_entry
+        # Optional edge must be recorded
+        assert "optional_deps" in root_entry
+        assert root_entry["optional_deps"] == {"A/a": ">=1.0.0"}
+
+        # A/a entry must have the optional flag
+        assert lock["nodes"]["A/a"].get("optional") is True
+
+        # Replay must succeed and be byte-identical
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
+
+    def test_optional_dep_not_satisfied_excluded_from_lock(self):
+        """An optional dep whose constraint cannot be satisfied is
+        excluded from the lock and replay still succeeds."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"a/opt": ">=99.0.0"}},
+            },
+            "a/opt": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        lock = plan.to_lock()
+
+        # a/opt must NOT be in the lock
+        assert "a/opt" not in lock["nodes"]
+
+        # Root entry: optional_deps may be absent or empty
+        root_entry = lock["nodes"]["root/pkg"]
+        if "optional_deps" in root_entry:
+            assert "a/opt" not in root_entry["optional_deps"]
+
+        # Replay must succeed
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
+
+
+class TestFixH_GeneratorCoverage:
+    """Fix H: _random_catalog emits optional_deps, bundle_members,
+    platform and source fields."""
+
+    def test_random_catalog_emits_optional_deps(self):
+        """At least one catalog in a batch has optional_deps."""
+        catalog = TestFixG_BacktrackingOracle._random_catalog(
+            42, num_coords=4, max_versions=3,
+        )[0]
+        # With num_coords=4 and optional_deps probability 0.2 per non-dep
+        # pair, it's likely but not certain. Check a batch.
+        for seed in range(42, 58):
+            cat = TestFixG_BacktrackingOracle._random_catalog(
+                seed, num_coords=4, max_versions=3,
+            )[0]
+            for coord_versions in cat.values():
+                for meta in coord_versions.values():
+                    if meta.get("optional_deps"):
+                        return  # Found — test passes
+        pytest.fail("No optional_deps found in 16 random catalogs")
+
+    def test_random_catalog_emits_bundle_members(self):
+        """At least one catalog in a batch has bundle_members."""
+        for seed in range(42, 58):
+            cat = TestFixG_BacktrackingOracle._random_catalog(
+                seed, num_coords=4, max_versions=3,
+            )[0]
+            for coord_versions in cat.values():
+                for meta in coord_versions.values():
+                    if meta.get("bundle_members"):
+                        return
+        pytest.fail("No bundle_members found in 16 random catalogs")
+
+    def test_random_catalog_emits_platform(self):
+        """At least one catalog in a batch has platform."""
+        for seed in range(42, 58):
+            cat = TestFixG_BacktrackingOracle._random_catalog(
+                seed, num_coords=4, max_versions=3,
+            )[0]
+            for coord_versions in cat.values():
+                for meta in coord_versions.values():
+                    if meta.get("platform"):
+                        return
+        pytest.fail("No platform found in 16 random catalogs")
+
+    def test_random_catalog_emits_source(self):
+        """At least one catalog in a batch has source fields."""
+        for seed in range(42, 58):
+            cat = TestFixG_BacktrackingOracle._random_catalog(
+                seed, num_coords=4, max_versions=3,
+            )[0]
+            for coord_versions in cat.values():
+                for meta in coord_versions.values():
+                    if meta.get("source"):
+                        return
+        pytest.fail("No source fields found in 16 random catalogs")
+
+
+class TestFixH_OracleCoverage:
+    """Fix H: brute-force oracle handles optional_deps, bundle_members,
+    platform and source without errors."""
+
+    def test_oracle_ignores_optional_deps(self):
+        """Oracle must solve catalogs with optional_deps without error
+        (optional deps are not mandatory and the oracle ignores them)."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"a/x": ">=1.0.0"}},
+            },
+            "a/x": {
+                "1.0.0": {},
+            },
+        }
+        solvable, solution = TestFixG_BacktrackingOracle._brute_force_solve(
+            catalog, "root/pkg", ">=1.0.0",
+        )
+        # Oracle: optional deps are not mandatory, so a solution exists
+        # with just root/pkg. The resolver may or may not include a/x
+        # (it's optional), so we only check oracle correctness.
+        assert solvable is True
+
+    def test_oracle_handles_bundle_members(self):
+        """Oracle must enforce bundle_members presence in reachable
+        mandatory subgraph."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["m/one"],
+                },
+            },
+            "m/one": {
+                "1.0.0": {},
+            },
+        }
+        solvable, solution = TestFixG_BacktrackingOracle._brute_force_solve(
+            catalog, "root/pkg", ">=1.0.0",
+        )
+        assert solvable is True
+        assert "m/one" in solution
+
+    def test_oracle_handles_platform_and_source(self):
+        """Oracle must ignore platform and source fields (they don't
+        affect constraint satisfaction)."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {
+                    "deps": {"a/x": ">=1.0.0"},
+                    "platform": "linux",
+                    "source": "https://example.com/pkg",
+                    "source_revision": "abc123",
+                    "artifact_digest": "sha256:deadbeef",
+                },
+            },
+            "a/x": {
+                "1.0.0": {},
+            },
+        }
+        solvable, solution = TestFixG_BacktrackingOracle._brute_force_solve(
+            catalog, "root/pkg", ">=1.0.0",
+        )
+        assert solvable is True
+        assert "a/x" in solution

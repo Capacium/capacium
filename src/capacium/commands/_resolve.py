@@ -189,6 +189,8 @@ class ResolveNode:
     platform: Optional[str] = None
     # Bundle members (for bundle nodes only)
     bundle_members: List[str] = field(default_factory=list)
+    # Optional dependency edges: coordinate -> version constraint
+    optional_deps: Dict[str, str] = field(default_factory=dict)
 
     def owner_identity(self) -> str:
         """Return the owner portion of the coordinate, or '' if none."""
@@ -213,6 +215,8 @@ class ResolveNode:
             entry["artifact_digest"] = self.artifact_digest
         if self.dependencies:
             entry["dependencies"] = dict(self.dependencies)
+        if self.optional_deps:
+            entry["optional_deps"] = dict(self.optional_deps)
         if self.optional:
             entry["optional"] = True
         if self.harness:
@@ -609,9 +613,14 @@ class Resolver:
             selected: Dict[str, str] = {root: candidate_root}
             success, selected, failure_info = self._backtrack(selected, harness_set)
             if success:
-                return self._build_plan(
-                    selected, root, candidate_root, version_spec, harness_set,
-                )
+                try:
+                    return self._build_plan(
+                        selected, root, candidate_root, version_spec, harness_set,
+                    )
+                except CycleError as ce:
+                    # Cycle detected at build time — try next root version
+                    last_failure = {"reason": "cycle", "detail": str(ce)}
+                    continue
             last_failure = failure_info
 
         # All root candidates failed
@@ -639,6 +648,11 @@ class Resolver:
                     detail,
                     plan=self._rejection_plan("missing", detail),
                 )
+            elif reason == "cycle":
+                raise CycleError(
+                    detail,
+                    plan=self._rejection_plan("cycle", detail),
+                )
             else:
                 raise ConflictError(
                     detail,
@@ -652,10 +666,15 @@ class Resolver:
 
     # ── backtracking solver ─────────────────────────────────────────────────
 
+    # Maximum recursion depth before aborting with a typed error
+    _MAX_BACKTRACK_DEPTH = 200
+
     def _backtrack(
         self,
         selected: Dict[str, str],
         harness_set: Optional[Set[str]],
+        abandoned_optional: Optional[Set[str]] = None,
+        _depth: int = 0,
     ) -> Tuple[bool, Optional[Dict[str, str]], Dict[str, str]]:
         """Recursive backtracking CSP solver with node re-selection.
 
@@ -665,9 +684,25 @@ class Resolver:
         (its version no longer satisfies the combined incoming constraints),
         it is removed and placed at the front of the frontier.
 
+        Purely-optional coordinates that cannot be satisfied are tracked in
+        *abandoned_optional* to prevent unbounded recursion. A depth guard
+        raises a typed ResolveError instead of a RecursionError.
+
         Returns:
             (success, selected_dict, failure_info).
         """
+        if _depth > self._MAX_BACKTRACK_DEPTH:
+            return False, None, {
+                "reason": "missing",
+                "detail": (
+                    f"Backtrack depth exceeded ({_depth}); graph is too "
+                    f"complex or contains an unsolvable optional chain"
+                ),
+            }
+
+        if abandoned_optional is None:
+            abandoned_optional = set()
+
         # Collect frontier: unassigned coordinates with incoming edges from
         # selected nodes, plus any selected node whose version no longer
         # satisfies its recomputed effective constraint.
@@ -717,14 +752,19 @@ class Resolver:
         if not frontier:
             return True, dict(selected), {}
 
-        # Skip purely-optional deps with no available versions
+        # Skip purely-optional deps with no available versions, and
+        # previously abandoned optional coordinates (break the recursion).
         frontier_to_skip: Set[str] = set()
         for fc in frontier:
             is_purely_optional = optional_only.get(fc, False)
             if is_purely_optional:
+                if fc in abandoned_optional:
+                    frontier_to_skip.add(fc)
+                    continue
                 fv = self._available_versions(fc)
                 if not fv:
                     frontier_to_skip.add(fc)
+                    abandoned_optional.add(fc)
                     continue
                 fc_constraint = self._compute_effective_constraint(fc, selected)
                 if fc_constraint is not None:
@@ -735,6 +775,7 @@ class Resolver:
                     )
                     if not satisfied:
                         frontier_to_skip.add(fc)
+                        abandoned_optional.add(fc)
 
         effective_frontier = sorted(frontier - frontier_to_skip)
         if not effective_frontier:
@@ -758,7 +799,9 @@ class Resolver:
 
         if not versions:
             if is_purely_optional:
-                return self._backtrack(selected, harness_set)
+                abandoned_optional.add(coord)
+                return self._backtrack(selected, harness_set,
+                                       abandoned_optional, _depth + 1)
             return False, None, {
                 "reason": "missing",
                 "detail": f"No releases found for {coord}",
@@ -807,7 +850,9 @@ class Resolver:
                 continue
 
             selected[coord] = version
-            success, result, failure = self._backtrack(selected, harness_set)
+            success, result, failure = self._backtrack(
+                selected, harness_set, abandoned_optional, _depth + 1,
+            )
             if success:
                 return True, result, {}
             # Restore selected to snapshot — recursive re-selections may
@@ -818,7 +863,9 @@ class Resolver:
 
         # No version worked
         if is_purely_optional:
-            return self._backtrack(selected, harness_set)
+            abandoned_optional.add(coord)
+            return self._backtrack(selected, harness_set,
+                                   abandoned_optional, _depth + 1)
 
         # Propagate branch_head errors from deeper levels
         if last_failure and last_failure.get("reason") == "branch_head":
@@ -943,6 +990,11 @@ class Resolver:
             version = selected[coord]
             meta = self._catalog.get(coord, {}).get(version, {})
 
+            # Filter edges to only coordinates that were actually selected
+            raw_deps = meta.get("deps", {})
+            raw_opt_deps = meta.get("optional_deps", {})
+            raw_members = meta.get("bundle_members", [])
+
             node = ResolveNode(
                 node_type=self._node_type_from_meta(meta, coord),
                 coordinate=coord,
@@ -951,13 +1003,18 @@ class Resolver:
                 source=meta.get("source"),
                 source_revision=meta.get("source_revision"),
                 artifact_digest=meta.get("artifact_digest"),
-                dependencies=meta.get("deps", {}),
+                dependencies={
+                    dc: c for dc, c in raw_deps.items() if dc in selected
+                },
+                optional_deps={
+                    oc: c for oc, c in raw_opt_deps.items() if oc in selected
+                },
                 paths=[],
                 optional=optional_status.get(coord, False),
                 constraint=self._compute_effective_constraint(coord, selected),
                 harness=harness_set,
                 platform=meta.get("platform"),
-                bundle_members=meta.get("bundle_members", []),
+                bundle_members=[m for m in raw_members if m in selected],
             )
             plan.nodes[coord] = node
 
@@ -1083,6 +1140,38 @@ class Resolver:
         if coordinate.startswith("host:"):
             return NodeType.HOST_BINDING.value
         return NodeType.CAPABILITY.value
+
+    def _has_mandatory_cycle(self, selected: Dict[str, str]) -> bool:
+        """Return True if the mandatory graph (deps + bundle_members) of
+        *selected* contains a cycle."""
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {}
+        parent: Dict[str, Optional[str]] = {}
+
+        def dfs(coord: str) -> bool:
+            color[coord] = GRAY
+            version = selected.get(coord)
+            if version is not None:
+                meta = self._catalog.get(coord, {}).get(version, {})
+                neighbours = (
+                    list(meta.get("deps", {}).keys())
+                    + list(meta.get("bundle_members", []))
+                )
+                for nb in neighbours:
+                    if nb not in color:
+                        parent[nb] = coord
+                        if dfs(nb):
+                            return True
+                    elif color.get(nb) == GRAY:
+                        return True
+            color[coord] = BLACK
+            return False
+
+        for coord in selected:
+            if coord not in color:
+                if dfs(coord):
+                    return True
+        return False
 
     def _validate_no_branch_head(self, coordinate: str, version: str) -> None:
         """Raise BranchHeadError if *coordinate*@*version* has a branch-head revision."""
@@ -1220,7 +1309,8 @@ class Resolver:
         )
 
         # Build the set of coordinates reachable from root through the
-        # locked dependency graph and bundle members (for completeness checks).
+        # locked dependency graph, optional deps and bundle members
+        # (for completeness checks).
         reachable: Set[str] = {root}
         worklist = [root]
         while worklist:
@@ -1231,6 +1321,12 @@ class Resolver:
                     if dep_coord not in reachable:
                         reachable.add(dep_coord)
                         worklist.append(dep_coord)
+                # Also follow optional deps
+                opt_deps = locked_nodes[coord].get("optional_deps", {})
+                for opt_coord in opt_deps:
+                    if opt_coord not in reachable:
+                        reachable.add(opt_coord)
+                        worklist.append(opt_coord)
                 # Also follow bundle members
                 members = locked_nodes[coord].get("bundle_members", [])
                 for member_coord in members:
@@ -1291,8 +1387,16 @@ class Resolver:
             # Build canonical normalized records from both lock and catalog.
             # Omitted fields are treated as empty/default; node_type is always
             # included so a catalog flip of node_type is caught.
+            # Filter optional_deps to only coordinates present in locked_nodes:
+            # optional deps may not be resolved, and the lock only records
+            # actually-selected coords.
             locked_deps = locked.get("dependencies", {})
             catalog_deps = meta.get("deps", {})
+            locked_opt_deps = locked.get("optional_deps", {})
+            catalog_opt_deps = {
+                oc: c for oc, c in meta.get("optional_deps", {}).items()
+                if oc in locked_nodes
+            }
             locked_members = locked.get("bundle_members", [])
             catalog_members = meta.get("bundle_members", [])
             locked_kind = locked.get("kind")
@@ -1323,6 +1427,21 @@ class Resolver:
                         f"Dependency mismatch: {coordinate}@{version} "
                         f"lock={sorted(locked_deps.items())!r} "
                         f"catalog={sorted(catalog_deps.items())!r}",
+                    ),
+                )
+
+            # Verify optional_deps — both directions symmetrically
+            if dict(locked_opt_deps) != dict(catalog_opt_deps):
+                raise ConflictError(
+                    f"Offline replay: optional_deps mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{sorted(locked_opt_deps.items())!r}, catalog has "
+                    f"{sorted(catalog_opt_deps.items())!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Optional deps mismatch: {coordinate}@{version} "
+                        f"lock={sorted(locked_opt_deps.items())!r} "
+                        f"catalog={sorted(catalog_opt_deps.items())!r}",
                     ),
                 )
 
@@ -1434,6 +1553,7 @@ class Resolver:
                 source_revision=locked_revision,
                 artifact_digest=locked_digest,
                 dependencies=dict(locked_deps),
+                optional_deps=dict(locked_opt_deps),
                 optional=locked.get("optional", False),
                 harness=set(locked["harness"]) if locked.get("harness") else None,
                 platform=locked_platform,
