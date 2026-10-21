@@ -421,6 +421,7 @@ def remove_capability(
         # Registry change only after all adapter + filesystem steps succeeded.
         snapshot.record_registry_row(cap)
         removed = registry.remove_capability(bare_id, version)
+        snapshot._flush(bare_id, version)
         if not removed:
             raise RuntimeError(f"registry row for {bare_id}@{version} vanished mid-remove")
 

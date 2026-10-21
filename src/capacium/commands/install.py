@@ -994,6 +994,8 @@ def install_capability(
 
         # BUG P6-006: single atomic upsert replaces the add->get->update dance.
         registry.upsert_capability(cap)
+        journal._flush()
+
         disposition = _install_disposition(existing_before, cap.fingerprint)
         if disposition.outcome is IngestOutcome.CONFLICT:
             print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
@@ -1001,6 +1003,7 @@ def install_capability(
         _record_install_status(registry, cap_id, version, resolved_frameworks)
         for fw in resolved_frameworks:
             journal.record_adapter_status(cap_id, version, fw)
+        journal._flush()
 
         if all_frameworks:
             kind_str = cap.kind.value
@@ -1022,6 +1025,7 @@ def install_capability(
             raise RuntimeError("Lock enforcement failed")
 
         StorageManager.write_meta(cap, frameworks=resolved_frameworks)
+        journal._flush()
 
         if force or prune:
             from .gc import prune_superseded_versions

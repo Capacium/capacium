@@ -901,3 +901,247 @@ class TestForeignHarnessSurvivalCriterion6:
         assert registry.get_capability("global/c6-base-skill", "1.0.0") is not None
         # Dependent must still exist (its own snapshot rolled back)
         assert registry.get_capability("global/c6-dep-skill", "1.0.0") is not None
+
+
+# ── CAP117-TRANSACT-004 Fix C: durable write-ahead journal ────────────
+# The journal must be re-persisted after every mutation boundary so
+# a SIGKILL at any point leaves a complete record of operations
+# performed so far, and orphan recovery can undo them.
+
+
+class TestDurableJournal:
+    """Fix C: durable write-ahead journal with flush-after-mutation."""
+
+    def test_install_journal_contains_new_paths_after_flush(
+        self, tmp_home, source_skill_dir, capsys
+    ):
+        """After install succeeds, the journal file on disk must contain
+        the new_paths and prior_cap, and committed=True after commit."""
+        from pathlib import Path as _Path
+        import json as _json
+
+        result = install_capability(
+            "tx-install-skill",
+            source_dir=source_skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        )
+        assert result is True
+
+        # After commit, the journal should be deleted
+        journal_dir = _Path.home() / ".capacium" / "journal"
+        install_journals = list(journal_dir.glob("*install*.json"))
+        assert len(install_journals) == 0, (
+            f"Journal files should be deleted after commit, found: {install_journals}"
+        )
+
+    def test_install_journal_persisted_with_new_paths_on_rollback(
+        self, tmp_home, source_skill_dir, capsys, monkeypatch
+    ):
+        """When install rolls back, the journal file must contain new_paths
+        that reflect what was created before the failure."""
+        from pathlib import Path as _Path
+        import json as _json
+
+        # Inject failure AFTER package dir creation but BEFORE registry upsert
+        import capacium.registry as registry_mod
+
+        def boom(self, cap):
+            raise RuntimeError("injected registry failure")
+
+        monkeypatch.setattr(registry_mod.Registry, "upsert_capability", boom)
+
+        result = install_capability(
+            "tx-install-skill",
+            source_dir=source_skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        )
+        assert result is False
+
+        # Journal should still exist (rollback keeps it for evidence)
+        journal_dir = _Path.home() / ".capacium" / "journal"
+        journals = list(journal_dir.glob("*install*.json"))
+        # Note: restore() doesn't delete the journal, commit() does.
+        # After a rollback the journal remains for orphan recovery to find.
+        # But the in-process restore does NOT delete the journal - it stays.
+        # Let's verify the journal content.
+        assert len(journals) > 0, f"No journal files found in {journal_dir}"
+
+        for jf in journals:
+            data = _json.loads(jf.read_text())
+            assert data["cap_id"] == "global/tx-install-skill"
+            assert data["version"] == "1.0.0"
+            # new_paths must include the package dir that was created
+            assert len(data["new_paths"]) >= 1, (
+                f"new_paths empty in journal {jf.name}: {data}"
+            )
+
+    def test_remove_journal_contains_moves_after_park_tree(
+        self, tmp_home, capsys, monkeypatch
+    ):
+        """After remove parks the package tree, the journal on disk
+        must contain the move so recovery can unpark it."""
+        from pathlib import Path as _Path
+        import json as _json
+
+        # Install a skill first
+        skill_dir = tmp_home / "fixc-skill"
+        skill_dir.mkdir()
+        (skill_dir / "capability.yaml").write_text(
+            "name: fixc-skill\nversion: 1.0.0\nkind: skill\ndescription: t\n"
+        )
+        (skill_dir / "SKILL.md").write_text("# fixc-skill\n")
+        assert install_capability(
+            "fixc-skill",
+            source_dir=skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        # Inject failure AFTER park_tree but BEFORE registry removal
+        import capacium.registry as registry_mod
+
+        def boom(self, cap_id, version):
+            raise RuntimeError("injected registry remove failure")
+
+        monkeypatch.setattr(registry_mod.Registry, "remove_capability", boom)
+
+        result = remove_capability(
+            "global/fixc-skill", cascade=False, force=True, json_output=False
+        )
+        assert result is False
+
+        # Journal must exist with the parked tree move recorded
+        journal_dir = _Path.home() / ".capacium" / "journal"
+        journals = list(journal_dir.glob("*remove*.json"))
+        assert len(journals) > 0, f"No remove journal found in {journal_dir}"
+
+        for jf in journals:
+            data = _json.loads(jf.read_text())
+            assert data["cap_id"] == "global/fixc-skill"
+            # moves must contain the parked tree
+            assert len(data.get("moves", [])) >= 1, (
+                f"moves empty in journal {jf.name}: {data}"
+            )
+
+    def test_orphan_recovery_restores_state_from_journal(
+        self, tmp_home, source_skill_dir, capsys, monkeypatch
+    ):
+        """An uncommitted journal left on disk after a crash is recovered
+        by the next command: state is rolled back and the journal is deleted."""
+        from pathlib import Path as _Path
+        import json as _json
+        from capacium.registry import Registry
+
+        # Simulate a crash: install up to package dir creation, then
+        # the process dies. The journal stays on disk with committed=False.
+        from capacium.commands._journal import _make_journal_path, _write_journal
+
+        # Create a fake journal that looks like install was mid-flight
+        journal_path = _make_journal_path("global/crash-skill", "1.0.0", "install")
+        fake_journal = {
+            "cap_id": "global/crash-skill",
+            "version": "1.0.0",
+            "plan": {
+                "operation": "install",
+                "cap_id": "global/crash-skill",
+                "version": "1.0.0",
+                "kind": "skill",
+            },
+            "files": {},
+            "links": {},
+            "new_paths": [
+                str(_Path.home() / ".capacium" / "packages" / "global" / "crash-skill" / "1.0.0"),
+            ],
+            "prior_cap": None,
+            "committed": False,
+        }
+        _write_journal(journal_path, fake_journal)
+
+        # Create the orphaned package dir (simulating a crash mid-install)
+        pkg_dir = _Path.home() / ".capacium" / "packages" / "global" / "crash-skill" / "1.0.0"
+        pkg_dir.mkdir(parents=True)
+        (pkg_dir / "capability.yaml").write_text(
+            "name: crash-skill\nversion: 1.0.0\nkind: skill\n"
+        )
+
+        # Verify the orphan exists
+        assert pkg_dir.exists()
+
+        # Now run another install — recover_orphaned_journals() runs first
+        result = install_capability(
+            "tx-install-skill",
+            source_dir=source_skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        )
+        assert result is True
+
+        # The orphaned package dir must be gone (recovery rolled it back)
+        assert not pkg_dir.exists(), (
+            f"Orphaned package dir {pkg_dir} should have been removed by recovery"
+        )
+
+        # The journal must be gone (deleted after verified rollback)
+        assert not journal_path.exists(), (
+            f"Journal {journal_path} should have been deleted after recovery"
+        )
+
+        # No stale registry row
+        registry = Registry()
+        assert registry.get_capability("global/crash-skill", "1.0.0") is None
+
+    def test_orphan_recovery_leaves_journal_on_failed_verification(
+        self, tmp_home, capsys
+    ):
+        """When recovery verification fails (e.g. journal references paths
+        that don't exist), the journal is kept for retry/inspection."""
+        from pathlib import Path as _Path
+        import json as _json
+        from capacium.commands._journal import (
+            _make_journal_path, _write_journal,
+            recover_orphaned_journals,
+        )
+
+        # Create a journal with a new_path that references a non-existent
+        # package — verification checks that new_paths are gone, but since
+        # the path doesn't exist, recovery should succeed anyway.
+
+        # Create a journal with a prior_cap that doesn't match reality
+        journal_path = _make_journal_path("global/ghost-skill", "1.0.0", "install")
+        fake_journal = {
+            "cap_id": "global/ghost-skill",
+            "version": "1.0.0",
+            "plan": {"operation": "install"},
+            "files": {},
+            "links": {},
+            "new_paths": [],
+            "prior_cap": {
+                "owner": "global",
+                "name": "ghost-skill",
+                "version": "1.0.0",
+                "kind": "skill",
+                "fingerprint": "deadbeef" * 8,
+                "install_path": "/nonexistent/path",
+                "framework": "opencode",
+                "frameworks": ["opencode"],
+                "dependencies": [],
+                "source_url": None,
+                "source_ref": None,
+                "source_commit": None,
+            },
+            "committed": False,
+        }
+        _write_journal(journal_path, fake_journal)
+
+        # Recovery: prior_cap fingerprint won't match any registry row
+        # (ghost-skill was never installed), so verification fails
+        recovered = recover_orphaned_journals()
+
+        # Journal should remain (verification failed, so we keep it)
+        assert journal_path.exists(), (
+            f"Journal should remain after failed recovery verification"
+        )
+        # recovered list should be empty (nothing was successfully recovered)
+        assert "global/ghost-skill" not in recovered

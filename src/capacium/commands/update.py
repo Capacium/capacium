@@ -69,15 +69,25 @@ class _UpdateJournal:
         self._journal_path = _make_journal_path(
             self.cap_id, self.version, "update"
         )
-        data = {
+        _write_journal(self._journal_path, self._to_disk_data())
+        return self._journal_path
+
+    def _to_disk_data(self) -> dict:
+        """Build a complete serializable snapshot for the durable journal."""
+        import base64
+        return {
             "cap_id": self.cap_id,
             "version": self.version,
             "files": {str(k): v for k, v in self._files.items()},
             "prior_cap": _serialize_cap(self._prior_cap),
             "committed": False,
         }
-        _write_journal(self._journal_path, data)
-        return self._journal_path
+
+    def _flush(self) -> None:
+        """Re-persist the journal after a mutation so the durable record
+        always contains the complete set of operations performed so far."""
+        if self._journal_path is not None:
+            _write_journal(self._journal_path, self._to_disk_data())
 
     def restore(self) -> None:
         """Roll back adapter config files and the registry row."""
@@ -232,9 +242,13 @@ def update_capability(
         print("  Skipping update. Release with 'cap unhold' or use --force.")
         return True
 
-    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
-    remove_git_metadata(cap.install_path)
-    ensure_execution_permissions(cap.install_path)
+    # ── Transaction journal (CAP117-TRANSACT-004 criterion 1) ─────────
+    # Persist the journal BEFORE the first mutation.  The fingerprint is
+    # computed from the pre-mutation tree so the journal snapshot reflects
+    # the state that rollback must restore.
+    journal = _UpdateJournal(cap_id, cap.version)
+    journal.snapshot_adapter_surfaces(cap, manifest)
+    journal.set_prior_cap(cap)
 
     current_fingerprint = compute_fingerprint(
         cap.install_path,
@@ -242,11 +256,11 @@ def update_capability(
     )
     fingerprint_drift = current_fingerprint != cap.fingerprint
 
-    # ── Transaction journal (CAP117-TRANSACT-004 criterion 1) ─────────
-    journal = _UpdateJournal(cap_id, cap.version)
-    journal.snapshot_adapter_surfaces(cap, manifest)
-    journal.set_prior_cap(cap)
     journal.persist()
+
+    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+    remove_git_metadata(cap.install_path)
+    ensure_execution_permissions(cap.install_path)
 
     try:
         if not fingerprint_drift and not force:
@@ -259,6 +273,7 @@ def update_capability(
         success = _reconcile_adapter_config(cap, manifest)
         if not success:
             raise RuntimeError("Adapter reconciliation failed")
+        journal._flush()
 
         frameworks = _reconcile_frameworks(cap, manifest)
         cap.fingerprint = current_fingerprint
@@ -268,7 +283,9 @@ def update_capability(
         cap.installed_at = datetime.now()
         # Write metadata first; if it fails the registry is not yet committed.
         StorageManager.write_meta(cap)
+        journal._flush()
         registry.update_capability(cap)
+        journal._flush()
     except BaseException as exc:
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
             journal.restore()
