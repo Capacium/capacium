@@ -42,9 +42,6 @@ CLAIM_AUTHORITY_UNVERIFIED = "claim.authority.unverified"
 CLAIM_MALFORMED = "claim.malformed"
 CLAIM_SELF_REFERENCE = "claim.self-reference"
 CLAIM_CASE_MISMATCH = "claim.case-mismatch"
-REPOSITORY_MISSING = "repository.missing"
-OWNER_CASE_MISMATCH = "owner.case-mismatch"
-REPOSITORY_IDENTITY_MISMATCH = "repository.identity-mismatch"
 
 PUBLISH_PACKAGE_NOT_FOUND = "publish.package.not-found"
 PUBLISH_MANIFEST_MISSING_FIELD = "publish.manifest.missing-field"
@@ -227,12 +224,27 @@ def canonical_coordinate(manifest, listing_id: str) -> Dict[str, str]:
     }
 
 
+def _claim_entries(value: Any) -> List[Any]:
+    """Coerce a manifest claim field into a list of entries.
+
+    ``Manifest`` passes the raw YAML value through, so a hand-written manifest
+    may carry a scalar where the schema wants a list.  Such a value is one
+    entry — never zero, never split per character, never an iteration error —
+    so the malformed-entry diagnostic is the only way it can surface.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def build_claims(manifest, listing_id: str) -> Tuple[List[_Claim], List[Diagnostic]]:
     """Turn manifest identity claims into validated, never-obeyed claims."""
     claims: List[_Claim] = []
     diagnostics: List[Diagnostic] = []
 
-    for index, entry in enumerate(manifest.replaces or []):
+    for index, entry in enumerate(_claim_entries(manifest.replaces)):
         field_name = f"replaces[{index}]"
         claim = _build_claim(
             "replaces", field_name, entry, listing_id, require_repository=False
@@ -249,7 +261,7 @@ def build_claims(manifest, listing_id: str) -> Tuple[List[_Claim], List[Diagnost
             continue
         claims.append(claim)
 
-    for index, entry in enumerate(manifest.previous_identities or []):
+    for index, entry in enumerate(_claim_entries(manifest.previous_identities)):
         field_name = f"previous_identities[{index}]"
         claim = _build_claim(
             "previous_identity",
@@ -301,8 +313,6 @@ def _message_for(code: str, claim: _Claim) -> str:
             f"claim {claim.from_id} -> {claim.to_id} is unverified: no signed "
             "authority event authenticates both sides"
         )
-    if code == REPOSITORY_MISSING:
-        return f"claim for {claim.from_id} cites no repository to anchor it"
     return f"{code} for {claim.from_id}"
 
 

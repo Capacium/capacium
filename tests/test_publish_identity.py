@@ -368,6 +368,117 @@ replaces:
     )
 
 
+def test_administrative_event_without_reason_is_not_authority(tmp_path, capsys):
+    """An administrative event that is signed but carries no reason is not
+    authority: the recovery has to say what it is recovering from."""
+    from capacium.listing_identity import AuthorityEvent
+
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    event = AuthorityEvent(
+        subject_id="LangeVC/skillweave",
+        from_id="typelicious/skillweave",
+        to_id="LangeVC/skillweave",
+        from_authority=AUTH_VERIFIED,
+        to_authority=AUTH_VERIFIED,
+        evidence_digest="sha256:" + "d" * 64,
+        issued_at="2026-10-21T00:00:00Z",
+        issuer="exchange-review",
+        administrative=True,
+        reason="   ",
+    )
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        assert (
+            publish_capability(
+                manifest, json_output=True, authority_events=[event]
+            )
+            is True
+        )
+
+    report = _json_result(capsys)
+    assert report["transition_evidence"] == []
+    assert all(not c["authority_granted"] for c in report["claims"])
+
+
+def test_event_about_another_subject_is_not_authority(tmp_path, capsys):
+    """A signed event that authenticates both ends but is *about* a different
+    listing cannot lend authority to the listing being published."""
+    from capacium.listing_identity import AuthorityEvent
+
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    event = AuthorityEvent(
+        subject_id="someone-else/skillweave",
+        from_id="typelicious/skillweave",
+        to_id="LangeVC/skillweave",
+        from_authority=AUTH_VERIFIED,
+        to_authority=AUTH_VERIFIED,
+        evidence_digest="sha256:" + "e" * 64,
+        issued_at="2026-10-21T00:00:00Z",
+        issuer="exchange-review",
+    )
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        assert (
+            publish_capability(
+                manifest, json_output=True, authority_events=[event]
+            )
+            is True
+        )
+
+    report = _json_result(capsys)
+    assert report["transition_evidence"] == []
+    assert all(not c["authority_granted"] for c in report["claims"])
+
+
+def test_scalar_replaces_is_one_malformed_claim_not_a_crash(tmp_path, capsys):
+    """A manifest that carries a scalar where the schema wants a list must
+    still produce the machine contract: one malformed entry, a hard reject,
+    and never a traceback or an empty stdout."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 1.0.2
+owner: LangeVC
+repository: https://github.com/LangeVC/skillweave
+replaces: 12345
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        assert publish_capability(manifest, json_output=True) is False
+        instance.publish.assert_not_called()
+
+    report = _json_result(capsys)
+    assert report["valid"] is False
+    assert report["exit_code"] == 1
+    assert CLAIM_MALFORMED in report["codes"]
+    assert report["claims"] == []
+
+
+def test_scalar_string_replaces_is_not_split_per_character(tmp_path, capsys):
+    """A scalar string claim is a single coordinate, not one claim per
+    character: the listing ID must never be derived from a mangled read."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 1.0.2
+owner: LangeVC
+repository: https://github.com/LangeVC/skillweave
+replaces: typelicious/skillweave
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        assert publish_capability(manifest, json_output=True) is True
+
+    report = _json_result(capsys)
+    assert [c["from"] for c in report["claims"]] == ["typelicious/skillweave"]
+    assert report["listing_id"] == "LangeVC/skillweave"
+
+
 # --- The machine-readable mode owns stdout ----------------------------------
 
 
