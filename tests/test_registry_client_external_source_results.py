@@ -385,9 +385,14 @@ def test_receipt_carries_no_customer_price_licence_or_entitlement_data(
 ):
     payload = _receipt(monkeypatch, tmp_path).to_dict()
     assert set(payload).isdisjoint(FORBIDDEN_RECEIPT_FIELDS)
-    assert set(ExternalSourceReceipt.FORBIDDEN_FIELDS).issuperset(
-        {"customer", "price", "licence", "entitlement"}
-    )
+
+
+def test_receipt_schema_is_a_closed_provenance_allowlist(monkeypatch, tmp_path):
+    """A closed schema cannot grow a commercial field by accident."""
+    payload = _receipt(monkeypatch, tmp_path).to_dict()
+    assert set(payload) == set(ExternalSourceReceipt.FIELD_NAMES)
+    assert set(ExternalSourceReceipt.field_names()) == set(payload)
+    assert set(payload).isdisjoint(FORBIDDEN_RECEIPT_FIELDS)
 
 
 def test_receipt_never_contains_credentials(monkeypatch, tmp_path):
