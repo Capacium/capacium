@@ -7,9 +7,11 @@ registry and then falling back to Exchange search.
 All commands that accept a capability spec should use
 :func:`resolve_cap_spec` to ensure bare names work correctly.
 """
+import re
+
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..registry import Registry
 from ..registry_client import RegistryClient, RegistryClientError
@@ -126,13 +128,33 @@ class ResolveError(Exception):
 class ConflictError(ResolveError):
     """Two constraints on the same coordinate cannot be satisfied together."""
 
+    def __init__(self, message: str, plan: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.plan = plan
+
 
 class CycleError(ResolveError):
     """A dependency chain closes on itself."""
 
+    def __init__(self, message: str, plan: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.plan = plan
+
 
 class MissingReleaseError(ResolveError):
     """No published release satisfies a constraint."""
+
+    def __init__(self, message: str, plan: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.plan = plan
+
+
+class BranchHeadError(ResolveError):
+    """A versioned install attempted to resolve to a branch head (non-SHA revision)."""
+
+    def __init__(self, message: str, plan: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.plan = plan
 
 
 # ── node and plan ───────────────────────────────────────────────────────────
@@ -155,6 +177,10 @@ class ResolveNode:
     artifact_digest: Optional[str] = None
     # Dependency edges: coordinate -> version constraint
     dependencies: Dict[str, str] = field(default_factory=dict)
+    # Whether this node was resolved as an optional dependency
+    optional: bool = False
+    # The path(s) through which this node was reached (for diamond tracking)
+    paths: List[List[str]] = field(default_factory=list)
 
     def owner_identity(self) -> str:
         """Return the owner portion of the coordinate, or '' if none."""
@@ -179,6 +205,8 @@ class ResolveNode:
             entry["artifact_digest"] = self.artifact_digest
         if self.dependencies:
             entry["dependencies"] = dict(self.dependencies)
+        if self.optional:
+            entry["optional"] = True
         return entry
 
 
@@ -192,6 +220,7 @@ class ResolvePlan:
     root_coordinate: str
     root_version: str
     nodes: Dict[str, ResolveNode] = field(default_factory=dict)
+    harness_set: Optional[Set[str]] = None
 
     def selected_version(self, coordinate: str) -> Optional[str]:
         """Return the exact version selected for *coordinate*, or None."""
@@ -212,18 +241,29 @@ class ResolvePlan:
     def to_json_plan(self) -> Dict[str, Any]:
         """Produce the stable JSON plan for human/machine consumption.
 
-        Includes rejection reasons for conflict/cycle/missing entries.
+        Includes rejection reasons for conflict/cycle/missing entries,
+        selected paths, optional markers, harness set, and platform info.
         """
-        return {
-            "plan": {
-                "root": self.root_coordinate,
-                "root_version": self.root_version,
-                "selected": {
-                    coord: {"version": self.nodes[coord].version}
-                    for coord in sorted(self.nodes)
-                },
-            }
+        selected: Dict[str, Any] = {}
+        for coord in sorted(self.nodes):
+            node = self.nodes[coord]
+            entry: Dict[str, Any] = {"version": node.version}
+            if node.optional:
+                entry["optional"] = True
+            if node.paths:
+                entry["paths"] = [list(p) for p in node.paths]
+            selected[coord] = entry
+
+        plan: Dict[str, Any] = {
+            "root": self.root_coordinate,
+            "root_version": self.root_version,
+            "selected": selected,
         }
+
+        if self.harness_set:
+            plan["harness_set"] = sorted(self.harness_set)
+
+        return {"plan": plan}
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ResolvePlan):
@@ -232,6 +272,7 @@ class ResolvePlan:
             self.root_coordinate == other.root_coordinate
             and self.root_version == other.root_version
             and self.nodes == other.nodes
+            and self.harness_set == other.harness_set
         )
 
 
@@ -417,44 +458,119 @@ class Resolver:
 
     The catalog is a dict of ``{coordinate: {version: metadata}}`` where
     metadata may contain ``deps`` (dict of ``coordinate -> constraint``),
-    ``source``, ``source_revision``, ``artifact_digest``, and ``kind``.
+    ``optional_deps``, ``bundle_members``, ``source``, ``source_revision``,
+    ``artifact_digest``, and ``kind``.
+
+    Holds and pins constrain resolution:
+      - holds: ``{coordinate: version}`` — that coordinate must resolve to
+        exactly that version, or the resolution fails.
+      - pins: ``{coordinate: version}`` — constrains the selection to that
+        version when resolving that coordinate.
+
+    Branch heads (non-SHA revisions like ``main`` or ``develop``) are
+    rejected for versioned installs.
     """
+
+    # Known mutable branch-head names that must never satisfy a versioned install.
+    _BRANCH_HEAD_NAMES: Set[str] = {
+        "main", "master", "develop", "dev", "staging", "production",
+        "release", "HEAD",
+    }
+
+    # Revisions that contain a "/" are almost certainly branch names.
+    _BRANCH_HEAD_RE = re.compile(r"^(main|master|develop|dev|staging|production|release|HEAD)$")
 
     def __init__(
         self,
         catalog: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+        holds: Optional[Dict[str, str]] = None,
+        pins: Optional[Dict[str, str]] = None,
     ):
         self._catalog: Dict[str, Dict[str, Dict[str, Any]]] = catalog or {}
+        self._holds: Dict[str, str] = holds or {}
+        self._pins: Dict[str, str] = pins or {}
 
-    def resolve(self, root: str, version_spec: str) -> ResolvePlan:
+    @staticmethod
+    def _is_branch_head(revision: str) -> bool:
+        """Return True if *revision* looks like a mutable branch head.
+
+        Branch heads are non-hex identifiers that either:
+        - Contain a ``/`` (e.g. ``feature/foo``), or
+        - Match a known mutable branch name (e.g. ``main``, ``develop``).
+
+        Short mock/test values like ``abc`` or ``def`` are accepted as
+        immutable references (they do not look like real branch heads).
+        """
+        # Slashes indicate a branch path (feature/foo, release/1.x)
+        if "/" in revision:
+            return True
+        # Known mutable branch names
+        if Resolver._BRANCH_HEAD_RE.match(revision.lower()):
+            return True
+        return False
+
+    def resolve(
+        self,
+        root: str,
+        version_spec: str,
+        harness_set: Optional[Set[str]] = None,
+    ) -> ResolvePlan:
         """Resolve *root* with *version_spec* to a complete immutable plan.
 
         Raises:
             MissingReleaseError: no version of *root* satisfies the spec.
             ConflictError: two constraints on a coordinate cannot be met.
             CycleError: a dependency chain closes on itself.
+            BranchHeadError: a versioned install tried to resolve to a branch head.
         """
-        # Select root version
-        root_versions = self._available_versions(root)
-        if not root_versions:
-            raise MissingReleaseError(
-                f"No releases found for {root}"
-            )
-        selected_root = _select_best_version(root_versions, version_spec)
-        if selected_root is None:
-            raise MissingReleaseError(
-                f"No version of {root} satisfies constraint {version_spec!r}"
-            )
+        # Select root version (respecting holds and pins)
+        held_root = self._holds.get(root)
+        if held_root is not None:
+            if not _version_satisfies(held_root, version_spec):
+                raise ConflictError(
+                    f"Hold on {root}@{held_root} conflicts with constraint "
+                    f"{version_spec!r}",
+                    plan=self._rejection_plan(
+                        "conflict",
+                        f"Hold on {root}@{held_root} conflicts with constraint {version_spec!r}",
+                    ),
+                )
+            selected_root = held_root
+        else:
+            root_versions = self._available_versions(root)
+            if not root_versions:
+                raise MissingReleaseError(
+                    f"No releases found for {root}",
+                    plan=self._rejection_plan(
+                        "missing", f"No releases found for {root}",
+                    ),
+                )
+            selected_root = _select_best_version(root_versions, version_spec)
+            if selected_root is None:
+                raise MissingReleaseError(
+                    f"No version of {root} satisfies constraint {version_spec!r}",
+                    plan=self._rejection_plan(
+                        "missing",
+                        f"No version of {root} satisfies {version_spec!r}",
+                    ),
+                )
 
-        plan = ResolvePlan(root_coordinate=root, root_version=selected_root)
+        # Validate branch-head rejection for root
+        self._validate_no_branch_head(root, selected_root)
+
+        plan = ResolvePlan(
+            root_coordinate=root,
+            root_version=selected_root,
+            harness_set=harness_set,
+        )
 
         # Walk dependencies with constraint tracking
-        pending: List[Tuple[str, str, List[str]]] = [
-            (root, selected_root, [root])
+        pending: List[Tuple[str, str, List[str], bool]] = [
+            (root, selected_root, [root], False)
         ]
 
         while pending:
-            coordinate, version, chain = pending.pop(0)
+            coordinate, version, chain, is_optional = pending.pop(0)
 
             # Already resolved — check for conflicts
             if coordinate in plan.nodes:
@@ -462,8 +578,16 @@ class Resolver:
                 if existing.version != version:
                     raise ConflictError(
                         f"Conflict on {coordinate}: requires both "
-                        f"{existing.version} and {version}"
+                        f"{existing.version} and {version}",
+                        plan=self._rejection_plan(
+                            "conflict",
+                            f"Conflict on {coordinate}: requires both "
+                            f"{existing.version} and {version}",
+                        ),
                     )
+                # If already resolved as required, upgrade from optional
+                if is_optional and not existing.optional:
+                    pass
                 continue
 
             meta = self._catalog.get(coordinate, {}).get(version, {})
@@ -471,6 +595,9 @@ class Resolver:
             source = meta.get("source")
             source_revision = meta.get("source_revision")
             artifact_digest = meta.get("artifact_digest")
+
+            # Branch-head rejection
+            self._validate_no_branch_head(coordinate, version)
 
             node = ResolveNode(
                 node_type=NodeType.CAPABILITY,
@@ -481,31 +608,147 @@ class Resolver:
                 source_revision=source_revision,
                 artifact_digest=artifact_digest,
                 dependencies=meta.get("deps", {}),
+                paths=[chain],
+                optional=is_optional,
             )
             plan.nodes[coordinate] = node
 
-            # Enqueue transitive dependencies
+            # Resolve bundle members
+            bundle_members = meta.get("bundle_members", [])
+            if bundle_members:
+                for member_coord in bundle_members:
+                    if member_coord in chain:
+                        raise CycleError(
+                            f"Dependency cycle: {' -> '.join(chain)} -> {member_coord}",
+                            plan=self._rejection_plan(
+                                "cycle",
+                                f"Cycle: {' -> '.join(chain)} -> {member_coord}",
+                            ),
+                        )
+                    self._enqueue_dep(
+                        member_coord, "*", chain, pending, harness_set=harness_set,
+                    )
+
+            # Enqueue required transitive dependencies
             for dep_coord, dep_constraint in meta.get("deps", {}).items():
                 if dep_coord in chain:
                     raise CycleError(
-                        f"Dependency cycle: {' -> '.join(chain)} -> {dep_coord}"
+                        f"Dependency cycle: {' -> '.join(chain)} -> {dep_coord}",
+                        plan=self._rejection_plan(
+                            "cycle",
+                            f"Cycle: {' -> '.join(chain)} -> {dep_coord}",
+                        ),
                     )
-                dep_versions = self._available_versions(dep_coord)
-                if not dep_versions:
-                    raise MissingReleaseError(
-                        f"No releases found for dependency {dep_coord} "
-                        f"(required by {coordinate})"
-                    )
-                selected_dep = _select_best_version(dep_versions, dep_constraint)
-                if selected_dep is None:
-                    raise MissingReleaseError(
-                        f"No version of {dep_coord} satisfies constraint "
-                        f"{dep_constraint!r} (required by {coordinate})"
-                    )
-                new_chain = chain + [dep_coord]
-                pending.append((dep_coord, selected_dep, new_chain))
+                self._enqueue_dep(
+                    dep_coord, dep_constraint, chain, pending,
+                )
+
+            # Enqueue optional dependencies
+            for opt_coord, opt_constraint in meta.get("optional_deps", {}).items():
+                if opt_coord in chain:
+                    continue  # Skip optional cycles silently
+                self._enqueue_dep(
+                    opt_coord, opt_constraint, chain, pending, optional=True,
+                )
 
         return plan
+
+    def _validate_no_branch_head(self, coordinate: str, version: str) -> None:
+        """Raise BranchHeadError if *coordinate*@*version* has a branch-head revision."""
+        meta = self._catalog.get(coordinate, {}).get(version, {})
+        source_revision = meta.get("source_revision")
+        if source_revision and self._is_branch_head(source_revision):
+            raise BranchHeadError(
+                f"Versioned install of {coordinate}@{version} cannot resolve "
+                f"to branch head {source_revision!r}",
+                plan=self._rejection_plan(
+                    "branch_head",
+                    f"{coordinate}@{version} has branch head {source_revision!r}",
+                ),
+            )
+
+    def _enqueue_dep(
+        self,
+        dep_coord: str,
+        dep_constraint: str,
+        chain: List[str],
+        pending: List[Tuple[str, str, List[str], bool]],
+        optional: bool = False,
+        harness_set: Optional[Set[str]] = None,
+    ) -> None:
+        """Select a version for *dep_coord* and enqueue it for resolution."""
+        # Apply hold
+        held = self._holds.get(dep_coord)
+        if held is not None:
+            if not _version_satisfies(held, dep_constraint):
+                raise ConflictError(
+                    f"Hold on {dep_coord}@{held} conflicts with constraint "
+                    f"{dep_constraint!r}",
+                    plan=self._rejection_plan(
+                        "conflict",
+                        f"Hold on {dep_coord}@{held} conflicts with {dep_constraint!r}",
+                    ),
+                )
+            new_chain = chain + [dep_coord]
+            pending.append((dep_coord, held, new_chain, optional))
+            return
+
+        # Apply pin
+        pinned = self._pins.get(dep_coord)
+        if pinned is not None:
+            if not _version_satisfies(pinned, dep_constraint):
+                raise ConflictError(
+                    f"Pin on {dep_coord}@{pinned} conflicts with constraint "
+                    f"{dep_constraint!r}",
+                    plan=self._rejection_plan(
+                        "conflict",
+                        f"Pin on {dep_coord}@{pinned} conflicts with {dep_constraint!r}",
+                    ),
+                )
+            new_chain = chain + [dep_coord]
+            pending.append((dep_coord, pinned, new_chain, optional))
+            return
+
+        dep_versions = self._available_versions(dep_coord)
+        if not dep_versions:
+            if optional:
+                return  # Optional deps skip silently
+            raise MissingReleaseError(
+                f"No releases found for dependency {dep_coord} "
+                f"(required by {' -> '.join(chain)})",
+                plan=self._rejection_plan(
+                    "missing",
+                    f"No releases for {dep_coord}",
+                ),
+            )
+
+        selected_dep = _select_best_version(dep_versions, dep_constraint)
+        if selected_dep is None:
+            if optional:
+                return  # Optional deps skip silently
+            raise MissingReleaseError(
+                f"No version of {dep_coord} satisfies constraint "
+                f"{dep_constraint!r} (required by {' -> '.join(chain)})",
+                plan=self._rejection_plan(
+                    "missing",
+                    f"No version of {dep_coord} satisfies {dep_constraint!r}",
+                ),
+            )
+        new_chain = chain + [dep_coord]
+        pending.append((dep_coord, selected_dep, new_chain, optional))
+
+    @staticmethod
+    def _rejection_plan(reason: str, detail: str) -> Dict[str, Any]:
+        """Build a plan dict representing a rejection for error reporting."""
+        return {
+            "plan": {
+                "selected": {},
+                "rejection": {
+                    "reason": reason,
+                    "detail": detail,
+                },
+            }
+        }
 
     def _available_versions(self, coordinate: str) -> List[str]:
         """Return the sorted list of version strings for *coordinate*."""

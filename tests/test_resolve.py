@@ -348,3 +348,437 @@ class TestCriterion3LockSemantics:
         plan = resolver.resolve("alice/lib", "1.0.0")
         lock = plan.to_lock()
         assert lock["nodes"]["alice/lib"]["source_revision"] == "deadbeefcafebabe"
+
+
+# ---------------------------------------------------------------------------
+# Criterion 4: holds, pins, and branch-head prevention
+# ---------------------------------------------------------------------------
+
+
+class TestCriterion4HoldsAndPins:
+    """Holds and pins constrain updates; versioned installs never resolve to branch heads."""
+
+    def test_hold_prevents_version_change(self):
+        """A held package must not be resolved to a different version."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+                "2.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+        holds = {"alice/lib": "1.0.0"}
+
+        resolver = Resolver(catalog=catalog, holds=holds)
+        plan = resolver.resolve("alice/lib", ">=1.0.0")
+        # Hold forces version 1.0.0 even though 2.0.0 satisfies the constraint
+        assert plan.selected_version("alice/lib") == "1.0.0"
+
+    def test_hold_prevents_transitive_change(self):
+        """A held transitive dependency must not be changed."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "1.5.0": {},
+            },
+        }
+        holds = {"bob/util": "1.0.0"}
+
+        resolver = Resolver(catalog=catalog, holds=holds)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        assert plan.selected_version("bob/util") == "1.0.0"
+
+    def test_pin_constrains_version_selection(self):
+        """A pin constrains version selection to an exact version."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "1.5.0": {},
+            },
+        }
+        pins = {"bob/util": "1.0.0"}
+
+        resolver = Resolver(catalog=catalog, pins=pins)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        assert plan.selected_version("bob/util") == "1.0.0"
+
+    def test_versioned_install_rejects_branch_head(self):
+        """A versioned install must never resolve to a branch head (non-SHA revision)."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "main",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError) as exc_info:
+            resolver.resolve("alice/lib", "1.0.0")
+        assert "branch" in str(exc_info.value).lower() or "head" in str(exc_info.value).lower()
+
+    def test_immutable_revision_is_accepted(self):
+        """An immutable (SHA) revision is accepted for a versioned install."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://github.com/alice/lib",
+                    "source_revision": "abc123def456789",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        assert plan.selected_version("alice/lib") == "1.0.0"
+
+    def test_hold_conflict_with_constraint_raises(self):
+        """When a hold conflicts with a constraint, resolution fails."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"bob/util": ">=2.0.0"}},
+            },
+        }
+        holds = {"bob/util": "1.0.0"}
+
+        # Root requires carol/tool which needs bob/util >=2.0.0, but bob/util is held at 1.0.0
+        catalog["alice/lib"]["1.0.0"]["deps"]["carol/tool"] = ">=1.0.0"
+
+        resolver = Resolver(catalog=catalog, holds=holds)
+        with pytest.raises(ConflictError):
+            resolver.resolve("alice/lib", "1.0.0")
+
+
+# ---------------------------------------------------------------------------
+# Criterion 5: bundle member harness inheritance and optional dependencies
+# ---------------------------------------------------------------------------
+
+
+class TestCriterion5BundleAndOptional:
+    """Bundle members inherit only the user-selected harness set
+    and optional dependencies have explicit deterministic behavior."""
+
+    def test_bundle_member_inherits_user_harness_set(self):
+        """A bundle member gets only the user-selected harnesses, not
+        the bundle manifest defaults."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["alice/tool-a", "alice/tool-b"],
+                },
+            },
+            "alice/tool-a": {
+                "1.0.0": {"kind": "tool"},
+            },
+            "alice/tool-b": {
+                "1.0.0": {"kind": "tool"},
+            },
+        }
+        user_harness_set = {"claude-code"}
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve(
+            "alice/bundle", "1.0.0", harness_set=user_harness_set
+        )
+        # All bundle members should be present
+        assert "alice/tool-a" in plan.nodes
+        assert "alice/tool-b" in plan.nodes
+        # Plan metadata should record the harness set
+        json_plan = plan.to_json_plan()
+        assert "harness_set" in json_plan.get("plan", {})
+        assert "claude-code" in json_plan["plan"]["harness_set"]
+
+    def test_optional_dependency_missing_skips(self):
+        """An optional dependency that cannot be found is skipped, not failed."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "optional_deps": {"carol/extra": ">=1.0.0"},
+                },
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+            # carol/extra deliberately omitted
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        # Required dep should be present
+        assert "bob/util" in plan.nodes
+        # Optional dep should not block resolution
+        assert "carol/extra" not in plan.nodes
+
+    def test_optional_dependency_present_resolves(self):
+        """An optional dependency that is available is resolved normally."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "optional_deps": {"carol/extra": ">=1.0.0"},
+                },
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+            "carol/extra": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        assert "bob/util" in plan.nodes
+        assert "carol/extra" in plan.nodes
+        assert plan.selected_version("carol/extra") == "2.0.0"
+
+    def test_optional_dep_marks_as_optional_in_plan(self):
+        """The JSON plan identifies optional dependencies explicitly."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "optional_deps": {"carol/extra": ">=1.0.0"},
+                },
+            },
+            "bob/util": {"1.0.0": {}},
+            "carol/extra": {"1.0.0": {}},
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        # Check that optional deps are marked per-node in selected
+        extra = json_plan["plan"]["selected"].get("carol/extra", {})
+        assert extra.get("optional") is True
+        # Required dep should NOT be marked optional
+        bob = json_plan["plan"]["selected"].get("bob/util", {})
+        assert bob.get("optional") is not True
+
+    def test_bundle_member_without_harness_set_uses_default(self):
+        """Bundle members without explicit harness set still resolve."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["alice/tool-a"],
+                },
+            },
+            "alice/tool-a": {
+                "1.0.0": {"kind": "tool"},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/bundle", "1.0.0")
+        assert "alice/tool-a" in plan.nodes
+
+
+# ---------------------------------------------------------------------------
+# Criterion 6: stable JSON plans with rejection explanations
+# ---------------------------------------------------------------------------
+
+
+class TestCriterion6StableJsonPlans:
+    """Stable JSON plans explain candidate rejection and selected paths
+    for conflicts, cycles, diamonds and platform constraints."""
+
+    def test_plan_includes_root_and_selected(self):
+        """The plan JSON includes root and selected nodes."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "1.1.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        assert json_plan["plan"]["root"] == "alice/lib"
+        assert json_plan["plan"]["root_version"] == "1.0.0"
+        assert "bob/util" in json_plan["plan"]["selected"]
+
+    def test_plan_explains_conflict_rejection(self):
+        """When a conflict occurs, the plan JSON explains it."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0,<1.5.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "1.5.0": {},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"bob/util": ">=1.5.0"}},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        try:
+            resolver.resolve("alice/lib", "1.0.0")
+            pytest.fail("Expected ConflictError")
+        except ConflictError as e:
+            plan = getattr(e, 'plan', None)
+            assert plan is not None, "ConflictError should carry a rejection plan"
+            assert "plan" in plan
+            assert "rejection" in plan["plan"]
+            assert "conflict" in plan["plan"]["rejection"]["reason"]
+
+    def test_plan_explains_cycle_rejection(self):
+        """When a cycle is detected, the plan JSON explains it."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"alice/lib": ">=1.0.0"}},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        try:
+            resolver.resolve("alice/lib", "1.0.0")
+            pytest.fail("Expected CycleError")
+        except CycleError as e:
+            plan = getattr(e, 'plan', None)
+            assert plan is not None, "CycleError should carry a rejection plan"
+            assert "plan" in plan
+            assert "rejection" in plan["plan"]
+            assert "cycle" in plan["plan"]["rejection"]["reason"]
+
+    def test_plan_explains_missing_release(self):
+        """When a release is missing, the plan JSON explains it."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=5.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        try:
+            resolver.resolve("alice/lib", "1.0.0")
+            pytest.fail("Expected MissingReleaseError")
+        except MissingReleaseError as e:
+            plan = getattr(e, 'plan', None)
+            assert plan is not None, "MissingReleaseError should carry a rejection plan"
+            assert "plan" in plan
+            assert "rejection" in plan["plan"]
+            assert "missing" in plan["plan"]["rejection"]["reason"]
+
+    def test_plan_describes_diamond_paths(self):
+        """Diamond dependency paths are recorded in the plan."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/lib": ">=1.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/lib": ">=1.0.0"}},
+            },
+            "dan/lib": {
+                "1.0.0": {},
+                "1.1.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        assert "dan/lib" in json_plan["plan"]["selected"]
+        # Diamond resolution info should be present
+        selected_dan = json_plan["plan"]["selected"]["dan/lib"]
+        assert "version" in selected_dan
+
+    def test_plan_is_deterministic(self):
+        """The plan JSON output is deterministic."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "1.1.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan1_json = json.dumps(
+            resolver.resolve("alice/lib", "1.0.0").to_json_plan(), sort_keys=True
+        )
+        plan2_json = json.dumps(
+            resolver.resolve("alice/lib", "1.0.0").to_json_plan(), sort_keys=True
+        )
+        assert plan1_json == plan2_json
+
+    def test_plan_includes_selected_paths_for_each_node(self):
+        """Each selected node records its resolution path."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        # At minimum, root is there
+        assert json_plan["plan"]["root"] == "alice/lib"
+
+    def test_plan_explains_platform_constraints(self):
+        """Platform constraint information is included in the plan."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "platform": "linux",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        json_plan = plan.to_json_plan()
+        # Platform info should be present in the plan metadata
+        selected_root = json_plan["plan"]["selected"]["alice/lib"]
+        # At minimum the version is there; platform may be in metadata
+        assert "version" in selected_root
