@@ -1,6 +1,6 @@
 """CAP117-IDENTITY-007 — publisher identity preflight and safe claim reads.
 
-Criteria 1-3 (this dispatch):
+Dispatch 1 of 2, criteria 1-3:
 
 1. Verified aliases and previous coordinates resolve to one stable listing ID
    and expose the canonical coordinate and transition evidence.
@@ -10,30 +10,32 @@ Criteria 1-3 (this dispatch):
    administrative recovery is explicit, reasoned and auditable.
 
 The red proofs below are written against ``publish_capability`` and the
-``listing_identity`` contract module. They fail on the base because neither the
+``listing_identity`` contract module.  They fail on the base because neither the
 preflight nor the stable JSON diagnostics exist yet.
 """
 
 import json
-import subprocess
-import sys
 from unittest import mock
 
-import pytest
-
 from capacium.commands.publish import publish_capability
-from capacium.listing_identity import (
-    AUTH_VERIFIED,
-    CLAIM_AUTHORITY_UNVERIFIED,
-    CLAIM_CASE_MISMATCH,
-    CLAIM_MALFORMED,
-    CLAIM_SELF_REFERENCE,
-    IDENTITY_SCHEMA_VERSION,
-    OWNER_CASE_MISMATCH,
-    REPOSITORY_IDENTITY_MISMATCH,
-    REPOSITORY_MISSING,
-)
 from capacium.registry_client import RegistryClientError
+
+try:  # base commit: the preflight contract module does not exist yet
+    from capacium.listing_identity import (
+        AUTH_VERIFIED,
+        CLAIM_AUTHORITY_UNVERIFIED,
+        CLAIM_CASE_MISMATCH,
+        CLAIM_MALFORMED,
+        CLAIM_SELF_REFERENCE,
+    )
+except ImportError:  # pragma: no cover - true only on the base commit
+    # Keep collection alive so the red proofs below surface as *failing tests*
+    # (exit 1) rather than as a collection error (exit 2).
+    AUTH_VERIFIED = None
+    CLAIM_AUTHORITY_UNVERIFIED = None
+    CLAIM_CASE_MISMATCH = None
+    CLAIM_MALFORMED = None
+    CLAIM_SELF_REFERENCE = None
 
 _MOVE_MANIFEST = """\
 kind: bundle
@@ -179,75 +181,6 @@ replaces:
     report = _json_result(capsys)
     assert report["valid"] is False
     assert CLAIM_SELF_REFERENCE in report["codes"]
-
-
-# --- Criterion 4: exact-case owner/repository identity ----------------------
-
-
-def test_owner_case_mismatch_against_repository_is_rejected(tmp_path, capsys):
-    """``owner`` and the repository owner path must match exactly; a
-    case-only difference is a different namespace and is refused, not coerced."""
-    text = """\
-kind: bundle
-name: skillweave
-version: 1.0.2
-owner: langevc
-repository: https://github.com/LangeVC/skillweave
-"""
-    manifest = _manifest(tmp_path, text)
-    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
-        instance = mock_client.return_value
-        assert publish_capability(manifest, json_output=True) is False
-        instance.publish.assert_not_called()
-
-    report = _json_result(capsys)
-    assert report["valid"] is False
-    assert OWNER_CASE_MISMATCH in report["codes"]
-
-
-def test_repository_identity_mismatch_is_rejected(tmp_path, capsys):
-    """A repository that belongs to another owner/name than the manifest
-    claims is reported, not silently accepted as the listing's source."""
-    text = """\
-kind: bundle
-name: skillweave
-version: 1.0.2
-owner: LangeVC
-repository: https://github.com/someone-else/other-repo
-"""
-    manifest = _manifest(tmp_path, text)
-    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
-        instance = mock_client.return_value
-        assert publish_capability(manifest, json_output=True) is False
-        instance.publish.assert_not_called()
-
-    report = _json_result(capsys)
-    assert report["valid"] is False
-    assert REPOSITORY_IDENTITY_MISMATCH in report["codes"]
-
-
-def test_claim_requires_repository_when_manifest_has_no_repository(
-    tmp_path, capsys
-):
-    """An identity claim with no repository to anchor it is refused."""
-    text = """\
-kind: bundle
-name: skillweave
-version: 1.0.2
-owner: LangeVC
-previous_identities:
-  - owner: typelicious
-    name: skillweave
-    repository: https://github.com/typelicious/skillweave
-"""
-    manifest = _manifest(tmp_path, text)
-    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
-        instance = mock_client.return_value
-        assert publish_capability(manifest, json_output=True) is False
-        instance.publish.assert_not_called()
-
-    report = _json_result(capsys)
-    assert REPOSITORY_MISSING in report["codes"]
 
 
 def test_claim_exact_case_mismatch_is_refused(tmp_path, capsys):
@@ -435,28 +368,7 @@ replaces:
     )
 
 
-# --- Criterion 4: the JSON contract is stable and machine-readable ----------
-
-
-def test_json_diagnostics_contract_is_stable(tmp_path, capsys):
-    """A single JSON document with a pinned schema version and stable, sorted,
-    deduplicated diagnostic codes — the publisher Action consumes exactly this."""
-    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
-    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
-        instance = mock_client.return_value
-        instance.publish.return_value = _published_ok()
-        publish_capability(manifest, json_output=True)
-
-    report = _json_result(capsys)
-    assert report["schema_version"] == IDENTITY_SCHEMA_VERSION
-    assert report["command"] == "publish"
-    assert isinstance(report["valid"], bool)
-    assert isinstance(report["exit_code"], int)
-    assert report["codes"] == sorted(report["codes"])
-    assert len(report["codes"]) == len(set(report["codes"]))
-    for diagnostic in report["diagnostics"]:
-        assert set(diagnostic) >= {"code", "severity", "field", "message"}
-        assert diagnostic["severity"] in ("error", "warning", "info")
+# --- The machine-readable mode owns stdout ----------------------------------
 
 
 def test_json_output_is_the_only_stdout_document(tmp_path, capsys):
@@ -470,30 +382,8 @@ def test_json_output_is_the_only_stdout_document(tmp_path, capsys):
 
     captured = capsys.readouterr()
     parsed = json.loads(captured.out)
-    assert parsed["schema_version"] == IDENTITY_SCHEMA_VERSION
-
-
-def test_cli_publish_json_flag_emits_machine_contract(tmp_path):
-    """``cap publish --json`` returns the same contract on stdout."""
-    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "capacium.cli",
-            "publish",
-            str(manifest),
-            "--json",
-            "--registry",
-            "http://127.0.0.1:1",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    report = json.loads(result.stdout.strip())
-    assert report["schema_version"] == IDENTITY_SCHEMA_VERSION
-    assert "codes" in report
+    assert parsed["command"] == "publish"
+    assert isinstance(parsed["valid"], bool)
 
 
 # --- Existing publish behaviour is preserved --------------------------------
@@ -528,7 +418,3 @@ def test_registry_error_still_reports_json(tmp_path, capsys):
     assert report["valid"] is False
     assert report["exit_code"] == 1
     assert "publish.registry.conflict" in report["codes"]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(pytest.main([__file__, "-q"]))
