@@ -228,10 +228,6 @@ class ResolveNode:
             entry["platform"] = self.platform
         if self.bundle_members:
             entry["bundle_members"] = list(self.bundle_members)
-        if self.skipped_optional_deps:
-            entry["skipped_optional_deps"] = [
-                list(item) for item in self.skipped_optional_deps
-            ]
         return entry
 
 
@@ -680,8 +676,9 @@ class Resolver:
 
         # ── Phase 2: optional edges (post-mandatory) ────────────────────────
         # Collect optional edges from the mandatory solution and try each
-        # in sorted (coordinate, constraint) order. Accepted edges become
-        # part of the selection; rejected edges are recorded as skipped.
+        # in sorted (coordinate, constraint) order. The catalog is
+        # temporarily modified for each trial and always restored — this
+        # ensures the lock and plan preserve optional edge identity.
         skipped_optional: List[Tuple[str, str, str]] = []
         processed: Set[Tuple[str, str, str]] = set()
         accepted_optional_coords: Set[str] = set()
@@ -714,61 +711,41 @@ class Resolver:
                     skipped_optional.append(edge)
                     continue
 
-                # Try to add this optional edge by temporarily treating
-                # it as a mandatory dep in the catalog. On success, commit
-                # the catalog mutation (dep added, optional_dep removed) so
-                # the lock reflects the accepted edge.
+                # Temporarily move the optional edge into deps for the
+                # trial backtrack. Always restore the catalog afterwards
+                # so that _build_plan and replay see the original edges.
                 source_version = selected[source_coord]
                 source_meta = self._catalog[source_coord][source_version]
                 saved_deps = dict(source_meta.get("deps", {}))
-                saved_opt_deps = dict(source_meta.get("optional_deps", {}))
-
-                new_deps = dict(saved_deps)
-                new_deps[opt_coord] = opt_constraint
-                source_meta["deps"] = new_deps
-
-                new_opt_deps = {
-                    oc: c for oc, c in saved_opt_deps.items()
-                    if oc != opt_coord
-                }
-                if new_opt_deps:
-                    source_meta["optional_deps"] = new_opt_deps
-                else:
-                    source_meta.pop("optional_deps", None)
+                trial_deps = dict(saved_deps)
+                trial_deps[opt_coord] = opt_constraint
+                source_meta["deps"] = trial_deps
 
                 try:
                     trial_selected = dict(selected)
                     success, trial_selected, _ = self._backtrack(
                         trial_selected, harness_set,
                     )
-                    if success:
-                        selected = trial_selected
-                        accepted_optional_coords.add(opt_coord)
-                        made_progress = True
-                        break  # Restart collection after a successful addition
-                    else:
-                        # Revert catalog change
-                        if saved_deps:
-                            source_meta["deps"] = saved_deps
-                        else:
-                            source_meta.pop("deps", None)
-                        if saved_opt_deps:
-                            source_meta["optional_deps"] = saved_opt_deps
-                        skipped_optional.append(edge)
-                except Exception:
-                    # Revert catalog change on any error
+                finally:
+                    # Always restore catalog
                     if saved_deps:
                         source_meta["deps"] = saved_deps
                     else:
                         source_meta.pop("deps", None)
-                    if saved_opt_deps:
-                        source_meta["optional_deps"] = saved_opt_deps
+
+                if success:
+                    selected = trial_selected
+                    accepted_optional_coords.add(opt_coord)
+                    made_progress = True
+                    break  # Restart collection after a successful addition
+                else:
                     skipped_optional.append(edge)
 
             if not made_progress:
                 break
 
-        # Build the final plan with skipped optional edges recorded
+        # Build the final plan (reads from the unmodified catalog —
+        # optional edges stay in optional_deps, nodes are marked optional).
         try:
             plan = self._build_plan(
                 selected, root, selected[root], version_spec, harness_set,

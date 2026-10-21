@@ -2878,9 +2878,11 @@ class TestFixG_BacktrackingOracle:
                         deps[other] = constraint
                 if deps:
                     meta["deps"] = deps
-                # Randomly add optional deps (distinct from plain deps)
+                # Randomly add optional deps (distinct from plain deps).
+                # Include coords[0] (the root) as a valid optional target
+                # so the soft-optional contract is exercised — see Fix K.
                 opt_deps = {}
-                for other in coords[1:]:
+                for other in coords:
                     if other != coord and other not in deps and rng.random() < 0.2:
                         c_major = rng.randint(1, max_versions)
                         c_minor = rng.randint(0, 1)
@@ -3697,6 +3699,317 @@ class TestFixI_OracleExpanded:
     def test_resolver_no_crashes_1000_seeds(self):
         """Property: resolver never crashes (RecursionError, TypeError, etc.)
         across 1000 random catalogs including cycle forms."""
+        seeds = list(range(42, 1042))  # 1000 seeds
+        crashes = []
+        for seed in seeds:
+            catalog, root, version_spec = \
+                TestFixG_BacktrackingOracle._random_catalog(
+                    seed, num_coords=min(2 + (seed % 3), 4), max_versions=3,
+                )
+            resolver = Resolver(catalog=catalog)
+            try:
+                resolver.resolve(root, version_spec)
+            except ResolveError:
+                pass  # Expected for some seeds
+            except Exception as e:
+                crashes.append(f"Seed {seed}: {type(e).__name__}: {e}")
+
+        assert not crashes, (
+            f"Resolver crashed on {len(crashes)}/{len(seeds)} seeds:\n" +
+            "\n".join(crashes[:20])
+        )
+
+    def test_oracle_replay_1000_seeds(self):
+        """Every successfully resolved lock replays byte-identically
+        across 1000 random catalogs."""
+        seeds = list(range(42, 1042))
+        failures = []
+        for seed in seeds:
+            catalog, root, version_spec = \
+                TestFixG_BacktrackingOracle._random_catalog(
+                    seed, num_coords=min(2 + (seed % 3), 4), max_versions=3,
+                )
+            resolver = Resolver(catalog=catalog)
+            try:
+                plan = resolver.resolve(root, version_spec)
+            except ResolveError:
+                continue
+            lock = plan.to_lock()
+            try:
+                replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+            except ResolveError as e:
+                failures.append(f"Seed {seed}: replay failed: {e}")
+                continue
+            if replayed.to_lock() != lock:
+                failures.append(f"Seed {seed}: replay not byte-identical")
+
+        assert not failures, (
+            f"Replay failures: {len(failures)}/{len(seeds)}:\n" +
+            "\n".join(failures[:20])
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fix K: soft-optional contract — mandatory edges alone decide success;
+# optional edges tried in sorted order, accepted only if graph stays solvable.
+# ---------------------------------------------------------------------------
+
+
+class TestFixK_SoftOptionalContract:
+    """Fix K: optional edges do not cause false rejections.
+
+    Mandatory edges (deps, bundle_members) are solved first and alone decide
+    success or failure. Optional edges are then tried in sorted
+    (coordinate, constraint) order; each is added only if the graph stays
+    solvable with it, otherwise skipped and recorded in the plan.
+    """
+
+    def test_optional_edge_no_mandatory_incoming_solvable(self):
+        """M1 from review-012: an optional edge to a coordinate with no
+        mandatory incoming edge must not cause a false MissingReleaseError."""
+        catalog = {
+            "B/b": {
+                "1.0.0": {"optional_deps": {"A/a": ">=2.0.0"}},
+            },
+            "A/a": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("B/b", ">=1.0.0")
+        assert plan.selected_version("B/b") == "1.0.0"
+        # A/a must NOT be selected — the optional constraint >=2.0.0
+        # cannot be satisfied, so the edge is skipped.
+        assert "A/a" not in plan.nodes
+
+    def test_optional_edge_satisfiable_accepted(self):
+        """An optional edge whose constraint can be satisfied is accepted
+        and the optional target is included in the plan."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"carol/extra": ">=1.0.0"}},
+            },
+            "carol/extra": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "carol/extra" in plan.nodes
+        assert plan.nodes["carol/extra"].optional is True
+
+    def test_optional_cycle_closing_edge_skipped(self):
+        """M2 from review-012: an optional edge that would close a mandatory
+        cycle is skipped and the mandatory solution is used."""
+        catalog = {
+            "A/a": {
+                "1.0.0": {"deps": {"B/b": ">=1.0.0"}},
+            },
+            "B/b": {
+                "1.0.0": {"optional_deps": {"A/a": ">=1.0.0"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("A/a", ">=1.0.0")
+        assert plan.selected_version("A/a") == "1.0.0"
+        assert plan.selected_version("B/b") == "1.0.0"
+        # Both nodes are in the plan
+        assert "A/a" in plan.nodes
+        assert "B/b" in plan.nodes
+
+    def test_mandatory_missing_release_still_fails(self):
+        """M3 from review-012: a mandatory dep on a non-existent coordinate
+        must still fail with MissingReleaseError."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {"shared/s": ">=3.0.0"}},
+            },
+            "mid/x": {
+                "1.0.0": {"deps": {"shared/s": ">=5.0.0"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(MissingReleaseError):
+            resolver.resolve("root/pkg", ">=1.0.0")
+
+    def test_optional_edge_never_causes_failure(self):
+        """Optional edges must never cause a resolve failure. A catalog
+        that is solvable with only mandatory edges remains solvable when
+        optional edges with impossible constraints are added."""
+        # Unsatisfiable optional: target has no version satisfying >=99.0.0
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"a/opt": ">=99.0.0"}},
+            },
+            "a/opt": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "a/opt" not in plan.nodes
+
+    def test_optional_edge_chain_accepted(self):
+        """A chain of optional edges where each is satisfiable is accepted
+        in order."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"A/a": ">=1.0.0"}},
+            },
+            "A/a": {
+                "1.0.0": {"optional_deps": {"B/b": ">=1.0.0"}},
+            },
+            "B/b": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "A/a" in plan.nodes
+        assert "B/b" in plan.nodes
+        assert plan.nodes["A/a"].optional is True
+        assert plan.nodes["B/b"].optional is True
+
+    def test_optional_edge_chain_partial_failure(self):
+        """A chain of optional edges where the first is satisfiable but
+        the second has an impossible constraint. First accepted, second
+        skipped."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"A/a": ">=1.0.0"}},
+            },
+            "A/a": {
+                "1.0.0": {"optional_deps": {"B/b": ">=99.0.0"}},
+            },
+            "B/b": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("root/pkg") == "1.0.0"
+        assert "A/a" in plan.nodes
+        assert "B/b" not in plan.nodes
+
+    def test_optional_edge_replay_byte_identical(self):
+        """A lock produced with accepted optional edges replays
+        byte-identically."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {
+                    "optional_deps": {"A/a": ">=1.0.0"},
+                    "source": "https://root",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "A/a": {
+                "1.0.0": {
+                    "deps": {"B/b": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "ra",
+                    "artifact_digest": "da",
+                },
+            },
+            "B/b": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "rb",
+                    "artifact_digest": "db",
+                },
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        lock = plan.to_lock()
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
+
+    def test_skipped_optional_recorded_in_plan(self):
+        """Skipped optional edges are recorded in the plan for transparency."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"optional_deps": {"a/opt": ">=99.0.0"}},
+            },
+            "a/opt": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        root_node = plan.nodes.get("root/pkg")
+        assert root_node is not None
+        assert len(root_node.skipped_optional_deps) > 0
+
+    def test_optional_edge_conflict_on_selected_skipped(self):
+        """An optional edge whose constraint conflicts with an already
+        selected version is skipped."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {
+                    "deps": {"shared/s": ">=1.0.0"},
+                    "optional_deps": {"shared/s": ">=99.0.0"},
+                },
+            },
+            "shared/s": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", ">=1.0.0")
+        assert plan.selected_version("shared/s") == "1.0.0"
+        # The optional edge (shared/s>=99.0.0) conflicts with the
+        # already selected shared/s@1.0.0 — must be skipped.
+        root_node = plan.nodes.get("root/pkg")
+        assert root_node is not None
+        skipped = root_node.skipped_optional_deps
+        assert any(s[0] == "shared/s" for s in skipped)
+
+
+class TestFixK_OracleExpanded:
+    """Fix K: expanded oracle test with the generator blind spot fixed
+    (root coordinate can be an optional target)."""
+
+    def test_oracle_agreement_200_seeds(self):
+        """Resolver agrees with brute-force oracle on 200 random catalogs
+        where optional edges may target the root coordinate."""
+        seeds = list(range(42, 242))  # 200 seeds
+        disagreements = []
+        for seed in seeds:
+            catalog, root, version_spec = \
+                TestFixG_BacktrackingOracle._random_catalog(
+                    seed, num_coords=_rng_for_size(seed), max_versions=3,
+                )
+            solvable, oracle_solution = \
+                TestFixG_BacktrackingOracle._brute_force_solve(
+                    catalog, root, version_spec,
+                )
+            resolver = Resolver(catalog=catalog)
+            try:
+                resolver.resolve(root, version_spec)
+                resolver_success = True
+            except ResolveError:
+                resolver_success = False
+
+            if resolver_success != solvable:
+                disagreements.append(
+                    f"Seed {seed}: resolver {resolver_success}, "
+                    f"oracle {solvable}. "
+                    f"Root: {root}@{version_spec}"
+                )
+
+        assert not disagreements, (
+            f"Resolver disagrees with oracle on "
+            f"{len(disagreements)}/{len(seeds)} seeds:\n" +
+            "\n".join(disagreements[:20])
+        )
+
+    def test_resolver_no_crashes_1000_seeds(self):
+        """Property: resolver never crashes across 1000 random catalogs
+        including optional edges targeting root."""
         seeds = list(range(42, 1042))  # 1000 seeds
         crashes = []
         for seed in seeds:
