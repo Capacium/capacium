@@ -18,6 +18,7 @@ from capacium.commands._resolve import (
     Resolver,
     ResolveNode,
     ResolveError,
+    BranchHeadError,
     ConflictError,
     CycleError,
     MissingReleaseError,
@@ -1444,6 +1445,42 @@ class TestFixA_C4_BranchHeadAndRootPin:
         # Pin 2.0.0 does NOT satisfy the constraint >=1.0.0,<2.0.0
         with pytest.raises(ConflictError):
             resolver.resolve("alice/lib", ">=1.0.0,<2.0.0")
+
+    def test_diamond_reselection_rejects_branch_head(self):
+        """Branch-head rejection via diamond re-selection path.
+
+        bob/util depends on dan/shared@>=1.0.0,<2.0.0 (first encounter
+        selects 1.5.0, no branch head). carol/tool depends on
+        dan/shared@>=1.0.0,<1.2.0 (re-selection intersects to
+        >=1.0.0,<1.2.0, forces 1.0.0 whose source_revision='main').
+        The re-selection MUST raise BranchHeadError.
+        """
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {
+                        "bob/util": ">=1.0.0,<2.0.0",
+                        "carol/tool": ">=1.0.0,<2.0.0",
+                    },
+                },
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0,<1.2.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {
+                    "source_revision": "main",
+                },
+                "1.5.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(BranchHeadError):
+            resolver.resolve("alice/lib", "1.0.0")
 
 
 # ---------------------------------------------------------------------------

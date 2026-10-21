@@ -639,6 +639,7 @@ class Resolver:
                             ),
                         )
                     # Replace with the version that satisfies the intersection
+                    self._validate_no_branch_head(coordinate, re_selected)
                     existing.version = re_selected
                     existing.constraint = intersected
                     constraint_state[coordinate] = intersected
