@@ -625,7 +625,9 @@ class Resolver:
                     )
                 # Check if the existing version satisfies the intersected constraint
                 if not _version_satisfies(existing.version, intersected):
-                    # Try to find a version satisfying the intersected constraint
+                    # Re-selection: remove and re-enqueue through the unified
+                    # new-node path so all metadata (node_type, platform,
+                    # bundle_members) is rebuilt and dependencies are re-enqueued.
                     avail = self._available_versions(coordinate)
                     re_selected = _select_best_version(avail, intersected)
                     if re_selected is None:
@@ -638,21 +640,14 @@ class Resolver:
                                 f"{intersected!r}",
                             ),
                         )
-                    # Replace with the version that satisfies the intersection
                     self._validate_no_branch_head(coordinate, re_selected)
-                    existing.version = re_selected
-                    existing.constraint = intersected
+                    del plan.nodes[coordinate]
                     constraint_state[coordinate] = intersected
-                    # Re-read metadata for the new version
-                    meta = self._catalog.get(coordinate, {}).get(re_selected, {})
-                    existing.kind = meta.get("kind")
-                    existing.source = meta.get("source")
-                    existing.source_revision = meta.get("source_revision")
-                    existing.artifact_digest = meta.get("artifact_digest")
-                    existing.dependencies = meta.get("deps", {})
-                else:
-                    constraint_state[coordinate] = intersected
-                    existing.constraint = intersected
+                    new_optional = is_optional and existing.optional
+                    pending.insert(0, (coordinate, re_selected, intersected, chain, new_optional))
+                    continue
+                constraint_state[coordinate] = intersected
+                existing.constraint = intersected
                 # Add path for diamond tracking
                 existing.paths.append(chain)
                 # If already resolved as required, upgrade from optional
@@ -695,28 +690,12 @@ class Resolver:
             bundle_members = meta.get("bundle_members", [])
             if bundle_members:
                 for member_coord in bundle_members:
-                    if member_coord in chain:
-                        raise CycleError(
-                            f"Dependency cycle: {' -> '.join(chain)} -> {member_coord}",
-                            plan=self._rejection_plan(
-                                "cycle",
-                                f"Cycle: {' -> '.join(chain)} -> {member_coord}",
-                            ),
-                        )
                     self._enqueue_dep(
                         member_coord, "*", chain, pending, harness_set=harness_set,
                     )
 
             # Enqueue required transitive dependencies
             for dep_coord, dep_constraint in meta.get("deps", {}).items():
-                if dep_coord in chain:
-                    raise CycleError(
-                        f"Dependency cycle: {' -> '.join(chain)} -> {dep_coord}",
-                        plan=self._rejection_plan(
-                            "cycle",
-                            f"Cycle: {' -> '.join(chain)} -> {dep_coord}",
-                        ),
-                    )
                 self._enqueue_dep(
                     dep_coord, dep_constraint, chain, pending,
                 )
@@ -728,6 +707,17 @@ class Resolver:
                 self._enqueue_dep(
                     opt_coord, opt_constraint, chain, pending, optional=True,
                 )
+
+        # Post-pass: detect cycles over the full dependency graph
+        cycle_path = self._detect_cycle(plan)
+        if cycle_path is not None:
+            raise CycleError(
+                f"Dependency cycle: {' -> '.join(cycle_path)}",
+                plan=self._rejection_plan(
+                    "cycle",
+                    f"Cycle: {' -> '.join(cycle_path)}",
+                ),
+            )
 
         return plan
 
@@ -773,6 +763,48 @@ class Resolver:
                     f"{coordinate}@{version} has branch head {source_revision!r}",
                 ),
             )
+
+    def _detect_cycle(self, plan: ResolvePlan) -> Optional[List[str]]:
+        """Return a cycle path if the plan graph contains any cycle, or None.
+
+        Performs a DFS over all nodes in *plan*, following both ``deps``
+        and ``bundle_members`` as directed edges. Returns the first cycle
+        found as a list of coordinates.
+        """
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {}
+        parent: Dict[str, Optional[str]] = {}
+
+        def dfs(coord: str) -> Optional[List[str]]:
+            color[coord] = GRAY
+            node = plan.nodes.get(coord)
+            if node is not None:
+                neighbours = list(node.dependencies.keys()) + list(node.bundle_members)
+                for nb in neighbours:
+                    if nb not in color:
+                        parent[nb] = coord
+                        result = dfs(nb)
+                        if result is not None:
+                            return result
+                    elif color.get(nb) == GRAY:
+                        # Back edge found — reconstruct the cycle
+                        cycle = [nb, coord]
+                        cur = coord
+                        while parent.get(cur) is not None and parent[cur] != nb:
+                            cur = parent[cur]  # type: ignore[assignment]
+                            cycle.append(cur)
+                        cycle.append(nb)
+                        cycle.reverse()
+                        return cycle
+            color[coord] = BLACK
+            return None
+
+        for coord in list(plan.nodes.keys()):
+            if coord not in color:
+                cycle = dfs(coord)
+                if cycle is not None:
+                    return cycle
+        return None
 
     def _enqueue_dep(
         self,

@@ -2339,3 +2339,343 @@ class TestFixD_C7_OmittedFieldRejection:
         lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
         replayed = Resolver.replay_from_lock(lock, catalog=catalog)
         assert replayed.to_lock() == lock
+
+
+# ---------------------------------------------------------------------------
+# Fix F: F2 cycle detection over full graph, F3 re-selection via
+# node rebuild + re-enqueue
+# ---------------------------------------------------------------------------
+
+
+class TestFixF_C1_GraphCycleDetection:
+    """C1 Fix F: cycles are detected over the full dependency graph,
+    including when the back-edge closes on an already-resolved node."""
+
+    def test_cycle_closing_on_already_resolved_node(self):
+        """F2: a/x->b/x, b/x->a/x cycle where both are first enqueued
+        from root; b/x is resolved first, then a/x->b/x back-edge closes
+        on an already-resolved node."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {"a/x": "*", "b/x": "*"}},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/x": "*"}},
+            },
+            "b/x": {
+                "1.0.0": {"deps": {"a/x": "*"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(CycleError) as exc_info:
+            resolver.resolve("root/pkg", "1.0.0")
+        assert "a/x" in str(exc_info.value) and "b/x" in str(exc_info.value)
+
+    def test_cycle_three_node_chain_with_early_back_edge(self):
+        """F2b: root->a/x->b/x->c/y->a/x cycle detected via graph pass."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {"a/x": "*", "b/x": "*"}},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/x": "*"}},
+            },
+            "b/x": {
+                "1.0.0": {"deps": {"c/y": "*"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"a/x": "*"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(CycleError):
+            resolver.resolve("root/pkg", "1.0.0")
+
+    def test_cycle_bundle_member_closing_on_already_resolved(self):
+        """F2-bundle: a bundle member cycle closing on an already-resolved
+        node is detected."""
+        catalog = {
+            "root/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["a/x", "b/x"],
+                },
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/x": "*"}},
+            },
+            "b/x": {
+                "1.0.0": {"deps": {"a/x": "*"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(CycleError):
+            resolver.resolve("root/bundle", "1.0.0")
+
+    def test_single_chain_cycle_still_detected(self):
+        """Regression: single-chain a->b->c->a still detected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"carol/tool": ">=1.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"alice/lib": ">=1.0.0"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(CycleError):
+            resolver.resolve("alice/lib", "1.0.0")
+
+    def test_self_dependency_cycle_detected(self):
+        """Regression: self-dependency a/x->a/x detected."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {"a/x": "*"}},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"a/x": "*"}},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(CycleError):
+            resolver.resolve("root/pkg", "1.0.0")
+
+
+class TestFixF_C2_C7_ReSelectionNodeRebuild:
+    """C2/C7 Fix F: diamond re-selection rebuilds the full node and
+    re-enqueues dependencies; the emitted lock is replayable."""
+
+    def test_reselection_node_type_flip(self):
+        """F3: diamond downgrade from runtime 1.5.0 to capability 1.0.0
+        must emit the correct node_type for the selected version."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<1.5.0"}},
+            },
+            "b/shared": {
+                "1.5.0": {"node_type": "runtime"},
+                "1.0.0": {"node_type": "capability"},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("b/shared") == "1.0.0"
+        node = plan.nodes["b/shared"]
+        assert node.node_type == NodeType.CAPABILITY, \
+            f"Expected CAPABILITY, got {node.node_type}"
+
+    def test_reselection_platform_flip(self):
+        """F3: diamond re-selection must emit the correct platform."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<1.5.0"}},
+            },
+            "b/shared": {
+                "1.5.0": {"platform": "darwin-arm64"},
+                "1.0.0": {"platform": "linux-x64"},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("b/shared") == "1.0.0"
+        node = plan.nodes["b/shared"]
+        assert node.platform == "linux-x64", \
+            f"Expected 'linux-x64', got {node.platform!r}"
+
+    def test_reselection_bundle_members_flip(self):
+        """F3: diamond re-selection must emit the correct bundle_members."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/bundle": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/bundle": ">=1.0.0,<1.5.0"}},
+            },
+            "b/bundle": {
+                "1.5.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["m/two"],
+                },
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["m/one"],
+                },
+            },
+            "m/one": {"1.0.0": {}},
+            "m/two": {"1.0.0": {}},
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("b/bundle") == "1.0.0"
+        node = plan.nodes["b/bundle"]
+        assert node.bundle_members == ["m/one"], \
+            f"Expected ['m/one'], got {node.bundle_members!r}"
+
+    def test_reselection_downgrade_enqueues_new_deps(self):
+        """F3 D1: when the re-selected version adds dependencies,
+        those deps must be enqueued and appear in the lock."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<1.5.0"}},
+            },
+            "b/shared": {
+                "1.5.0": {},
+                "1.0.0": {"deps": {"ghost/dep": "*"}},
+            },
+            "ghost/dep": {"1.0.0": {}},
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("b/shared") == "1.0.0"
+        assert "ghost/dep" in plan.nodes, \
+            "ghost/dep from re-selected version must be enqueued"
+        assert plan.selected_version("ghost/dep") == "1.0.0"
+
+    def test_reselection_upgrade_removes_stale_deps(self):
+        """F3 D2: when the re-selected version drops a dependency,
+        the stale dep must not remain in the lock."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/shared": ">=2.0.0"}},
+            },
+            "b/shared": {
+                "1.0.0": {"deps": {"gone/dep": "*"}},
+                "2.0.0": {},
+            },
+            "gone/dep": {"1.0.0": {}},
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        # Intersection >=1.0.0 ∩ >=2.0.0 = >=2.0.0, re-selects to 2.0.0
+        assert plan.selected_version("b/shared") == "2.0.0"
+        # gone/dep from 1.0.0 must NOT be in the plan
+        assert "gone/dep" not in plan.nodes, \
+            "gone/dep from discarded version must not be locked"
+
+    def test_reselection_lock_is_replayable(self):
+        """F3: the lock produced after diamond re-selection must be
+        replayable without errors and produce identical bytes."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {
+                    "deps": {"b/shared": ">=1.0.0,<2.0.0"},
+                    "source": "https://a",
+                    "source_revision": "ra",
+                    "artifact_digest": "da",
+                },
+            },
+            "c/y": {
+                "1.0.0": {
+                    "deps": {"b/shared": ">=1.0.0,<1.5.0"},
+                    "source": "https://c",
+                    "source_revision": "rc",
+                    "artifact_digest": "dc",
+                },
+            },
+            "b/shared": {
+                "1.5.0": {
+                    "platform": "darwin-arm64",
+                    "source": "https://b15",
+                    "source_revision": "r15",
+                    "artifact_digest": "d15",
+                },
+                "1.0.0": {
+                    "deps": {"ghost/dep": "*"},
+                    "platform": "linux-x64",
+                    "source": "https://b10",
+                    "source_revision": "r10",
+                    "artifact_digest": "d10",
+                },
+            },
+            "ghost/dep": {
+                "1.0.0": {
+                    "source": "https://g",
+                    "source_revision": "rg",
+                    "artifact_digest": "dg",
+                },
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        lock = plan.to_lock()
+        # The diamond re-selection must have selected 1.0.0
+        assert lock["nodes"]["b/shared"]["version"] == "1.0.0"
+        # Replay must succeed
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock, \
+            "Replayed lock must be byte-identical to original"
+
+    def test_reselection_branch_head_still_rejected(self):
+        """F1 regression: branch-head rejection on re-selection still works."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/shared": ">=1.0.0,<1.5.0"}},
+            },
+            "b/shared": {
+                "1.5.0": {},
+                "1.0.0": {"source_revision": "main"},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(BranchHeadError):
+            resolver.resolve("root/pkg", "1.0.0")
