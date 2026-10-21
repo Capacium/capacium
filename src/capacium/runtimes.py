@@ -860,3 +860,159 @@ def prompt_and_resolve_runtimes(
 
 def known_runtime_names() -> List[str]:
     return sorted(RUNTIMES.keys())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 7: Generation GC — rollback retention and safe deletion
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class GenerationLease:
+    """A lease that prevents GC from deleting a generation during use.
+
+    Acquired before a concurrent build/activation and released when done.
+    """
+
+    lease_id: str
+    generation_id: str
+
+
+class GenerationStore:
+    """In-memory store for runtime generations with active/reference/lease tracking.
+
+    Holds RuntimeGeneration objects and tracks:
+    - Which generation is currently active
+    - References between generations (e.g. parent -> child)
+    - Active leases that prevent GC
+    """
+
+    def __init__(self) -> None:
+        self._generations: Dict[str, RuntimeGeneration] = {}
+        self._active_generation_id: Optional[str] = None
+        self._references: Dict[str, set] = {}  # parent_id -> set of child_ids
+        self._leases: Dict[str, GenerationLease] = {}  # generation_id -> lease
+        self._lease_counter: int = 0
+
+    def add(self, gen: RuntimeGeneration) -> None:
+        """Add a generation to the store."""
+        self._generations[gen.digest] = gen
+
+    def get(self, digest: str) -> Optional[RuntimeGeneration]:
+        """Retrieve a generation by digest."""
+        return self._generations.get(digest)
+
+    def remove(self, digest: str) -> Optional[RuntimeGeneration]:
+        """Remove a generation from the store. Returns the removed gen or None."""
+        return self._generations.pop(digest, None)
+
+    @property
+    def active_generation_id(self) -> Optional[str]:
+        return self._active_generation_id
+
+    def set_active(self, digest: str) -> None:
+        """Mark a generation as the currently active one."""
+        self._active_generation_id = digest
+
+    def is_active(self, digest: str) -> bool:
+        """Return True if the given digest is the active generation."""
+        return self._active_generation_id == digest
+
+    def add_reference(self, parent_id: str, child_id: str) -> None:
+        """Record that *parent_id* references *child_id*."""
+        if parent_id not in self._references:
+            self._references[parent_id] = set()
+        self._references[parent_id].add(child_id)
+
+    def is_referenced(self, digest: str) -> bool:
+        """Return True if any generation references *digest*."""
+        return any(digest in refs for refs in self._references.values())
+
+    def acquire_lease(self, generation_id: str) -> GenerationLease:
+        """Acquire a lease on a generation, preventing GC deletion.
+
+        Returns a GenerationLease that must be released when done.
+        """
+        self._lease_counter += 1
+        lease = GenerationLease(
+            lease_id=f"lease-{self._lease_counter}",
+            generation_id=generation_id,
+        )
+        self._leases[generation_id] = lease
+        return lease
+
+    def release_lease(self, lease: GenerationLease) -> None:
+        """Release a previously acquired lease. Idempotent — missing leases
+        are silently ignored."""
+        if lease.generation_id in self._leases:
+            existing = self._leases[lease.generation_id]
+            if existing.lease_id == lease.lease_id:
+                del self._leases[lease.generation_id]
+
+    def is_leased(self, generation_id: str) -> bool:
+        """Return True if *generation_id* has an active lease."""
+        return generation_id in self._leases
+
+    def _is_protected(self, digest: str) -> bool:
+        """Return True if a generation is active, referenced or leased."""
+        if self.is_active(digest):
+            return True
+        if self.is_referenced(digest):
+            return True
+        if self.is_leased(digest):
+            return True
+        return False
+
+
+class RuntimeGarbageCollector:
+    """Basic GC for runtime generations.
+
+    Only deletes generations that are:
+    - Unreferenced (no other generation references them)
+    - Inactive (not the current active generation)
+    - Unleashed (no concurrent build/activation lease)
+    """
+
+    def __init__(self, store: GenerationStore):
+        self._store = store
+
+    def dry_run(self) -> Dict[str, bool]:
+        """Report which generations would be deleted, without deleting.
+
+        Returns a dict mapping generation digest -> True for each candidate.
+        Active, leased and referenced generations are excluded.
+        """
+        candidates: Dict[str, bool] = {}
+        for digest, gen in list(self._store._generations.items()):
+            if not self._store._is_protected(digest):
+                candidates[digest] = True
+        return candidates
+
+    def collect(self) -> Dict[str, bool]:
+        """Delete unreferenced, inactive, unleased generations.
+
+        Returns a dict mapping deleted generation digest -> True.
+        Protected generations (active, referenced, leased) are never deleted.
+        """
+        deleted: Dict[str, bool] = {}
+        for digest in list(self._store._generations.keys()):
+            if not self._store._is_protected(digest):
+                self._store.remove(digest)
+                deleted[digest] = True
+        return deleted
+
+
+class GenerationManager:
+    """Orchestrates the generation lifecycle: store, dry-run and GC collect."""
+
+    def __init__(self) -> None:
+        self.store = GenerationStore()
+        self._gc = RuntimeGarbageCollector(self.store)
+
+    def dry_run_gc(self) -> Dict[str, bool]:
+        """Report which generations would be collected by GC."""
+        return self._gc.dry_run()
+
+    def collect_gc(self) -> Dict[str, bool]:
+        """Run GC collection, deleting unprotected generations."""
+        return self._gc.collect()
