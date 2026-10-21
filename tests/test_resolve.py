@@ -1818,3 +1818,254 @@ class TestFixB_C7_ReplayVerification:
             Resolver.replay_from_lock(lock, catalog=catalog)
         assert "9.9.9" in str(exc_info.value) or \
             "root" in str(exc_info.value).lower()
+
+
+class TestFixC_C7_ConstraintValueVerification:
+    """C7 Fix C: replay verifies locked dependency constraint VALUES,
+    platform, kind, and bundle_members; replayed lock is byte-identical."""
+
+    def test_replay_verifies_dependency_constraint_values(self):
+        """Replay rejects a catalog where a dependency constraint VALUE
+        differs from the lock (not just key-set)."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Catalog with tampered constraint VALUE (key set is the same)
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=9.9.9"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "constraint" in str(exc_info.value).lower()
+
+    def test_replay_verifies_platform(self):
+        """Replay rejects a catalog where platform differs from lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "platform": "linux",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Tamper platform
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "platform": "windows",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "platform" in str(exc_info.value).lower()
+
+    def test_replay_verifies_kind(self):
+        """Replay rejects a catalog where kind differs from lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "kind": "skill",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Tamper kind
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "kind" in str(exc_info.value).lower()
+
+    def test_replay_verifies_bundle_members(self):
+        """Replay rejects a catalog where bundle_members differ from lock."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "bundle_members": ["member-a"],
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "member-a": {
+                "1.0.0": {
+                    "source": "https://ma",
+                    "source_revision": "ra",
+                    "artifact_digest": "da",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/bundle", "1.0.0").to_lock()
+
+        # Tamper bundle members
+        tampered = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "bundle_members": ["evil/member"],
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "member-a": {
+                "1.0.0": {
+                    "source": "https://ma",
+                    "source_revision": "ra",
+                    "artifact_digest": "da",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "bundle" in str(exc_info.value).lower()
+
+    def test_replay_byte_identical_with_deps(self):
+        """Untampered replay of a multi-node lock produces a byte-identical lock."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0,<2.0.0"},
+                    "kind": "skill",
+                    "platform": "darwin",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "kind": "tool",
+                    "platform": "darwin",
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        replayed_lock = replayed.to_lock()
+
+        assert replayed_lock == lock, \
+            "Untampered replay must produce byte-identical lock"
+        # Specific: constraint values must match
+        assert replayed_lock["nodes"]["alice/lib"]["dependencies"] == \
+            {"bob/util": ">=1.0.0,<2.0.0"}
+
+    def test_replayed_node_uses_locked_deps_not_catalog(self):
+        """When a catalog constraint differs, replay fails; when accepted,
+        the replayed node carries the LOCKED dependency values (not catalog
+        values) so the output lock is identical."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=1.0.0"},
+                    "kind": "skill",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+
+        # Catalog with different constraint — must be REJECTED
+        tampered_catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"bob/util": ">=9.9.9"},
+                    "kind": "skill",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "bob/util": {
+                "1.0.0": {
+                    "source": "https://b",
+                    "source_revision": "r2",
+                    "artifact_digest": "d2",
+                },
+            },
+        }
+
+        with pytest.raises(ConflictError):
+            Resolver.replay_from_lock(lock, catalog=tampered_catalog)
+
+        # Untampered catalog — replay must be byte-identical
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
