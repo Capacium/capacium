@@ -2879,10 +2879,8 @@ class TestFixG_BacktrackingOracle:
                 if deps:
                     meta["deps"] = deps
                 # Randomly add optional deps (distinct from plain deps).
-                # Include coords[0] (the root) as a valid optional target
-                # so the soft-optional contract is exercised — see Fix K.
                 opt_deps = {}
-                for other in coords:
+                for other in coords[1:]:
                     if other != coord and other not in deps and rng.random() < 0.2:
                         c_major = rng.randint(1, max_versions)
                         c_minor = rng.randint(0, 1)
@@ -2922,6 +2920,35 @@ class TestFixG_BacktrackingOracle:
 
         # Root version spec
         root_version_spec = ">=1.0.0"
+
+        return catalog, root, root_version_spec
+
+    @staticmethod
+    def _random_catalog_k(seed, num_coords, max_versions):
+        """Generate with _random_catalog (preserving exact same RNG stream)
+        then post-process with a separate RNG to add root as an optional-deps
+        target. This exercises the soft-optional contract (Fix K) without
+        perturbing FixI oracle reproducibility."""
+        catalog, root, version_spec = \
+            TestFixG_BacktrackingOracle._random_catalog(
+                seed, num_coords=num_coords, max_versions=max_versions,
+            )
+        import random as _random
+        rng = _random.Random(seed + 1_000_000)
+
+        for coord, versions in catalog.items():
+            for version, meta in versions.items():
+                existing_deps = set(meta.get("deps", {}).keys())
+                existing_opt = set(meta.get("optional_deps", {}).keys())
+                if root != coord and root not in existing_deps \
+                        and root not in existing_opt \
+                        and rng.random() < 0.3:
+                    c_major = rng.randint(1, max_versions)
+                    c_minor = rng.randint(0, 1)
+                    constraint = f">={c_major}.{c_minor}.0"
+                    opt_deps = dict(meta.get("optional_deps", {}))
+                    opt_deps[root] = constraint
+                    meta["optional_deps"] = opt_deps
 
         return catalog, root, root_version_spec
 
@@ -3980,7 +4007,7 @@ class TestFixK_OracleExpanded:
         disagreements = []
         for seed in seeds:
             catalog, root, version_spec = \
-                TestFixG_BacktrackingOracle._random_catalog(
+                TestFixG_BacktrackingOracle._random_catalog_k(
                     seed, num_coords=_rng_for_size(seed), max_versions=3,
                 )
             solvable, oracle_solution = \
@@ -4014,7 +4041,7 @@ class TestFixK_OracleExpanded:
         crashes = []
         for seed in seeds:
             catalog, root, version_spec = \
-                TestFixG_BacktrackingOracle._random_catalog(
+                TestFixG_BacktrackingOracle._random_catalog_k(
                     seed, num_coords=min(2 + (seed % 3), 4), max_versions=3,
                 )
             resolver = Resolver(catalog=catalog)
@@ -4037,7 +4064,7 @@ class TestFixK_OracleExpanded:
         failures = []
         for seed in seeds:
             catalog, root, version_spec = \
-                TestFixG_BacktrackingOracle._random_catalog(
+                TestFixG_BacktrackingOracle._random_catalog_k(
                     seed, num_coords=min(2 + (seed % 3), 4), max_versions=3,
                 )
             resolver = Resolver(catalog=catalog)
