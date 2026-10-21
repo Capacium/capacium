@@ -532,13 +532,18 @@ class Resolver:
     ) -> ResolvePlan:
         """Resolve *root* with *version_spec* to a complete immutable plan.
 
+        Uses deterministic backtracking: candidates are tried highest-first,
+        constraints are recomputed from currently selected assignments at every
+        step (no stale edges), and nodes unreachable from the root are pruned
+        before the plan is built.
+
         Raises:
             MissingReleaseError: no version of *root* satisfies the spec.
             ConflictError: two constraints on a coordinate cannot be met.
             CycleError: a dependency chain closes on itself.
             BranchHeadError: a versioned install tried to resolve to a branch head.
         """
-        # Select root version (respecting holds and pins)
+        # Determine root version candidates (respecting holds and pins)
         held_root = self._holds.get(root)
         if held_root is not None:
             if not _version_satisfies(held_root, version_spec):
@@ -550,7 +555,7 @@ class Resolver:
                         f"Hold on {root}@{held_root} conflicts with constraint {version_spec!r}",
                     ),
                 )
-            selected_root = held_root
+            root_candidates = [held_root]
         else:
             root_versions = self._available_versions(root)
             if not root_versions:
@@ -560,7 +565,6 @@ class Resolver:
                         "missing", f"No releases found for {root}",
                     ),
                 )
-            # Apply pin to constrain root selection
             pinned_root = self._pins.get(root)
             effective_spec = version_spec
             if pinned_root is not None:
@@ -574,8 +578,18 @@ class Resolver:
                         ),
                     )
                 effective_spec = pinned_root
-            selected_root = _select_best_version(root_versions, effective_spec)
-            if selected_root is None:
+            # Try root versions highest-first, backing up on failure.
+            # Filter pre-release unless the constraint explicitly names one.
+            constraint_names_pre_release = (
+                "-" in effective_spec and "@" not in effective_spec
+            )
+            root_candidates = [
+                v for v in reversed(root_versions)
+                if _version_satisfies(v, effective_spec)
+                and (constraint_names_pre_release
+                     or VersionManager.is_stable_semver(v))
+            ]
+            if not root_candidates:
                 raise MissingReleaseError(
                     f"No version of {root} satisfies constraint {effective_spec!r}",
                     plan=self._rejection_plan(
@@ -584,131 +598,370 @@ class Resolver:
                     ),
                 )
 
-        # Validate branch-head rejection for root
-        self._validate_no_branch_head(root, selected_root)
+        # Try root candidates highest-first with full backtracking
+        root_branch_head_seen = False
+        last_failure: Optional[Dict[str, str]] = None
+        for candidate_root in root_candidates:
+            if self._has_branch_head(root, candidate_root):
+                root_branch_head_seen = True
+                continue
 
+            selected: Dict[str, str] = {root: candidate_root}
+            success, selected, failure_info = self._backtrack(selected, harness_set)
+            if success:
+                return self._build_plan(
+                    selected, root, candidate_root, version_spec, harness_set,
+                )
+            last_failure = failure_info
+
+        # All root candidates failed
+        # Propagate branch_head errors from deeper levels
+        if last_failure and last_failure.get("reason") == "branch_head":
+            raise BranchHeadError(
+                last_failure.get("detail", "Resolution failed"),
+                plan=self._rejection_plan("branch_head", last_failure.get("detail", "Resolution failed")),
+            )
+        if root_branch_head_seen and len(root_candidates) == 1:
+            raise BranchHeadError(
+                f"Versioned install of {root}@{root_candidates[0]} "
+                f"cannot resolve to branch head",
+                plan=self._rejection_plan(
+                    "branch_head",
+                    f"Versioned install of {root}@{root_candidates[0]} "
+                    f"cannot resolve to branch head",
+                ),
+            )
+        if last_failure:
+            reason = last_failure.get("reason", "conflict")
+            detail = last_failure.get("detail", "Resolution failed")
+            if reason == "missing":
+                raise MissingReleaseError(
+                    detail,
+                    plan=self._rejection_plan("missing", detail),
+                )
+            else:
+                raise ConflictError(
+                    detail,
+                    plan=self._rejection_plan("conflict", detail),
+                )
+
+        raise ConflictError(
+            f"No version of {root} leads to a complete solution",
+            plan=self._rejection_plan("conflict", f"No version of {root} leads to a complete solution"),
+        )
+
+    # ── backtracking solver ─────────────────────────────────────────────────
+
+    def _backtrack(
+        self,
+        selected: Dict[str, str],
+        harness_set: Optional[Set[str]],
+    ) -> Tuple[bool, Optional[Dict[str, str]], Dict[str, str]]:
+        """Recursive backtracking CSP solver with node re-selection.
+
+        At each step, finds the frontier of unassigned coordinates reachable
+        from already-selected nodes, picks the first (sorted), and tries
+        versions in descending order. If a selected node must be re-selected
+        (its version no longer satisfies the combined incoming constraints),
+        it is removed and placed at the front of the frontier.
+
+        Returns:
+            (success, selected_dict, failure_info).
+        """
+        # Collect frontier: unassigned coordinates with incoming edges from
+        # selected nodes, plus any selected node whose version no longer
+        # satisfies its recomputed effective constraint.
+        frontier: Set[str] = set()
+        optional_only: Dict[str, bool] = {}
+        reselect: Optional[str] = None
+
+        # First, check for selected nodes that need re-selection
+        for s_coord, s_version in list(selected.items()):
+            constraint = self._compute_effective_constraint(s_coord, selected)
+            if constraint is None:
+                return False, None, {
+                    "reason": "conflict",
+                    "detail": (
+                        f"Conflict on {s_coord}: incompatible constraints "
+                        f"from selected nodes"
+                    ),
+                }
+            if not _version_satisfies(s_version, constraint):
+                # This node must be re-selected
+                reselect = s_coord
+                break
+
+        if reselect is not None:
+            del selected[reselect]
+            # Put reselect at front of frontier
+            frontier = {reselect}
+            optional_only[reselect] = False
+            # But also add any unassigned deps from other selected nodes
+        else:
+            for s_coord, s_version in selected.items():
+                meta = self._catalog.get(s_coord, {}).get(s_version, {})
+                for dep_coord in meta.get("deps", {}):
+                    if dep_coord not in selected:
+                        frontier.add(dep_coord)
+                        optional_only[dep_coord] = False
+                for member_coord in meta.get("bundle_members", []):
+                    if member_coord not in selected:
+                        frontier.add(member_coord)
+                        optional_only[member_coord] = False
+                for opt_coord in meta.get("optional_deps", {}):
+                    if opt_coord not in selected:
+                        frontier.add(opt_coord)
+                        if opt_coord not in optional_only:
+                            optional_only[opt_coord] = True
+
+        if not frontier:
+            return True, dict(selected), {}
+
+        # Skip purely-optional deps with no available versions
+        frontier_to_skip: Set[str] = set()
+        for fc in frontier:
+            is_purely_optional = optional_only.get(fc, False)
+            if is_purely_optional:
+                fv = self._available_versions(fc)
+                if not fv:
+                    frontier_to_skip.add(fc)
+                    continue
+                fc_constraint = self._compute_effective_constraint(fc, selected)
+                if fc_constraint is not None:
+                    satisfied = any(
+                        _version_satisfies(v, fc_constraint)
+                        for v in reversed(fv)
+                        if not self._has_branch_head(fc, v)
+                    )
+                    if not satisfied:
+                        frontier_to_skip.add(fc)
+
+        effective_frontier = sorted(frontier - frontier_to_skip)
+        if not effective_frontier:
+            return True, dict(selected), {}
+
+        coord = effective_frontier[0]
+
+        # Compute effective constraint from all selected nodes
+        constraint = self._compute_effective_constraint(coord, selected)
+        if constraint is None:
+            return False, None, {
+                "reason": "conflict",
+                "detail": (
+                    f"Conflict on {coord}: incompatible constraints from "
+                    f"selected nodes"
+                ),
+            }
+
+        versions = self._available_versions(coord)
+        is_purely_optional = optional_only.get(coord, False)
+
+        if not versions:
+            if is_purely_optional:
+                return self._backtrack(selected, harness_set)
+            return False, None, {
+                "reason": "missing",
+                "detail": f"No releases found for {coord}",
+            }
+
+        held = self._holds.get(coord)
+        pinned = self._pins.get(coord)
+
+        if held is not None:
+            if not _version_satisfies(held, constraint):
+                return False, None, {
+                    "reason": "conflict",
+                    "detail": (
+                        f"Hold on {coord}@{held} conflicts with "
+                        f"constraint {constraint!r}"
+                    ),
+                }
+            candidates = [held]
+        elif pinned is not None:
+            if not _version_satisfies(pinned, constraint):
+                return False, None, {
+                    "reason": "conflict",
+                    "detail": (
+                        f"Pin on {coord}@{pinned} conflicts with "
+                        f"constraint {constraint!r}"
+                    ),
+                }
+            candidates = [pinned]
+        else:
+            constraint_names_pre_release = (
+                "-" in constraint and "@" not in constraint
+            )
+            candidates = [
+                v for v in reversed(versions)
+                if _version_satisfies(v, constraint)
+                and (constraint_names_pre_release
+                     or VersionManager.is_stable_semver(v))
+            ]
+
+        branch_head_seen = False
+        last_failure: Optional[Dict[str, str]] = None
+        snapshot = dict(selected)
+        for version in candidates:
+            if self._has_branch_head(coord, version):
+                branch_head_seen = True
+                continue
+
+            selected[coord] = version
+            success, result, failure = self._backtrack(selected, harness_set)
+            if success:
+                return True, result, {}
+            # Restore selected to snapshot — recursive re-selections may
+            # have removed other coordinates
+            selected.clear()
+            selected.update(snapshot)
+            last_failure = failure
+
+        # No version worked
+        if is_purely_optional:
+            return self._backtrack(selected, harness_set)
+
+        # Propagate branch_head errors from deeper levels
+        if last_failure and last_failure.get("reason") == "branch_head":
+            return False, None, last_failure
+
+        if branch_head_seen and len(candidates) == 1:
+            return False, None, {
+                "reason": "branch_head",
+                "detail": (
+                    f"Versioned install of {coord}@{candidates[0]} "
+                    f"cannot resolve to branch head"
+                ),
+            }
+
+        if not candidates:
+            return False, None, {
+                "reason": "missing",
+                "detail": (
+                    f"No version of {coord} satisfies constraint "
+                    f"{constraint!r}"
+                ),
+            }
+
+        # Propagate the deepest failure detail if available
+        if last_failure:
+            return False, None, last_failure
+
+        return False, None, {
+            "reason": "conflict",
+            "detail": (
+                f"No version of {coord} leads to a complete solution "
+                f"under constraint {constraint!r}"
+            ),
+        }
+
+    def _compute_effective_constraint(
+        self,
+        coord: str,
+        selected: Dict[str, str],
+    ) -> Optional[str]:
+        """Intersect all constraints on *coord* from *selected* nodes.
+
+        Returns the narrowest combined constraint, ``"*"`` if there are
+        no constraints, or ``None`` if the intersection is empty.
+        """
+        result: Optional[str] = None
+        for s_coord, s_version in selected.items():
+            meta = self._catalog.get(s_coord, {}).get(s_version, {})
+            deps = meta.get("deps", {})
+            bundle_members = meta.get("bundle_members", [])
+            optional_deps = meta.get("optional_deps", {})
+
+            if coord in deps:
+                c = deps[coord]
+                result = c if result is None else _intersect_constraints(result, c)
+                if result is None:
+                    return None
+            if coord in bundle_members:
+                result = "*" if result is None else _intersect_constraints(result, "*")
+            if coord in optional_deps:
+                c = optional_deps[coord]
+                result = c if result is None else _intersect_constraints(result, c)
+                if result is None:
+                    return None
+
+        return result or "*"
+
+    def _has_branch_head(self, coordinate: str, version: str) -> bool:
+        """Return True if *coordinate*@*version* has a branch-head revision."""
+        meta = self._catalog.get(coordinate, {}).get(version, {})
+        source_revision = meta.get("source_revision")
+        return bool(source_revision and self._is_branch_head(source_revision))
+
+    # ── plan construction ───────────────────────────────────────────────────
+
+    def _build_plan(
+        self,
+        selected: Dict[str, str],
+        root: str,
+        root_version: str,
+        root_version_spec: str,
+        harness_set: Optional[Set[str]],
+    ) -> ResolvePlan:
+        """Build a :class:`ResolvePlan` from the selected assignments.
+
+        Only nodes reachable from *root* through selected dependencies and
+        bundle members are included — orphan nodes are pruned. Paths and
+        constraints are recomputed from the final graph.
+        """
         plan = ResolvePlan(
             root_coordinate=root,
-            root_version=selected_root,
+            root_version=root_version,
             harness_set=harness_set,
         )
 
-        # Walk dependencies with constraint tracking
-        # pending entries: (coordinate, version, constraint, chain, is_optional)
-        pending: List[Tuple[str, str, str, List[str], bool]] = [
-            (root, selected_root, version_spec, [root], False)
-        ]
-
-        # Track per-coordinate constraint intersections for diamond resolution
-        constraint_state: Dict[str, str] = {}
-
-        while pending:
-            coordinate, version, dep_constraint, chain, is_optional = pending.pop(0)
-
-            # Already resolved — intersect constraints, not just compare versions
-            if coordinate in plan.nodes:
-                existing = plan.nodes[coordinate]
-                # Intersect the existing constraint with the new one
-                prev_constraint = constraint_state.get(coordinate, "*")
-                intersected = _intersect_constraints(prev_constraint, dep_constraint)
-                if intersected is None:
-                    raise ConflictError(
-                        f"Conflict on {coordinate}: constraints "
-                        f"{prev_constraint!r} and {dep_constraint!r} "
-                        f"cannot be satisfied together",
-                        plan=self._rejection_plan(
-                            "conflict",
-                            f"Conflict on {coordinate}: constraints "
-                            f"{prev_constraint!r} and {dep_constraint!r} "
-                            f"are incompatible",
-                        ),
-                    )
-                # Check if the existing version satisfies the intersected constraint
-                if not _version_satisfies(existing.version, intersected):
-                    # Re-selection: remove and re-enqueue through the unified
-                    # new-node path so all metadata (node_type, platform,
-                    # bundle_members) is rebuilt and dependencies are re-enqueued.
-                    avail = self._available_versions(coordinate)
-                    re_selected = _select_best_version(avail, intersected)
-                    if re_selected is None:
-                        raise ConflictError(
-                            f"Conflict on {coordinate}: no version satisfies "
-                            f"intersected constraint {intersected!r}",
-                            plan=self._rejection_plan(
-                                "conflict",
-                                f"Conflict on {coordinate}: no version satisfies "
-                                f"{intersected!r}",
-                            ),
-                        )
-                    self._validate_no_branch_head(coordinate, re_selected)
-                    del plan.nodes[coordinate]
-                    constraint_state[coordinate] = intersected
-                    new_optional = is_optional and existing.optional
-                    pending.insert(0, (coordinate, re_selected, intersected, chain, new_optional))
-                    continue
-                constraint_state[coordinate] = intersected
-                existing.constraint = intersected
-                # Add path for diamond tracking
-                existing.paths.append(chain)
-                # If already resolved as required, upgrade from optional
-                if not is_optional and existing.optional:
-                    existing.optional = False
+        # BFS from root to find reachable coordinates
+        reachable: Set[str] = {root}
+        worklist = [root]
+        while worklist:
+            s_coord = worklist.pop()
+            s_version = selected.get(s_coord)
+            if s_version is None:
                 continue
+            meta = self._catalog.get(s_coord, {}).get(s_version, {})
+            for dep in meta.get("deps", {}):
+                if dep in selected and dep not in reachable:
+                    reachable.add(dep)
+                    worklist.append(dep)
+            for member in meta.get("bundle_members", []):
+                if member in selected and member not in reachable:
+                    reachable.add(member)
+                    worklist.append(member)
+            for opt_dep in meta.get("optional_deps", {}):
+                if opt_dep in selected and opt_dep not in reachable:
+                    reachable.add(opt_dep)
+                    worklist.append(opt_dep)
 
-            meta = self._catalog.get(coordinate, {}).get(version, {})
-            kind = meta.get("kind")
-            source = meta.get("source")
-            source_revision = meta.get("source_revision")
-            artifact_digest = meta.get("artifact_digest")
+        # Build nodes first (needed for cycle detection)
+        optional_status = self._compute_optional_status(selected, reachable, root)
 
-            # Branch-head rejection
-            self._validate_no_branch_head(coordinate, version)
-
-            # Determine node type from catalog metadata
-            node_type = self._node_type_from_meta(meta, coordinate)
-            constraint_state[coordinate] = dep_constraint
+        for coord in sorted(reachable):
+            version = selected[coord]
+            meta = self._catalog.get(coord, {}).get(version, {})
 
             node = ResolveNode(
-                node_type=node_type,
-                coordinate=coordinate,
+                node_type=self._node_type_from_meta(meta, coord),
+                coordinate=coord,
                 version=version,
-                kind=kind,
-                source=source,
-                source_revision=source_revision,
-                artifact_digest=artifact_digest,
+                kind=meta.get("kind"),
+                source=meta.get("source"),
+                source_revision=meta.get("source_revision"),
+                artifact_digest=meta.get("artifact_digest"),
                 dependencies=meta.get("deps", {}),
-                paths=[chain],
-                optional=is_optional,
-                constraint=dep_constraint,
+                paths=[],
+                optional=optional_status.get(coord, False),
+                constraint=self._compute_effective_constraint(coord, selected),
                 harness=harness_set,
                 platform=meta.get("platform"),
                 bundle_members=meta.get("bundle_members", []),
             )
-            plan.nodes[coordinate] = node
+            plan.nodes[coord] = node
 
-            # Resolve bundle members
-            bundle_members = meta.get("bundle_members", [])
-            if bundle_members:
-                for member_coord in bundle_members:
-                    self._enqueue_dep(
-                        member_coord, "*", chain, pending, harness_set=harness_set,
-                    )
-
-            # Enqueue required transitive dependencies
-            for dep_coord, dep_constraint in meta.get("deps", {}).items():
-                self._enqueue_dep(
-                    dep_coord, dep_constraint, chain, pending,
-                )
-
-            # Enqueue optional dependencies
-            for opt_coord, opt_constraint in meta.get("optional_deps", {}).items():
-                if opt_coord in chain:
-                    continue  # Skip optional cycles silently
-                self._enqueue_dep(
-                    opt_coord, opt_constraint, chain, pending, optional=True,
-                )
-
-        # Post-pass: detect cycles over the full dependency graph
+        # Post-pass: detect cycles before computing paths (safety)
         cycle_path = self._detect_cycle(plan)
         if cycle_path is not None:
             raise CycleError(
@@ -719,7 +972,88 @@ class Resolver:
                 ),
             )
 
+        # Compute all paths through the reachable graph
+        all_paths = self._compute_all_paths(selected, root, reachable)
+        for coord in sorted(reachable):
+            plan.nodes[coord].paths = all_paths.get(coord, [])
+
         return plan
+
+    def _compute_all_paths(
+        self,
+        selected: Dict[str, str],
+        root: str,
+        reachable: Set[str],
+    ) -> Dict[str, List[List[str]]]:
+        """Compute all simple paths from *root* to each coordinate.
+
+        Only traverses edges that exist in the selected graph (deps,
+        bundle_members, optional_deps of each selected node).
+        """
+        paths: Dict[str, List[List[str]]] = {}
+
+        for coord in reachable:
+            if coord == root:
+                paths[coord] = [[root]]
+                continue
+
+            coord_paths: List[List[str]] = []
+
+            def dfs(current: str, path_so_far: List[str]) -> None:
+                if current == coord:
+                    coord_paths.append(list(path_so_far))
+                    return
+                if current in path_so_far[:-1]:
+                    return  # Cycle in path
+                s_version = selected.get(current)
+                if s_version is None:
+                    return
+                meta = self._catalog.get(current, {}).get(s_version, {})
+                neighbours = (
+                    list(meta.get("deps", {}).keys())
+                    + list(meta.get("bundle_members", []))
+                    + list(meta.get("optional_deps", {}).keys())
+                )
+                for nb in sorted(set(neighbours)):
+                    if nb in selected:
+                        dfs(nb, path_so_far + [nb])
+
+            dfs(root, [root])
+            paths[coord] = coord_paths
+
+        return paths
+
+    def _compute_optional_status(
+        self,
+        selected: Dict[str, str],
+        reachable: Set[str],
+        root: str,
+    ) -> Dict[str, bool]:
+        """Determine which coordinates are purely optional.
+
+        A coordinate is optional only if ALL selected nodes that depend on it
+        list it in ``optional_deps`` (and none list it in ``deps`` or
+        ``bundle_members``).
+        """
+        status: Dict[str, bool] = {}
+        for coord in reachable:
+            if coord == root:
+                status[coord] = False
+                continue
+            has_required = False
+            has_optional = False
+            for s_coord, s_version in selected.items():
+                meta = self._catalog.get(s_coord, {}).get(s_version, {})
+                if coord in meta.get("deps", {}):
+                    has_required = True
+                    break
+                if coord in meta.get("bundle_members", []):
+                    has_required = True
+                    break
+                if coord in meta.get("optional_deps", {}):
+                    has_optional = True
+            status[coord] = (not has_required and has_optional)
+        return status
 
     @staticmethod
     def _node_type_from_meta(meta: Dict[str, Any], coordinate: str) -> NodeType:
@@ -805,76 +1139,6 @@ class Resolver:
                 if cycle is not None:
                     return cycle
         return None
-
-    def _enqueue_dep(
-        self,
-        dep_coord: str,
-        dep_constraint: str,
-        chain: List[str],
-        pending: List[Tuple[str, str, str, List[str], bool]],
-        optional: bool = False,
-        harness_set: Optional[Set[str]] = None,
-    ) -> None:
-        """Select a version for *dep_coord* and enqueue it for resolution."""
-        # Apply hold
-        held = self._holds.get(dep_coord)
-        if held is not None:
-            if not _version_satisfies(held, dep_constraint):
-                raise ConflictError(
-                    f"Hold on {dep_coord}@{held} conflicts with constraint "
-                    f"{dep_constraint!r}",
-                    plan=self._rejection_plan(
-                        "conflict",
-                        f"Hold on {dep_coord}@{held} conflicts with {dep_constraint!r}",
-                    ),
-                )
-            new_chain = chain + [dep_coord]
-            pending.append((dep_coord, held, dep_constraint, new_chain, optional))
-            return
-
-        # Apply pin
-        pinned = self._pins.get(dep_coord)
-        if pinned is not None:
-            if not _version_satisfies(pinned, dep_constraint):
-                raise ConflictError(
-                    f"Pin on {dep_coord}@{pinned} conflicts with constraint "
-                    f"{dep_constraint!r}",
-                    plan=self._rejection_plan(
-                        "conflict",
-                        f"Pin on {dep_coord}@{pinned} conflicts with {dep_constraint!r}",
-                    ),
-                )
-            new_chain = chain + [dep_coord]
-            pending.append((dep_coord, pinned, dep_constraint, new_chain, optional))
-            return
-
-        dep_versions = self._available_versions(dep_coord)
-        if not dep_versions:
-            if optional:
-                return  # Optional deps skip silently
-            raise MissingReleaseError(
-                f"No releases found for dependency {dep_coord} "
-                f"(required by {' -> '.join(chain)})",
-                plan=self._rejection_plan(
-                    "missing",
-                    f"No releases for {dep_coord}",
-                ),
-            )
-
-        selected_dep = _select_best_version(dep_versions, dep_constraint)
-        if selected_dep is None:
-            if optional:
-                return  # Optional deps skip silently
-            raise MissingReleaseError(
-                f"No version of {dep_coord} satisfies constraint "
-                f"{dep_constraint!r} (required by {' -> '.join(chain)})",
-                plan=self._rejection_plan(
-                    "missing",
-                    f"No version of {dep_coord} satisfies {dep_constraint!r}",
-                ),
-            )
-        new_chain = chain + [dep_coord]
-        pending.append((dep_coord, selected_dep, dep_constraint, new_chain, optional))
 
     @staticmethod
     def _rejection_plan(reason: str, detail: str) -> Dict[str, Any]:

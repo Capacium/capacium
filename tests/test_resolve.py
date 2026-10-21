@@ -23,7 +23,13 @@ from capacium.commands._resolve import (
     CycleError,
     MissingReleaseError,
     NodeType,
+    _version_satisfies,
 )
+
+
+def _rng_for_size(seed):
+    """Map seed to num_coords (2..4) deterministically."""
+    return 2 + ((seed * 7 + 3) % 3)
 
 
 # ---------------------------------------------------------------------------
@@ -2679,3 +2685,412 @@ class TestFixF_C2_C7_ReSelectionNodeRebuild:
         resolver = Resolver(catalog=catalog)
         with pytest.raises(BranchHeadError):
             resolver.resolve("root/pkg", "1.0.0")
+
+
+# ---------------------------------------------------------------------------
+# Fix G: deterministic backtracking with brute-force oracle validation
+# ---------------------------------------------------------------------------
+
+
+class TestFixG_BacktrackingOracle:
+    """Fix G: deterministic backtracking resolver validated against
+    a brute-force oracle over small random catalogs.
+
+    The oracle enumerates all possible version assignments (Cartesian
+    product) and checks which satisfy all constraints. The resolver must:
+    - Succeed iff at least one solution exists.
+    - Produce a lock that replays byte-identically.
+    """
+
+    @staticmethod
+    def _brute_force_solve(
+        catalog,
+        root,
+        version_spec,
+    ):
+        """Brute-force solver that enumerates all version assignments.
+
+        Returns:
+            (solvable, solution) where solvable is True iff at least one
+            complete assignment satisfies all constraints, and solution
+            is the lexicographically highest valid assignment (for
+            deterministic comparison).
+        """
+        from capacium.versioning import VersionManager
+
+        def _skey(v):
+            return VersionManager.semver_key(v) or (0, 0, 0)
+
+        # Collect all coordinates reachable from root transitively
+        all_coords: set = {root}
+        changed = True
+        while changed:
+            changed = False
+            for coord in list(all_coords):
+                for v in catalog.get(coord, {}):
+                    meta = catalog[coord][v]
+                    for dc in meta.get("deps", {}):
+                        if dc not in all_coords:
+                            all_coords.add(dc)
+                            changed = True
+                    for dc in meta.get("bundle_members", []):
+                        if dc not in all_coords:
+                            all_coords.add(dc)
+                            changed = True
+
+        # Compute per-coordinate version candidates
+        coord_versions = {}
+        for coord in sorted(all_coords):
+            versions = list(catalog.get(coord, {}).keys())
+            if coord == root:
+                versions = [
+                    v for v in versions
+                    if _version_satisfies(v, version_spec)
+                ]
+            if not versions:
+                return False, {}
+            coord_versions[coord] = sorted(versions, key=_skey)
+
+        best: dict | None = None
+
+        def _has_cycle(assignments):
+            """Check if the dependency graph of *assignments* contains a cycle."""
+            WHITE, GRAY, BLACK = 0, 1, 2
+            color: dict = {c: WHITE for c in assignments}
+
+            def dfs(coord):
+                color[coord] = GRAY
+                meta = catalog.get(coord, {}).get(assignments[coord], {})
+                for nb in meta.get("deps", {}):
+                    if nb not in color:
+                        continue
+                    if color[nb] == GRAY:
+                        return True
+                    if color[nb] == WHITE:
+                        if dfs(nb):
+                            return True
+                color[coord] = BLACK
+                return False
+
+            for c in assignments:
+                if color[c] == WHITE:
+                    if dfs(c):
+                        return True
+            return False
+
+        def _generate(assignments, remaining):
+            nonlocal best
+            if not remaining:
+                # Reject solutions with cycles
+                if _has_cycle(assignments):
+                    return
+                # Verify all constraints
+                for s_coord, s_version in assignments.items():
+                    meta = catalog.get(s_coord, {}).get(s_version, {})
+                    for dc, dc_constraint in meta.get("deps", {}).items():
+                        dv = assignments.get(dc)
+                        if dv is None:
+                            return
+                        if not _version_satisfies(dv, dc_constraint):
+                            return
+                if best is None or _assignments_better(assignments, best):
+                    best = dict(assignments)
+                return
+
+            coord = remaining[0]
+            for version in coord_versions[coord]:
+                assignments[coord] = version
+                _generate(assignments, remaining[1:])
+                del assignments[coord]
+
+        def _assignments_better(a, b):
+            for coord in sorted(all_coords):
+                va = _skey(a.get(coord, "0.0.0"))
+                vb = _skey(b.get(coord, "0.0.0"))
+                if va != vb:
+                    return va > vb
+            return False
+
+        _generate({}, sorted(all_coords))
+        return best is not None, best or {}
+
+    @staticmethod
+    def _random_catalog(seed, num_coords, max_versions):
+        """Generate a random small catalog.
+
+        Returns (catalog, root_coordinate, root_version_spec).
+        """
+        import random as _random
+        rng = _random.Random(seed)
+
+        # Create coordinates
+        prefixes = ["a", "b", "c", "d"]
+        coords = []
+        for i in range(num_coords):
+            owner = rng.choice(prefixes)
+            name = f"pkg{i}"
+            coords.append(f"{owner}/{name}")
+
+        root = coords[0]
+
+        # Create versions per coordinate (1..max_versions)
+        catalog = {}
+        for coord in coords:
+            num_versions = rng.randint(1, max_versions)
+            catalog[coord] = {}
+            for v_idx in range(num_versions):
+                major = num_versions - v_idx  # descending: higher major = fewer
+                version = f"{major}.{rng.randint(0, 3)}.0"
+                meta = {}
+                # Randomly add dependencies to other coordinates
+                deps = {}
+                for other in coords[1:]:
+                    if other != coord and rng.random() < 0.4:
+                        # Random constraint
+                        c_major = rng.randint(1, max_versions)
+                        c_minor = rng.randint(0, 1)
+                        if rng.random() < 0.3:
+                            constraint = f">={c_major}.{c_minor}.0,<{c_major + 1}.0.0"
+                        else:
+                            constraint = f">={c_major}.{c_minor}.0"
+                        deps[other] = constraint
+                if deps:
+                    meta["deps"] = deps
+                catalog[coord][version] = meta
+
+        # Root version spec
+        root_version_spec = ">=1.0.0"
+
+        return catalog, root, root_version_spec
+
+    def test_brute_force_oracle_agreement(self):
+        """The backtracking resolver agrees with brute-force oracle
+        on random small catalogs: it succeeds iff a solution exists."""
+        seeds = [
+            42, 101, 777, 1337, 2024, 3030, 4141, 5252,
+            6363, 7474, 8585, 9696, 12345, 23456, 34567,
+        ]
+        for seed in seeds:
+            catalog, root, version_spec = self._random_catalog(
+                seed, num_coords=_rng_for_size(seed), max_versions=3,
+            )
+            solvable, oracle_solution = self._brute_force_solve(
+                catalog, root, version_spec,
+            )
+            resolver = Resolver(catalog=catalog)
+            try:
+                plan = resolver.resolve(root, version_spec)
+                resolver_success = True
+            except ResolveError:
+                resolver_success = False
+
+            assert resolver_success == solvable, (
+                f"Seed {seed}: resolver {resolver_success}, "
+                f"oracle {solvable}. "
+                f"Root: {root}@{version_spec}"
+            )
+
+    def test_fix_g_repro_stale_edge_false_conflict(self):
+        """Review repro: stale edges from discarded version caused
+        false conflict. Backtracking must find the solution."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "p/a": "*",
+                    "q/b": "*",
+                    "r/c": "*",
+                }},
+            },
+            "p/a": {
+                "1.0.0": {"deps": {"shared/s": ">=1.0.0,<2.0.0"}},
+            },
+            "q/b": {
+                "1.0.0": {"deps": {"shared/s": ">=1.0.0,<1.5.0"}},
+            },
+            "r/c": {
+                "1.0.0": {"deps": {"real/x": ">=1.0.0"}},
+            },
+            "shared/s": {
+                "1.5.0": {"deps": {"real/x": ">=1.0.0,<1.5.0"}},
+                "1.0.0": {},
+            },
+            "real/x": {
+                "1.5.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        # Feasible solution: shared/s=1.0.0, real/x=1.5.0
+        assert plan.selected_version("shared/s") == "1.0.0"
+        assert plan.selected_version("real/x") == "1.5.0"
+
+    def test_fix_g_repro_orphan_node_pruned(self):
+        """Review repro: diamond re-selection must not leave orphan
+        nodes in the plan."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "p/a": "*",
+                    "q/b": "*",
+                }},
+            },
+            "p/a": {
+                "1.0.0": {"deps": {"shared/c": ">=1.0.0,<2.0.0"}},
+            },
+            "q/b": {
+                "1.0.0": {"deps": {"shared/c": ">=1.0.0,<1.5.0"}},
+            },
+            "shared/c": {
+                "1.5.0": {"deps": {"extra/d": "*"}},
+                "1.0.0": {},
+            },
+            "extra/d": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("shared/c") == "1.0.0"
+        # extra/d must NOT be in the plan — only reachable from discarded 1.5.0
+        assert "extra/d" not in plan.nodes, \
+            "orphan extra/d must not be in plan"
+
+    def test_fix_g_replay_byte_identical_after_reselection(self):
+        """Review repro: lock produced after diamond re-selection
+        must replay byte-identically."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "p/a": "*",
+                    "q/b": "*",
+                }},
+            },
+            "p/a": {
+                "1.0.0": {
+                    "deps": {"shared/c": ">=1.0.0,<2.0.0"},
+                    "source": "https://a", "source_revision": "ra",
+                    "artifact_digest": "da",
+                },
+            },
+            "q/b": {
+                "1.0.0": {
+                    "deps": {"shared/c": ">=1.0.0,<1.5.0"},
+                    "source": "https://b", "source_revision": "rb",
+                    "artifact_digest": "db",
+                },
+            },
+            "shared/c": {
+                "1.5.0": {
+                    "source": "https://s15", "source_revision": "r15",
+                    "artifact_digest": "d15",
+                },
+                "1.0.0": {
+                    "source": "https://s10", "source_revision": "r10",
+                    "artifact_digest": "d10",
+                },
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("shared/c") == "1.0.0"
+        lock = plan.to_lock()
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock, \
+            "Replayed lock must be byte-identical"
+
+    def test_fix_g_bundle_member_diamond_no_orphan(self):
+        """Bundle member diamond re-selection must not leave orphan members."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "a/x": ">=1.0.0,<2.0.0",
+                    "c/y": ">=1.0.0,<1.5.0",
+                }},
+            },
+            "a/x": {
+                "1.0.0": {"deps": {"b/bundle": ">=1.0.0,<2.0.0"}},
+            },
+            "c/y": {
+                "1.0.0": {"deps": {"b/bundle": ">=1.0.0,<1.5.0"}},
+            },
+            "b/bundle": {
+                "1.5.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["m/two"],
+                },
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["m/one"],
+                },
+            },
+            "m/one": {"1.0.0": {}},
+            "m/two": {"1.0.0": {}},
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("b/bundle") == "1.0.0"
+        assert plan.nodes["b/bundle"].bundle_members == ["m/one"]
+        assert "m/one" in plan.nodes
+        assert "m/two" not in plan.nodes, \
+            "orphan m/two must not be in plan"
+
+    def test_fix_g_json_plan_paths_only_reachable(self):
+        """JSON plan paths must only include reachable nodes — no
+        fabricated paths for orphan nodes."""
+        catalog = {
+            "root/pkg": {
+                "1.0.0": {"deps": {
+                    "p/a": "*",
+                    "q/b": "*",
+                }},
+            },
+            "p/a": {
+                "1.0.0": {"deps": {"shared/c": ">=1.0.0,<2.0.0"}},
+            },
+            "q/b": {
+                "1.0.0": {"deps": {"shared/c": ">=1.0.0,<1.5.0"}},
+            },
+            "shared/c": {
+                "1.5.0": {"deps": {"extra/d": "*"}},
+                "1.0.0": {},
+            },
+            "extra/d": {
+                "1.0.0": {},
+            },
+        }
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("root/pkg", "1.0.0")
+        assert plan.selected_version("shared/c") == "1.0.0"
+        json_plan = plan.to_json_plan()
+        selected = json_plan["plan"]["selected"]
+        assert "extra/d" not in selected, \
+            "orphan extra/d must not appear in JSON plan"
+        # shared/c paths must only reference reachable nodes
+        if "shared/c" in selected:
+            paths = selected["shared/c"].get("paths", [])
+            for path in paths:
+                assert "extra/d" not in path, \
+                    f"path {path} must not include orphan extra/d"
+
+    def test_fix_g_random_replay_property(self):
+        """Property: every lock produced by resolve() replays byte-identically.
+
+        Generates 100 small random catalogs and verifies that every
+        successful resolution produces a lock that replays without error
+        and yields identical bytes.
+        """
+        for seed in range(42, 42 + 100):
+            catalog, root, version_spec = self._random_catalog(
+                seed, num_coords=min(2 + (seed % 3), 4), max_versions=3,
+            )
+            resolver = Resolver(catalog=catalog)
+            try:
+                plan = resolver.resolve(root, version_spec)
+            except ResolveError:
+                continue  # Unsolvable — skip
+            lock = plan.to_lock()
+            replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+            assert replayed.to_lock() == lock, (
+                f"Seed {seed}: replayed lock differs from original. "
+                f"Root: {root}@{version_spec}"
+            )
