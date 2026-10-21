@@ -926,10 +926,19 @@ class Resolver:
     ) -> Optional[str]:
         """Intersect all constraints on *coord* from *selected* nodes.
 
+        ``deps`` and ``bundle_members`` are always mandatory. ``optional_deps``
+        constraints are soft: they only contribute when there are *no* mandatory
+        edges for *coord* across all selected nodes. When at least one mandatory
+        edge exists, optional constraints are ignored — they must not narrow
+        a mandatory range, because that would turn a solvable catalog into a
+        false conflict/cycle.
+
         Returns the narrowest combined constraint, ``"*"`` if there are
         no constraints, or ``None`` if the intersection is empty.
         """
-        result: Optional[str] = None
+        mandatory_result: Optional[str] = None
+        optional_result: Optional[str] = None
+
         for s_coord, s_version in selected.items():
             meta = self._catalog.get(s_coord, {}).get(s_version, {})
             deps = meta.get("deps", {})
@@ -938,18 +947,23 @@ class Resolver:
 
             if coord in deps:
                 c = deps[coord]
-                result = c if result is None else _intersect_constraints(result, c)
-                if result is None:
+                mandatory_result = c if mandatory_result is None else \
+                    _intersect_constraints(mandatory_result, c)
+                if mandatory_result is None:
                     return None
             if coord in bundle_members:
-                result = "*" if result is None else _intersect_constraints(result, "*")
+                mandatory_result = ("*" if mandatory_result is None
+                                    else _intersect_constraints(mandatory_result, "*"))
             if coord in optional_deps:
                 c = optional_deps[coord]
-                result = c if result is None else _intersect_constraints(result, c)
-                if result is None:
-                    return None
+                optional_result = c if optional_result is None else \
+                    _intersect_constraints(optional_result, c)
+                if optional_result is None:
+                    optional_result = None
 
-        return result or "*"
+        if mandatory_result is not None:
+            return mandatory_result
+        return optional_result or "*"
 
     def _has_branch_head(self, coordinate: str, version: str) -> bool:
         """Return True if *coordinate*@*version* has a branch-head revision."""

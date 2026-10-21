@@ -3658,12 +3658,12 @@ class TestFixI_OracleExpanded:
         The oracle is exponential; this samples a representative set.
         Cycle forms (~1-2% rate) are covered.
 
-        Known pre-existing issue: seed 43 may show a false disagreement
-        due to _compute_effective_constraint treating optional_deps
-        constraints as mandatory (pre-existing, out of Fix I scope).
+        Fix J: optional_deps are soft edges — they do not contribute to
+        _compute_effective_constraint, so the resolver no longer falsely
+        rejects solvable catalogs where an optional edge's constraint would
+        otherwise force a cycle or conflict.
         """
         seeds = list(range(42, 242))  # 200 seeds
-        known_pre_existing = {43, 169}
         disagreements = []
         for seed in seeds:
             catalog, root, version_spec = \
@@ -3681,7 +3681,7 @@ class TestFixI_OracleExpanded:
             except ResolveError:
                 resolver_success = False
 
-            if resolver_success != solvable and seed not in known_pre_existing:
+            if resolver_success != solvable:
                 disagreements.append(
                     f"Seed {seed}: resolver {resolver_success}, "
                     f"oracle {solvable}. "
@@ -3690,7 +3690,7 @@ class TestFixI_OracleExpanded:
 
         assert not disagreements, (
             f"Resolver disagrees with oracle on "
-            f"{len(disagreements)}/{len(seeds)} seeds (excluding known):\n" +
+            f"{len(disagreements)}/{len(seeds)} seeds:\n" +
             "\n".join(disagreements[:20])
         )
 
