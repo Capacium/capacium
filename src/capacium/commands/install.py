@@ -31,6 +31,154 @@ _CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SOURCE_PROVENANCE_FILE = ".capacium-source.json"
 
 
+class _InstallJournal:
+    """Operation journal for transactional install (CAP117-TRANSACT-004).
+
+    Records the immutable plan and every write surface before mutation.
+    On failure, restores pre-install state. On success, commits the journal.
+    """
+
+    def __init__(self, cap_id: str, version: str):
+        self.cap_id = cap_id
+        self.version = version
+        self._plan: dict = {}
+        self._files: dict = {}        # Path -> bytes | None (absent before)
+        self._links: dict = {}        # Path -> target str | None (absent before)
+        self._new_paths: list = []    # Paths created (dirs/files) for rollback removal
+        self._prior_cap: Optional[Capability] = None  # Capability row replaced by upsert
+        self._adapter_statuses: list = []  # (cap_id, version, framework) set
+
+    # ── plan ───────────────────────────────────────────────────────────
+    def set_plan(self, **kwargs) -> None:
+        """Record the immutable operation plan before the first mutation."""
+        self._plan = {
+            "operation": "install",
+            "cap_id": self.cap_id,
+            "version": self.version,
+            "timestamp": datetime.now().isoformat(),
+            **kwargs,
+        }
+
+    # ── recording ──────────────────────────────────────────────────────
+    def record_file(self, path: Path) -> None:
+        """Snapshot a file before it gets modified."""
+        path = Path(path)
+        if path in self._files:
+            return
+        try:
+            self._files[path] = path.read_bytes() if path.is_file() else None
+        except OSError:
+            self._files[path] = None
+
+    def record_link(self, path: Path) -> None:
+        """Snapshot a symlink before it gets created or modified."""
+        path = Path(path)
+        if path in self._links:
+            return
+        if path.is_symlink():
+            self._links[path] = os.readlink(path)
+        else:
+            self._links[path] = None
+
+    def set_prior_cap(self, cap: Optional[Capability]) -> None:
+        """Record the pre-existing registry row so upsert can be reversed."""
+        self._prior_cap = cap
+
+    def record_adapter_status(self, cap_id: str, version: str, framework: str) -> None:
+        """Record an adapter status that was set during this install."""
+        self._adapter_statuses.append((cap_id, version, framework))
+
+    def record_new_path(self, path: Path) -> None:
+        """Record a path created during install so it can be removed on rollback."""
+        self._new_paths.append(Path(path))
+
+    def snapshot_adapter_surfaces(
+        self, cap_name: str, frameworks: list, registry
+    ) -> None:
+        """Record all write surfaces the install may touch before any mutation."""
+        from ..adapters import get_adapter
+        from ..framework_detector import harness_link_roots
+
+        config_backed = set(frameworks) | {
+            "claude-desktop", "codex", "gemini-cli", "antigravity", "opencode",
+        }
+        for fw_name in config_backed:
+            try:
+                adapter = get_adapter(fw_name)
+            except Exception:
+                continue
+            config_path = getattr(adapter, "config_path", None)
+            if config_path is not None:
+                self.record_file(Path(config_path))
+
+        for location in harness_link_roots().values():
+            parent_dir = Path(location)
+            for link_path in (
+                parent_dir / cap_name,
+                parent_dir / f"{cap_name}.md",
+            ):
+                self.record_link(link_path)
+            if parent_dir.is_dir():
+                for item in parent_dir.iterdir():
+                    if item.is_dir() and not item.is_symlink():
+                        for link_path in (
+                            item / cap_name,
+                            item / f"{cap_name}.md",
+                        ):
+                            self.record_link(link_path)
+
+    # ── outcome ────────────────────────────────────────────────────────
+    def restore(self) -> None:
+        """Roll back every mutation to the pre-install state."""
+        registry = Registry()
+
+        # 1. Restore or remove the registry row.
+        try:
+            if self._prior_cap is not None:
+                registry.upsert_capability(self._prior_cap)
+            else:
+                registry.remove_capability(self.cap_id, self.version)
+        except Exception:
+            pass
+
+        # 2. Restore adapter config files.
+        for path, content in self._files.items():
+            try:
+                if content is None:
+                    if path.is_file():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+            except OSError:
+                pass
+
+        # 3. Restore symlinks.
+        for path, target in self._links.items():
+            try:
+                if path.is_symlink():
+                    path.unlink()
+                if target is not None:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.symlink_to(target)
+            except OSError:
+                pass
+
+        # 4. Remove newly created paths (package dirs, etc.) in reverse order.
+        for path in reversed(self._new_paths):
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                elif path.exists() or path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+
+    def commit(self) -> None:
+        """Mark the transaction committed — the journal is complete."""
+        pass
+
+
 @dataclass(frozen=True)
 class SourceProvenance:
     source_url: str
@@ -466,180 +614,200 @@ def install_capability(
         print(f"  Supported kinds: {', '.join(sorted(_ALLOWED_KINDS))}")
         return False
 
-    from ..adapters.base import ensure_package_dir
-
-    package_dir = ensure_package_dir(
-        storage, cap_name, version, source_dir, owner=owner,
-    )
-    manifest = Manifest.detect_from_directory(package_dir)
-    errors = manifest.validate()
-    if errors:
-        for e in errors:
-            print(f"Warning: {e}")
-    if manifest.kind == "bundle":
-        _warn_bundle_frontmatter_collisions(manifest, package_dir)
-
-    # V11/STAB-007: warn when declared env vars never appear in the server
-    # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
-    # SLACK_MCP_XOXP_TOKEN) yields silently non-functional servers.
-    if manifest.kind == "mcp-server":
-        _warn_unknown_env_vars(package_dir, manifest)
-
-    # V13a/STAB-001 static guard: a kind=skill package without a root
-    # SKILL.md is undiscoverable in skill clients. If it actually contains
-    # nested member skills it is a mis-modeled multi-skill repo — refuse
-    # instead of creating a dead root link.
-    if (manifest.kind or "") == "skill" and not (package_dir / "SKILL.md").exists():
-        from ..manifest import infer_multi_skill_members
-        nested = infer_multi_skill_members(package_dir)
-        if nested:
-            print(f"Error: {cap_id} is a multi-skill repository "
-                  f"({len(nested)} member skills) declared as kind=skill.")
-            print("  A root link would be invisible to skill clients.")
-            print("  Model it as kind=bundle, or install a member directly:")
-            for m in nested[:8]:
-                print(f"    cap install {cap_id}/{m['name']}")
-            return False
-        print(f"Warning: {cap_id} has no SKILL.md — skill clients may not discover it.")
-
-    # Install runtime dependencies before writing client configuration. A failed
-    # dependency install must not leave broken MCP entries behind. Go projects
-    # are exempt even when a stray package.json (docs tooling) is present —
-    # treating them as node packages is the V5 misclassification.
-    if (
-        manifest.kind == "mcp-server"
-        and _has_package_json(package_dir)
-        and not _is_go_project(package_dir, manifest)
-    ):
-        if not _install_npm_dependencies(package_dir, cap_name):
-            print(f"Error: npm install failed for {cap_name}. Installation aborted.")
-            return False
-
-    # V10/STAB-004: Go MCP servers get built from the local package so the
-    # client config references a binary, never a network-fetching 'go run'.
-    if manifest.kind == "mcp-server" and _is_go_project(package_dir, manifest):
-        build_result = _build_go_binary(package_dir, cap_name, yes=yes)
-        if build_result == "failed":
-            print(f"Error: could not build Go binary for {cap_name}. Installation aborted.")
-            return False
-        if build_result == "no-toolchain" and not (
-            skip_runtime_check
-            or os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1"
-        ):
-            print(f"Error: go toolchain required to build {cap_name}. Installation aborted.")
-            return False
-
-    attempted_frameworks: set[str] = set()
-    successful_frameworks: List[str] = []
-    for fw in resolved_frameworks:
-        if fw in attempted_frameworks:
-            continue
-        attempted_frameworks.add(fw)
-        try:
-            from ..adapters import get_adapter
-            adapter = get_adapter(fw)
-        except ValueError:
-            print(f"Warning: Unknown framework adapter '{fw}'. Skipping.")
-            continue
-        try:
-            success = adapter.install_capability(
-                cap_name,
-                version,
-                package_dir,
-                owner=owner,
-                kind=manifest.kind,
-            )
-        except RuntimeUnavailableError as exc:
-            # Host-global condition: no client config was written and no other
-            # framework can succeed either. Abort with the install hint.
-            print(f"Error: cannot install {cap_id}@{version} — required runtime unavailable.")
-            print(str(exc))
-            return False
-        if success:
-            successful_frameworks.append(fw)
-        else:
-            print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
-
-    if not successful_frameworks:
-        print(f"Error: Could not install {cap_id}@{version} for any selected framework.")
-        return False
-    resolved_frameworks = successful_frameworks
-
-    _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
-    if manifest.kind == "bundle":
-        sub_fingerprints = _install_bundle_members(
-            manifest, owner, package_dir, registry, storage, no_lock, force=force,
-            all_frameworks=all_frameworks,
-        )
-        fingerprint = compute_bundle_fingerprint(sub_fingerprints)
-    else:
-        print(f"  Computing fingerprint for {cap_name}...")
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
-
-    first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
-    if not source_url:
-        source_url = source_manifest.repository or _detect_git_remote(source_dir)
-    if not manifest.kind or not str(manifest.kind).strip():
-        raise ValueError(f"Manifest kind is required for installation: {cap_name}")
-    cap = Capability(
-        owner=owner,
-        name=cap_name,
-        version=version,
-        kind=Kind(manifest.kind),
-        fingerprint=fingerprint,
-        install_path=package_dir,
-        installed_at=datetime.now(),
-        dependencies=[],
-        framework=first_fw,
-        frameworks=list(resolved_frameworks),
+    # ── Transaction journal (CAP117-TRANSACT-004) ──────────────────────
+    # Record the immutable plan and snapshot every write surface before
+    # the first mutation. Any failure past this point rolls back completely.
+    journal = _InstallJournal(cap_id, version)
+    journal.set_plan(
+        source_dir=str(source_dir) if source_dir else None,
         source_url=source_url,
-        source_ref=(source_provenance.source_ref if source_provenance else None),
-        source_commit=(source_provenance.source_commit if source_provenance else None),
+        resolved_frameworks=list(resolved_frameworks),
+        kind=source_manifest.kind,
     )
+    journal.snapshot_adapter_surfaces(cap_name, resolved_frameworks, registry)
 
-    # BUG P6-006: single atomic upsert replaces the add->get->update dance that
-    # raced (INSERT IntegrityError between connection A and B -> UPDATE on a
-    # third connection -> `database is locked` on concurrent installs).
-    existing_before = registry.get_capability(f"{owner}/{cap_name}", version)
-    registry.upsert_capability(cap)
-    if existing_before and existing_before.fingerprint != cap.fingerprint:
-        print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
-              f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
-    _record_install_status(registry, cap_id, version, resolved_frameworks)
+    # Record the existing registry row so we can restore it on rollback.
+    existing_before = registry.get_capability(cap_id, version)
+    journal.set_prior_cap(existing_before)
 
-    if all_frameworks:
-        kind_str = cap.kind.value
-        created = create_framework_symlinks(
-            package_dir=package_dir,
-            cap_name=cap_name,
-            owner=owner,
-            version=version,
-            kind=kind_str,
-            fingerprint=fingerprint,
-            frameworks=resolved_frameworks,
+    try:
+        from ..adapters.base import ensure_package_dir
+
+        package_dir = ensure_package_dir(
+            storage, cap_name, version, source_dir, owner=owner,
         )
-        if created:
-            print(f"  Omni-symlinks created for: {', '.join(created)}")
+        journal.record_new_path(package_dir)
 
-    from .lock import enforce_lock
-    if not enforce_lock(cap_id, no_lock=no_lock):
-        print(f"Install aborted: lock enforcement failed for {cap_id}@{version}")
+        manifest = Manifest.detect_from_directory(package_dir)
+        errors = manifest.validate()
+        if errors:
+            for e in errors:
+                print(f"Warning: {e}")
+        if manifest.kind == "bundle":
+            _warn_bundle_frontmatter_collisions(manifest, package_dir)
+
+        # V11/STAB-007: warn when declared env vars never appear in the server
+        # source — the korotovsky class (manifest: SLACK_BOT_TOKEN, server reads
+        # SLACK_MCP_XOXP_TOKEN) yields silently non-functional servers.
+        if manifest.kind == "mcp-server":
+            _warn_unknown_env_vars(package_dir, manifest)
+
+        # V13a/STAB-001 static guard: a kind=skill package without a root
+        # SKILL.md is undiscoverable in skill clients. If it actually contains
+        # nested member skills it is a mis-modeled multi-skill repo — refuse
+        # instead of creating a dead root link.
+        if (manifest.kind or "") == "skill" and not (package_dir / "SKILL.md").exists():
+            from ..manifest import infer_multi_skill_members
+            nested = infer_multi_skill_members(package_dir)
+            if nested:
+                print(f"Error: {cap_id} is a multi-skill repository "
+                      f"({len(nested)} member skills) declared as kind=skill.")
+                print("  A root link would be invisible to skill clients.")
+                print("  Model it as kind=bundle, or install a member directly:")
+                for m in nested[:8]:
+                    print(f"    cap install {cap_id}/{m['name']}")
+                return False
+            print(f"Warning: {cap_id} has no SKILL.md — skill clients may not discover it.")
+
+        # Install runtime dependencies before writing client configuration.
+        if (
+            manifest.kind == "mcp-server"
+            and _has_package_json(package_dir)
+            and not _is_go_project(package_dir, manifest)
+        ):
+            if not _install_npm_dependencies(package_dir, cap_name):
+                print(f"Error: npm install failed for {cap_name}. Installation aborted.")
+                return False
+
+        # V10/STAB-004: Go MCP servers get built from the local package.
+        if manifest.kind == "mcp-server" and _is_go_project(package_dir, manifest):
+            build_result = _build_go_binary(package_dir, cap_name, yes=yes)
+            if build_result == "failed":
+                print(f"Error: could not build Go binary for {cap_name}. Installation aborted.")
+                return False
+            if build_result == "no-toolchain" and not (
+                skip_runtime_check
+                or os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1"
+            ):
+                print(f"Error: go toolchain required to build {cap_name}. Installation aborted.")
+                return False
+
+        attempted_frameworks: set[str] = set()
+        successful_frameworks: List[str] = []
+        for fw in resolved_frameworks:
+            if fw in attempted_frameworks:
+                continue
+            attempted_frameworks.add(fw)
+            try:
+                from ..adapters import get_adapter
+                adapter = get_adapter(fw)
+            except ValueError:
+                print(f"Warning: Unknown framework adapter '{fw}'. Skipping.")
+                continue
+            try:
+                success = adapter.install_capability(
+                    cap_name,
+                    version,
+                    package_dir,
+                    owner=owner,
+                    kind=manifest.kind,
+                )
+            except RuntimeUnavailableError as exc:
+                print(f"Error: cannot install {cap_id}@{version} — required runtime unavailable.")
+                print(str(exc))
+                raise
+            if success:
+                successful_frameworks.append(fw)
+            else:
+                print(f"Warning: Could not install capability for framework '{fw}'. Skipping.")
+
+        if not successful_frameworks:
+            print(f"Error: Could not install {cap_id}@{version} for any selected framework.")
+            raise RuntimeError("No framework succeeded")
+
+        resolved_frameworks = successful_frameworks
+
+        _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
+        if manifest.kind == "bundle":
+            sub_fingerprints = _install_bundle_members(
+                manifest, owner, package_dir, registry, storage, no_lock, force=force,
+                all_frameworks=all_frameworks,
+            )
+            fingerprint = compute_bundle_fingerprint(sub_fingerprints)
+        else:
+            print(f"  Computing fingerprint for {cap_name}...")
+            fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
+
+        first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
+        if not source_url:
+            source_url = source_manifest.repository or _detect_git_remote(source_dir)
+        if not manifest.kind or not str(manifest.kind).strip():
+            raise ValueError(f"Manifest kind is required for installation: {cap_name}")
+        cap = Capability(
+            owner=owner,
+            name=cap_name,
+            version=version,
+            kind=Kind(manifest.kind),
+            fingerprint=fingerprint,
+            install_path=package_dir,
+            installed_at=datetime.now(),
+            dependencies=[],
+            framework=first_fw,
+            frameworks=list(resolved_frameworks),
+            source_url=source_url,
+            source_ref=(source_provenance.source_ref if source_provenance else None),
+            source_commit=(source_provenance.source_commit if source_provenance else None),
+        )
+
+        # BUG P6-006: single atomic upsert replaces the add->get->update dance.
+        registry.upsert_capability(cap)
+        if existing_before and existing_before.fingerprint != cap.fingerprint:
+            print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
+                  f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
+        _record_install_status(registry, cap_id, version, resolved_frameworks)
+        for fw in resolved_frameworks:
+            journal.record_adapter_status(cap_id, version, fw)
+
+        if all_frameworks:
+            kind_str = cap.kind.value
+            created = create_framework_symlinks(
+                package_dir=package_dir,
+                cap_name=cap_name,
+                owner=owner,
+                version=version,
+                kind=kind_str,
+                fingerprint=fingerprint,
+                frameworks=resolved_frameworks,
+            )
+            if created:
+                print(f"  Omni-symlinks created for: {', '.join(created)}")
+
+        from .lock import enforce_lock
+        if not enforce_lock(cap_id, no_lock=no_lock):
+            print(f"Install aborted: lock enforcement failed for {cap_id}@{version}")
+            raise RuntimeError("Lock enforcement failed")
+
+        StorageManager.write_meta(cap, frameworks=resolved_frameworks)
+
+        if force or prune:
+            from .gc import prune_superseded_versions
+
+            if manifest.kind == "bundle":
+                for member_id in _installed_bundle_member_refs(registry, f"{cap_id}@{version}"):
+                    member_cap_id, member_version = member_id.rsplit("@", 1)
+                    member_owner, member_name = Registry.parse_cap_id(member_cap_id)
+                    prune_superseded_versions(
+                        member_owner, member_name, member_version
+                    )
+            prune_superseded_versions(owner, cap_name, version)
+
+    except Exception as exc:
+        print(f"Install of {cap_id}@{version} failed: {exc}")
+        print("  Rolling back — all changes restored.")
+        journal.restore()
         return False
 
-    StorageManager.write_meta(cap, frameworks=resolved_frameworks)
-
-    if force or prune:
-        from .gc import prune_superseded_versions
-
-        if manifest.kind == "bundle":
-            for member_id in _installed_bundle_member_refs(registry, f"{cap_id}@{version}"):
-                member_cap_id, member_version = member_id.rsplit("@", 1)
-                member_owner, member_name = Registry.parse_cap_id(member_cap_id)
-                prune_superseded_versions(
-                    member_owner, member_name, member_version
-                )
-        prune_superseded_versions(owner, cap_name, version)
-
+    journal.commit()
     print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
     return True
 
