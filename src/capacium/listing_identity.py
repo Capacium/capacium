@@ -18,6 +18,12 @@ The contract is deliberately conservative:
   refuses the upload rather than shipping a guess.
 * Administrative recovery is explicit: it needs a signed digest *and* a reason,
   and both are recorded in the transition evidence so the act stays auditable.
+* The manifest's own coordinate is checked against the repository it cites
+  before anything is uploaded: the namespace is case-sensitive, so a repository
+  that describes a different (or differently-cased) owner/name is a structural
+  error, not a warning.
+* A previous identity is only meaningful when the manifest names a repository
+  for the listing it is moving *to*; without that anchor the claim is refused.
 
 Diagnostic codes are part of the public ``publisher/listing API v1`` surface —
 they are stable strings, and new codes are additive.
@@ -42,6 +48,11 @@ CLAIM_AUTHORITY_UNVERIFIED = "claim.authority.unverified"
 CLAIM_MALFORMED = "claim.malformed"
 CLAIM_SELF_REFERENCE = "claim.self-reference"
 CLAIM_CASE_MISMATCH = "claim.case-mismatch"
+
+#: The manifest's own coordinate does not match the repository it cites.
+OWNER_CASE_MISMATCH = "owner.case-mismatch"
+REPOSITORY_IDENTITY_MISMATCH = "repository.identity-mismatch"
+REPOSITORY_MISSING = "repository.missing"
 
 PUBLISH_PACKAGE_NOT_FOUND = "publish.package.not-found"
 PUBLISH_MANIFEST_MISSING_FIELD = "publish.manifest.missing-field"
@@ -183,6 +194,69 @@ def parse_repository(repo_url: str) -> Optional[Tuple[str, str]]:
     return parts[0], "/".join(parts[1:])
 
 
+def _repository_coordinate(repository: str) -> Optional[str]:
+    """The exact ``owner/name`` coordinate a repository URL resolves to.
+
+    Unlike :func:`_normalise_coordinate` this never invents a ``global/``
+    prefix: a repository URL either names an owner and a name or it is not a
+    usable anchor.
+    """
+    parsed = parse_repository(repository)
+    if parsed is None:
+        return None
+    return f"{parsed[0]}/{parsed[1]}"
+
+
+def verify_manifest_identity(
+    manifest, listing_id: str
+) -> Tuple[Optional[str], List[Diagnostic]]:
+    """Check the manifest's own coordinate against the repository it cites.
+
+    Returns ``(repository_coordinate, diagnostics)``.  A manifest that names no
+    repository is anchored by nothing and passes — only a repository that
+    contradicts the manifest is an error.  Exact case is the namespace, so a
+    case-only difference is refused rather than coerced.
+    """
+    repository = (getattr(manifest, "repository", None) or "").strip()
+    if not repository:
+        return None, []
+
+    repo_coordinate = _repository_coordinate(repository)
+    if repo_coordinate is None:
+        return None, [
+            Diagnostic(
+                REPOSITORY_IDENTITY_MISMATCH,
+                SEVERITY_ERROR,
+                "repository",
+                f"repository {repository!r} does not name an owner and a name",
+            )
+        ]
+
+    if repo_coordinate == listing_id:
+        return repo_coordinate, []
+
+    if repo_coordinate.lower() == listing_id.lower():
+        return repo_coordinate, [
+            Diagnostic(
+                OWNER_CASE_MISMATCH,
+                SEVERITY_ERROR,
+                "repository",
+                f"repository {repo_coordinate} differs from listing "
+                f"{listing_id} only in case; exact case is the namespace",
+            )
+        ]
+
+    return repo_coordinate, [
+        Diagnostic(
+            REPOSITORY_IDENTITY_MISMATCH,
+            SEVERITY_ERROR,
+            "repository",
+            f"repository {repo_coordinate} is not the listing {listing_id} "
+            "it is published under",
+        )
+    ]
+
+
 def _normalise_coordinate(entry: Any) -> Optional[str]:
     """Coerce a manifest claim entry into a stable ``owner/name`` coordinate."""
     if isinstance(entry, dict):
@@ -261,6 +335,7 @@ def build_claims(manifest, listing_id: str) -> Tuple[List[_Claim], List[Diagnost
             continue
         claims.append(claim)
 
+    anchor = _anchor_coordinate(manifest)
     for index, entry in enumerate(_claim_entries(manifest.previous_identities)):
         field_name = f"previous_identities[{index}]"
         claim = _build_claim(
@@ -269,6 +344,7 @@ def build_claims(manifest, listing_id: str) -> Tuple[List[_Claim], List[Diagnost
             entry,
             listing_id,
             require_repository=True,
+            anchor=anchor,
         )
         if claim is None:
             diagnostics.append(
@@ -290,6 +366,19 @@ def build_claims(manifest, listing_id: str) -> Tuple[List[_Claim], List[Diagnost
             )
 
     return claims, diagnostics
+
+
+def _anchor_coordinate(manifest) -> Optional[str]:
+    """The coordinate a previous identity claims to have moved *to*.
+
+    A previous identity describes a past ``from -> to`` pair, so the repository
+    it cites is the identity that was left behind.  The manifest must name the
+    coordinate it currently publishes under for that move to mean anything.
+    """
+    repository = (getattr(manifest, "repository", None) or "").strip()
+    if not repository:
+        return None
+    return _repository_coordinate(repository)
 
 
 def _message_for(code: str, claim: _Claim) -> str:
@@ -322,6 +411,7 @@ def _build_claim(
     entry: Any,
     listing_id: str,
     require_repository: bool,
+    anchor: Optional[str] = None,
 ) -> Optional[_Claim]:
     from_id = _normalise_coordinate(entry)
     if from_id is None:
@@ -341,28 +431,27 @@ def _build_claim(
         return claim
 
     if require_repository:
+        # A previous identity is a past ``from -> to`` pair: the manifest must
+        # name the repository of the coordinate it publishes under now, and the
+        # entry must cite the repository of the identity it claims to have left.
+        if not anchor:
+            claim.codes.append(REPOSITORY_MISSING)
+            claim.error = True
+            return claim
         if not claim.repository:
             claim.codes.append(CLAIM_MALFORMED)
             claim.error = True
             return claim
-        parsed = parse_repository(claim.repository)
-        if parsed is None:
+        cited = _repository_coordinate(claim.repository)
+        if cited is None:
             claim.codes.append(CLAIM_MALFORMED)
             claim.error = True
             return claim
-        claim_owner, claim_name = from_id.split("/", 1)
-        repo_owner, repo_name = parsed
-        exact = (repo_owner, repo_name) == (claim_owner, claim_name)
-        case_only = (repo_owner.lower(), repo_name.lower()) == (
-            claim_owner.lower(),
-            claim_name.lower(),
-        )
-        if not exact and case_only:
-            claim.codes.append(CLAIM_CASE_MISMATCH)
-            claim.error = True
-            return claim
-        if not exact:
-            claim.codes.append(CLAIM_MALFORMED)
+        if cited != from_id:
+            if cited.lower() == from_id.lower():
+                claim.codes.append(CLAIM_CASE_MISMATCH)
+            else:
+                claim.codes.append(CLAIM_MALFORMED)
             claim.error = True
             return claim
 
@@ -407,7 +496,11 @@ def evaluate_identity(
     listing_id = f"{owner}/{manifest.name}"
     events = list(authority_events or [])
 
+    _repository, identity_diagnostics = verify_manifest_identity(
+        manifest, listing_id
+    )
     claims, diagnostics = build_claims(manifest, listing_id)
+    diagnostics = identity_diagnostics + diagnostics
     for claim in claims:
         if not claim.error and not claim.codes:
             claim.codes.append(CLAIM_AUTHORITY_UNVERIFIED)

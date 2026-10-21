@@ -1,6 +1,6 @@
 """CAP117-IDENTITY-007 — publisher identity preflight and safe claim reads.
 
-Dispatch 1 of 2, criteria 1-3:
+Criteria 1-3 (dispatch 1) and 4-6 (dispatch 2):
 
 1. Verified aliases and previous coordinates resolve to one stable listing ID
    and expose the canonical coordinate and transition evidence.
@@ -8,6 +8,12 @@ Dispatch 1 of 2, criteria 1-3:
    or capture a listing.
 3. Ordinary transitions require authenticated authority for both sides;
    administrative recovery is explicit, reasoned and auditable.
+4. ``cap publish`` validates exact-case owner/repository identity and
+   previous-identity claims before upload and returns stable JSON diagnostics.
+5. The Publisher Action consumes the same JSON contract, and Exchange release
+   work stays separate from CLI/publisher-action releases.
+6. Valid move, fork, mirror, duplicate, malformed claim and hostile takeover
+   fixtures pass.
 
 The red proofs below are written against ``publish_capability`` and the
 ``listing_identity`` contract module.  They fail on the base because neither the
@@ -27,6 +33,10 @@ try:  # base commit: the preflight contract module does not exist yet
         CLAIM_CASE_MISMATCH,
         CLAIM_MALFORMED,
         CLAIM_SELF_REFERENCE,
+        IDENTITY_SCHEMA_VERSION,
+        OWNER_CASE_MISMATCH,
+        REPOSITORY_IDENTITY_MISMATCH,
+        REPOSITORY_MISSING,
     )
 except ImportError:  # pragma: no cover - true only on the base commit
     # Keep collection alive so the red proofs below surface as *failing tests*
@@ -36,6 +46,10 @@ except ImportError:  # pragma: no cover - true only on the base commit
     CLAIM_CASE_MISMATCH = None
     CLAIM_MALFORMED = None
     CLAIM_SELF_REFERENCE = None
+    IDENTITY_SCHEMA_VERSION = None
+    OWNER_CASE_MISMATCH = None
+    REPOSITORY_IDENTITY_MISMATCH = None
+    REPOSITORY_MISSING = None
 
 _MOVE_MANIFEST = """\
 kind: bundle
@@ -206,6 +220,76 @@ previous_identities:
     report = _json_result(capsys)
     assert report["valid"] is False
     assert CLAIM_CASE_MISMATCH in report["codes"]
+
+
+# --- Criterion 4: exact-case owner/repository identity ----------------------
+
+
+def test_owner_case_mismatch_against_repository_is_rejected(tmp_path, capsys):
+    """``owner`` and the repository owner path must match exactly; a
+    case-only difference is a different namespace and is refused, not coerced."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 1.0.2
+owner: langevc
+repository: https://github.com/LangeVC/skillweave
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        assert publish_capability(manifest, json_output=True) is False
+        instance.publish.assert_not_called()
+
+    report = _json_result(capsys)
+    assert report["valid"] is False
+    assert OWNER_CASE_MISMATCH in report["codes"]
+
+
+def test_repository_identity_mismatch_is_rejected(tmp_path, capsys):
+    """A repository that belongs to another owner/name than the manifest
+    claims is reported, not silently accepted as the listing's source."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 1.0.2
+owner: LangeVC
+repository: https://github.com/someone-else/other-repo
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        assert publish_capability(manifest, json_output=True) is False
+        instance.publish.assert_not_called()
+
+    report = _json_result(capsys)
+    assert report["valid"] is False
+    assert REPOSITORY_IDENTITY_MISMATCH in report["codes"]
+
+
+def test_claim_requires_repository_when_manifest_has_no_repository(
+    tmp_path, capsys
+):
+    """An identity claim with no repository to anchor it is refused."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 1.0.2
+owner: LangeVC
+previous_identities:
+  - owner: typelicious
+    name: skillweave
+    repository: https://github.com/typelicious/skillweave
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        assert publish_capability(manifest, json_output=True) is False
+        instance.publish.assert_not_called()
+
+    report = _json_result(capsys)
+    assert report["valid"] is False
+    assert REPOSITORY_MISSING in report["codes"]
 
 
 # --- Criterion 1 + 3: authorized transitions expose evidence ----------------
@@ -564,6 +648,149 @@ def test_json_output_is_the_only_stdout_document(tmp_path, capsys):
     assert isinstance(parsed["valid"], bool)
 
 
+# --- Criterion 5: the JSON contract the Publisher Action consumes -----------
+
+
+def test_json_diagnostics_contract_is_stable(tmp_path, capsys):
+    """A single JSON document with a pinned schema version and stable, sorted,
+    deduplicated diagnostic codes — the publisher Action consumes exactly this
+    and cannot be released independently of the contract it depends on."""
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = _published_ok()
+        publish_capability(manifest, json_output=True)
+
+    report = _json_result(capsys)
+    assert report["schema_version"] == IDENTITY_SCHEMA_VERSION
+    assert report["command"] == "publish"
+    assert isinstance(report["valid"], bool)
+    assert isinstance(report["exit_code"], int)
+    assert report["codes"] == sorted(report["codes"])
+    assert len(report["codes"]) == len(set(report["codes"]))
+    assert report["codes"] == [CLAIM_AUTHORITY_UNVERIFIED]
+    for diagnostic in report["diagnostics"]:
+        assert set(diagnostic) >= {"code", "severity", "field", "message"}
+        assert diagnostic["severity"] in ("error", "warning", "info")
+
+
+# --- Criterion 6: the full fixture matrix -----------------------------------
+#
+# One fixture per identity shape the preflight must survive.  ``move``,
+# ``malformed`` and ``hostile`` already have dedicated proofs above (the
+# verified move, the scalar/missing-repository claims and the capture attempt);
+# the fixtures below cover the shapes those proofs do not: a legitimate fork, a
+# mirror that is not a takeover, and a duplicate publish that stays a plain 409.
+
+
+def test_fork_under_a_new_owner_publishes_without_granting_the_upstream(
+    tmp_path, capsys,
+):
+    """A fork publishes under its own authenticated owner.  The upstream
+    coordinate is carried as an unverified assertion — a fork is not a move and
+    must not capture the listing it was forked from."""
+    text = """\
+kind: bundle
+name: skillweave
+version: 0.1.0
+owner: forker
+repository: https://github.com/forker/skillweave
+replaces:
+  - LangeVC/skillweave
+"""
+    manifest = _manifest(tmp_path, text)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = {
+            "canonical_name": "forker/skillweave",
+            "kind": "bundle",
+            "trust_state": "discovered",
+            "created": True,
+        }
+        assert publish_capability(manifest, json_output=True) is True
+        payload = instance.publish.call_args.args[0]
+
+    assert payload["canonical_listing_id"] == "forker/skillweave"
+    report = _json_result(capsys)
+    claim = report["claims"][0]
+    assert claim["from"] == "LangeVC/skillweave"
+    assert claim["to"] == "forker/skillweave"
+    assert claim["status"] == "unverified"
+    assert claim["authority_granted"] is False
+    assert report["transition_evidence"] == []
+
+
+def test_mirror_of_a_signed_move_is_carried_not_obeyed(tmp_path, capsys):
+    """A mirror re-publishes a listing whose move was already authorized by a
+    signed event naming a different subject: the evidence does not transfer, so
+    the mirror's own claim stays unverified and nothing is captured."""
+    from capacium.listing_identity import AuthorityEvent
+
+    text = """\
+kind: bundle
+name: skillweave
+version: 3.1.0
+owner: mirrorco
+repository: https://github.com/mirrorco/skillweave
+replaces:
+  - LangeVC/skillweave
+"""
+    manifest = _manifest(tmp_path, text)
+    event = AuthorityEvent(
+        subject_id="somebody-else/skillweave",
+        from_id="LangeVC/skillweave",
+        to_id="somebody-else/skillweave",
+        from_authority=AUTH_VERIFIED,
+        to_authority=AUTH_VERIFIED,
+        evidence_digest="sha256:" + "d" * 64,
+        issued_at="2026-10-21T00:00:00Z",
+        issuer="exchange-review",
+    )
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.return_value = {
+            "canonical_name": "mirrorco/skillweave",
+            "kind": "bundle",
+            "trust_state": "discovered",
+            "created": True,
+        }
+        assert (
+            publish_capability(manifest, json_output=True, authority_events=[event])
+            is True
+        )
+
+    report = _json_result(capsys)
+    assert all(not c["authority_granted"] for c in report["claims"])
+    assert report["transition_evidence"] == []
+    assert report["canonical_coordinate"]["owner"] == "mirrorco"
+
+
+def test_duplicate_publish_is_a_plain_conflict_without_losing_claims(
+    tmp_path, capsys,
+):
+    """A duplicate publish is rejected by the registry (409) and the identity
+    claims still reach the machine contract — a rejection must not swallow the
+    record of what was claimed."""
+    manifest = _manifest(tmp_path, _MOVE_MANIFEST)
+    with mock.patch("capacium.commands.publish.RegistryClient") as mock_client:
+        instance = mock_client.return_value
+        instance.publish.side_effect = RegistryClientError(
+            "HTTP 409 from http://example.com/v2/publish: Capability already exists",
+            status_code=409,
+        )
+        assert publish_capability(manifest, json_output=True) is False
+
+    report = _json_result(capsys)
+    assert report["valid"] is False
+    assert report["exit_code"] == 1
+    assert "publish.registry.conflict" in report["codes"]
+    assert [c["from"] for c in report["claims"]] == [
+        "typelicious/skillweave",
+        "typelicious/skillweave",
+    ]
+    assert report["listing_id"] == "LangeVC/skillweave"
+
+
 # --- Existing publish behaviour is preserved --------------------------------
 
 
@@ -578,7 +805,10 @@ def test_soft_unverified_claim_still_publishes(tmp_path, capsys):
         instance.publish.assert_called_once()
 
     output = capsys.readouterr().out
-    assert "unverified" in output.lower()
+    # Assert on the diagnostic *message*, not the bare word "unverified": the
+    # tmp_path derives from this test's own name, so a bare substring match
+    # would pass against the base for the wrong reason.
+    assert "no signed authority event authenticates both sides" in output
 
 
 def test_registry_error_still_reports_json(tmp_path, capsys):
