@@ -1,0 +1,940 @@
+"""CAP117-EVIDENCE-005 red proofs — Dispatch 1 (criteria 1-3) and Dispatch 2 (criteria 4-6).
+
+Red proofs MUST fail before implementation.
+"""
+
+import pytest
+
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Criterion 1: Origin, publisher authority, technical verification, security
+# assessment, distribution authority, lifecycle and install consent are stored
+# as independent axes.
+# ---------------------------------------------------------------------------
+
+def test_c1_independent_axes_import():
+    """EvidenceRecord carries independent axis attributes."""
+    from src.capacium.trust import EvidenceRecord
+    from src.capacium.trust import PublisherAuthority
+    from src.capacium.trust import SecurityAssessment
+    from src.capacium.trust import DistributionAuthority
+    from src.capacium.trust import Lifecycle
+
+    rec = EvidenceRecord(
+        origin="registry-seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    assert rec.origin == "registry-seed"
+    assert rec.publisher_authority == PublisherAuthority.NULL
+    assert rec.security_assessment == SecurityAssessment.NONE
+    assert rec.lifecycle == Lifecycle.ACTIVE
+
+
+def test_c1_evidence_record_is_immutable():
+    """EvidenceRecord is frozen/immutable."""
+    from src.capacium.trust import EvidenceRecord, PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    rec = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    with pytest.raises(Exception):
+        rec.origin = "changed"
+
+
+def test_c1_axes_are_independent():
+    """Mutating one axis does not affect others."""
+    from src.capacium.trust import EvidenceRecord, PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    rec = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    # Changing one field in a new record does not touch the original
+    rec2 = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    assert rec.origin == "seed"
+    assert rec2.origin == "registry"
+    assert rec2.publisher_authority == rec.publisher_authority
+
+
+# ---------------------------------------------------------------------------
+# Criterion 2: Generated manifests use null publisher authority and no
+# security assessment and cannot transition to reviewed or publisher-adopted
+# without a signed event.
+# ---------------------------------------------------------------------------
+
+def test_c2_generated_manifest_defaults_null():
+    """Generated manifests default to NULL publisher authority and NONE security assessment."""
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+
+    assert PublisherAuthority.NULL.value == "null"
+    assert SecurityAssessment.NONE.value == "none"
+
+
+def test_c2_null_authority_cannot_transition_without_signed_event():
+    """PublisherAuthority.NULL cannot transition to REVIEWED or PUBLISHER_ADOPTED without a signed event."""
+    from src.capacium.trust import PublisherAuthority
+
+    # NULL is the starting point for generated/community manifests
+    pa = PublisherAuthority.NULL
+    # Transitions that require a signed event must reject
+    assert not PublisherAuthority.can_transition(pa, PublisherAuthority.REVIEWED)
+    assert not PublisherAuthority.can_transition(pa, PublisherAuthority.PUBLISHER_ADOPTED)
+
+
+def test_c2_none_security_cannot_transition_without_signed_event():
+    """SecurityAssessment.NONE cannot become REVIEWED without a signed event."""
+    from src.capacium.trust import SecurityAssessment
+
+    assert not SecurityAssessment.can_transition(
+        SecurityAssessment.NONE, SecurityAssessment.REVIEWED
+    )
+
+
+def test_c2_signed_event_required_for_authority_transition():
+    """A signed_event token is required for NULL->REVIEWED authority transition."""
+    from src.capacium.trust import PublisherAuthority
+
+    # Attempting transition without signed_event must raise or return False
+    with pytest.raises((ValueError, TypeError)):
+        PublisherAuthority.NULL.transition_to(PublisherAuthority.REVIEWED)
+
+
+# ---------------------------------------------------------------------------
+# Criterion 3: Initial seed and unknown-capability install invoke the same
+# pipeline and durable EvidenceRecord schema.
+# ---------------------------------------------------------------------------
+
+def test_c3_evidence_record_schema_is_durable():
+    """EvidenceRecord has a fixed schema_version and can round-trip through dict."""
+    from src.capacium.trust import EvidenceRecord, PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    rec = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    d = rec.to_dict()
+    assert d["schema_version"] is not None
+    assert isinstance(d["schema_version"], str)
+    rt = EvidenceRecord.from_dict(d)
+    assert rt.origin == rec.origin
+    assert rt.publisher_authority == rec.publisher_authority
+
+
+def test_c3_seed_and_unknown_share_schema():
+    """Seed and unknown-capability EvidenceRecords use the same schema."""
+    from src.capacium.trust import EvidenceRecord, PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    seed = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    unknown = EvidenceRecord(
+        origin="unknown-install",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    sd = seed.to_dict()
+    ud = unknown.to_dict()
+    assert sd["schema_version"] == ud["schema_version"]
+    # Same set of keys
+    assert set(sd.keys()) == set(ud.keys())
+
+
+def test_c3_evidence_record_from_dict_rejects_unknown_fields():
+    """EvidenceRecord.from_dict rejects fields not in the schema."""
+    from src.capacium.trust import EvidenceRecord
+
+    with pytest.raises(ValueError):
+        EvidenceRecord.from_dict({"unknown_key": "value"})
+
+
+def test_c3_evidence_record_from_dict_requires_schema_version():
+    """EvidenceRecord.from_dict requires schema_version."""
+    from src.capacium.trust import EvidenceRecord
+
+    with pytest.raises(ValueError):
+        EvidenceRecord.from_dict({"origin": "seed"})
+
+
+def test_c3_consent_record_is_durable():
+    """ConsentRecord binds exact manifest, source revision and artifact digests."""
+    from src.capacium.trust import ConsentRecord
+
+    c = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    assert c.manifest_digest.startswith("sha256:")
+    assert len(c.source_revision) > 0
+
+
+def test_c3_consent_record_never_mutates_registry_trust():
+    """ConsentRecord is stored separately and never mutates EvidenceRecord trust axes."""
+    from src.capacium.trust import ConsentRecord, EvidenceRecord, PublisherAuthority
+    from src.capacium.trust import SecurityAssessment, DistributionAuthority, Lifecycle
+
+    rec = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    assert rec.origin == "seed"
+    # Consent is a separate record type
+    consent = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    assert not isinstance(consent, EvidenceRecord)
+    assert consent.manifest_digest is not None
+
+
+# ---------------------------------------------------------------------------
+# Criterion 4: Install consent binds exact manifest, source revision and
+# artifact digests and never mutates registry trust axes.
+# ---------------------------------------------------------------------------
+
+def test_c4_consent_binds_exact_manifest_digest():
+    """Install consent must bind the exact manifest digest."""
+    from src.capacium.trust import ConsentRecord
+
+    c = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    # Consent is exact — changing the digest produces a different record
+    c2 = ConsentRecord(
+        manifest_digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        source_revision="abc123def456",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    assert c.manifest_digest != c2.manifest_digest
+    assert c.source_revision == c2.source_revision
+
+
+def test_c4_consent_binds_exact_source_revision():
+    """Install consent must bind the exact source revision."""
+    from src.capacium.trust import ConsentRecord
+
+    c1 = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    c2 = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="def456",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    assert c1.source_revision != c2.source_revision
+    assert c1.manifest_digest == c2.manifest_digest
+
+
+def test_c4_consent_never_mutates_trust_axes():
+    """EvidenceRecord trust axes are immutable; consent cannot change them."""
+    from src.capacium.trust import EvidenceRecord, PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle, ConsentRecord
+
+    rec = EvidenceRecord(
+        origin="seed",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+    # Even with consent attached, trust axes are unchanged
+    consent = ConsentRecord(
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123",
+        artifact_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    rec2 = EvidenceRecord(
+        origin=rec.origin,
+        publisher_authority=rec.publisher_authority,
+        technical_verification=rec.technical_verification,
+        security_assessment=rec.security_assessment,
+        distribution_authority=rec.distribution_authority,
+        lifecycle=rec.lifecycle,
+        install_consent=consent,
+    )
+    # Trust axes unchanged
+    assert rec2.publisher_authority == rec.publisher_authority
+    assert rec2.security_assessment == rec.security_assessment
+    assert rec2.lifecycle == rec.lifecycle
+    assert rec2.distribution_authority == rec.distribution_authority
+    assert rec2.install_consent is not None
+    assert rec.install_consent is None
+
+
+# ---------------------------------------------------------------------------
+# Criterion 5: Two-source corroboration is configurable; an eligible
+# single-source case records abstention and follows the disclosed consent
+# path rather than silently blocking or trusting.
+# ---------------------------------------------------------------------------
+
+def test_c5_corroboration_config_import():
+    """CorroborationConfig type exists and is configurable."""
+    from src.capacium.trust import CorroborationConfig
+
+    cfg = CorroborationConfig(required_sources=2)
+    assert cfg.required_sources == 2
+
+
+def test_c5_single_source_config():
+    """CorroborationConfig can require 1 source (single-source eligible)."""
+    from src.capacium.trust import CorroborationConfig
+
+    cfg = CorroborationConfig(required_sources=1)
+    assert cfg.required_sources == 1
+
+
+def test_c5_abstention_result_import():
+    """AbstentionResult type exists for single-source cases."""
+    from src.capacium.trust import AbstentionResult, AbstentionReason
+
+    a = AbstentionResult(
+        reason=AbstentionReason.SINGLE_SOURCE,
+        disclosed=True,
+        consent_path="disclosed-consent",
+    )
+    assert a.reason == AbstentionReason.SINGLE_SOURCE
+    assert a.disclosed is True
+
+
+def test_c5_single_source_abstains_not_blocks():
+    """Single-source eligible case records abstention, does not block."""
+    from src.capacium.trust import AbstentionResult, AbstentionReason
+
+    # An abstention is explicit — it records the reason and follows
+    # the disclosed consent path rather than silently blocking.
+    a = AbstentionResult(
+        reason=AbstentionReason.SINGLE_SOURCE,
+        disclosed=True,
+        consent_path="disclosed-consent",
+    )
+    assert a.reason != "blocked"
+    assert a.disclosed is True
+
+
+def test_c5_multi_source_no_abstention():
+    """When two sources corroborate, no abstention is recorded."""
+    from src.capacium.trust import AbstentionResult, AbstentionReason
+
+    # With two sources, corroboration succeeds — no abstention needed
+    a = AbstentionResult(
+        reason=AbstentionReason.CORROBORATED,
+        disclosed=False,
+        consent_path=None,
+    )
+    assert a.reason == AbstentionReason.CORROBORATED
+    assert a.disclosed is False
+
+
+def test_c5_abstention_result_immutable():
+    """AbstentionResult is frozen."""
+    from src.capacium.trust import AbstentionResult, AbstentionReason
+
+    a = AbstentionResult(
+        reason=AbstentionReason.SINGLE_SOURCE,
+        disclosed=True,
+        consent_path="disclosed-consent",
+    )
+    with pytest.raises(Exception):
+        a.reason = AbstentionReason.CORROBORATED
+
+
+# ---------------------------------------------------------------------------
+# Criterion 6: Conflicts, moving references, unavailable evidence, licences,
+# redistribution rights, duplicates, malicious metadata and low confidence
+# quarantine deterministically.
+# ---------------------------------------------------------------------------
+
+def test_c6_ingest_disposition_import():
+    """IngestDisposition type exists with deterministic outcome."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.ACCEPTED,
+        reason="validated",
+    )
+    assert d.outcome == IngestOutcome.ACCEPTED
+
+
+def test_c6_ingest_conflict_disposition():
+    """Conflicts produce a deterministic disposition."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.CONFLICT,
+        reason="fingerprint-mismatch",
+        detail="existing sha256:abc != incoming sha256:def",
+    )
+    assert d.outcome == IngestOutcome.CONFLICT
+    assert d.reason == "fingerprint-mismatch"
+    assert d.detail is not None
+
+
+def test_c6_ingest_duplicate_disposition():
+    """Duplicates produce a deterministic disposition."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.DUPLICATE,
+        reason="already-ingested",
+        detail="sha256:abc matches existing record",
+    )
+    assert d.outcome == IngestOutcome.DUPLICATE
+
+
+def test_c6_ingest_quarantine_disposition():
+    """Low confidence or malicious metadata results in quarantine."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.QUARANTINED,
+        reason="low-confidence",
+        detail="only one source corroborated; confidence 0.4 below threshold 0.7",
+    )
+    assert d.outcome == IngestOutcome.QUARANTINED
+
+
+def test_c6_ingest_malicious_metadata_disposition():
+    """Malicious metadata is deterministically rejected."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.MALICIOUS_METADATA,
+        reason="suspicious-field",
+        detail="metadata contains disallowed field: execute_on_install",
+    )
+    assert d.outcome == IngestOutcome.MALICIOUS_METADATA
+
+
+def test_c6_ingest_unavailable_evidence_disposition():
+    """Unavailable evidence produces a deterministic disposition."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.UNAVAILABLE_EVIDENCE,
+        reason="source-unreachable",
+        detail="source URL returned 503 after 3 retries",
+    )
+    assert d.outcome == IngestOutcome.UNAVAILABLE_EVIDENCE
+
+
+def test_c6_ingest_license_redistribution_disposition():
+    """Licence and redistribution right issues are deterministically handled."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.LICENCE_RESTRICTION,
+        reason="no-redistribution",
+        detail="licence prohibits redistribution",
+    )
+    assert d.outcome == IngestOutcome.LICENCE_RESTRICTION
+
+
+def test_c6_ingest_moving_reference_disposition():
+    """Moving references produce a deterministic disposition."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.MOVING_REFERENCE,
+        reason="unpinned-branch",
+        detail="source references branch 'main' rather than a fixed commit",
+    )
+    assert d.outcome == IngestOutcome.MOVING_REFERENCE
+
+
+def test_c6_ingest_disposition_is_immutable():
+    """IngestDisposition is frozen."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.ACCEPTED,
+        reason="validated",
+    )
+    with pytest.raises(Exception):
+        d.outcome = IngestOutcome.CONFLICT
+
+
+def test_c6_all_outcomes_are_distinct():
+    """Every IngestOutcome value is distinct."""
+    from src.capacium.trust import IngestOutcome
+
+    values = [e.value for e in IngestOutcome]
+    assert len(values) == len(set(values))
+
+
+def test_c6_ingest_disposition_round_trip():
+    """IngestDisposition round-trips through dict."""
+    from src.capacium.trust import IngestDisposition, IngestOutcome
+
+    d = IngestDisposition(
+        outcome=IngestOutcome.QUARANTINED,
+        reason="low-confidence",
+        detail="confidence 0.3",
+    )
+    dd = d.to_dict()
+    assert dd["outcome"] == "quarantined"
+    assert dd["reason"] == "low-confidence"
+    rt = IngestDisposition.from_dict(dd)
+    assert rt.outcome == d.outcome
+    assert rt.reason == d.reason
+    assert rt.detail == d.detail
+
+
+# ---------------------------------------------------------------------------
+# Criterion 7: No ingest path executes package hooks; an approved install
+# enters the normal resolver and transaction path only with an exact digest.
+# ---------------------------------------------------------------------------
+
+def test_c7_approved_ingest_requires_exact_digest():
+    """IngestHandoff must carry an exact digest — no digest means no approved path."""
+    from src.capacium.trust import IngestHandoff
+
+    # IngestHandoff must require an exact_digest field
+    ai = IngestHandoff(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    assert ai.exact_digest.startswith("sha256:")
+    assert len(ai.source_revision) > 0
+
+
+def test_c7_approved_ingest_immutable():
+    """IngestHandoff is frozen."""
+    from src.capacium.trust import IngestHandoff
+
+    ai = IngestHandoff(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    with pytest.raises(Exception):
+        ai.exact_digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def test_c7_ingest_pipeline_no_hooks():
+    """IngestPipeline must never execute package hooks."""
+    from src.capacium.trust import IngestPipeline, IngestHandoff, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    result = pipeline.ingest(
+        evidence=evidence,
+        manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123",
+    )
+
+    # The result must be an IngestHandoff with an exact digest
+    assert isinstance(result, IngestHandoff)
+    assert result.exact_digest is not None
+    # The pipeline did NOT execute any hooks (by construction)
+
+
+def test_c7_ingest_pipeline_rejects_missing_digest():
+    """IngestPipeline must reject ingest without an exact digest."""
+    from src.capacium.trust import IngestPipeline, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    # Empty digest must be rejected
+    with pytest.raises(ValueError):
+        pipeline.ingest(
+            evidence=evidence,
+            manifest_digest="",
+            source_revision="abc123",
+        )
+
+
+def test_c7_ingest_pipeline_round_trip():
+    """IngestHandoff round-trips through dict."""
+    from src.capacium.trust import IngestHandoff
+
+    ai = IngestHandoff(
+        exact_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        source_revision="abc123def456",
+    )
+    d = ai.to_dict()
+    assert d["exact_digest"] == ai.exact_digest
+    assert d["source_revision"] == ai.source_revision
+    rt = IngestHandoff.from_dict(d)
+    assert rt.exact_digest == ai.exact_digest
+    assert rt.source_revision == ai.source_revision
+
+
+def test_c7_ingest_pipeline_rejects_package_hooks():
+    """IngestPipeline rejects input that would execute package hooks."""
+    from src.capacium.trust import IngestPipeline, EvidenceRecord
+    from src.capacium.trust import PublisherAuthority, SecurityAssessment
+    from src.capacium.trust import DistributionAuthority, Lifecycle
+
+    pipeline = IngestPipeline()
+
+    evidence = EvidenceRecord(
+        origin="registry",
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=None,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=None,
+    )
+
+    # Any manifest that contains hook-triggering fields must be rejected
+    with pytest.raises(ValueError):
+        pipeline.ingest(
+            evidence=evidence,
+            manifest_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            source_revision="abc123",
+            has_hooks=True,  # signal that hooks are present
+        )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 8: reconcile, repair and doctor share one finding model for
+# provenance, wrapper parsing, drift and unknown GUI environments.
+# ---------------------------------------------------------------------------
+
+def test_c8_diagnostic_finding_import():
+    """DiagnosticFinding type exists with provenance, wrapper, drift, gui fields."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="warning",
+        summary="foreign entry detected",
+    )
+    assert f.category == FindingCategory.PROVENANCE
+    assert f.severity == "warning"
+
+
+def test_c8_finding_categories_cover_all_domains():
+    """FindingCategory must cover provenance, wrapper_parsing, drift, and unknown_gui."""
+    from src.capacium.trust import FindingCategory
+
+    categories = {e.value for e in FindingCategory}
+    assert "provenance" in categories
+    assert "wrapper_parsing" in categories
+    assert "drift" in categories
+    assert "unknown_gui" in categories
+
+
+def test_c8_diagnostic_finding_immutable():
+    """DiagnosticFinding is frozen."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="warning",
+        summary="foreign entry detected",
+    )
+    with pytest.raises(Exception):
+        f.category = FindingCategory.DRIFT
+
+
+def test_c8_diagnostic_finding_provenance():
+    """Provenance findings carry source detail."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.PROVENANCE,
+        severity="info",
+        summary="capacium-managed entry",
+        source="~/.claude.json",
+        detail="entry written by capacium v0.10.0",
+    )
+    assert f.source is not None
+    assert f.detail is not None
+
+
+def test_c8_diagnostic_finding_wrapper_parsing():
+    """Wrapper parsing findings describe parse issues."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.WRAPPER_PARSING,
+        severity="warning",
+        summary="malformed wrapper command",
+        source="/usr/local/bin/shim",
+        detail="wrapper does not contain expected cap exec prefix",
+    )
+    assert f.category == FindingCategory.WRAPPER_PARSING
+    assert f.source == "/usr/local/bin/shim"
+
+
+def test_c8_diagnostic_finding_drift():
+    """Drift findings describe state divergence."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.DRIFT,
+        severity="error",
+        summary="version mismatch",
+        source="~/.capacium/packages/owner/name@1.0.0",
+        detail="registry records v1.0.0 but harness links resolve to v1.1.0",
+    )
+    assert f.category == FindingCategory.DRIFT
+    assert f.severity == "error"
+
+
+def test_c8_diagnostic_finding_unknown_gui():
+    """Unknown GUI findings describe unattestable environments."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.UNKNOWN_GUI,
+        severity="warning",
+        summary="unattestable GUI environment",
+        source="claude-desktop",
+        detail="GUI process running but configuration cannot be attested",
+    )
+    assert f.category == FindingCategory.UNKNOWN_GUI
+    assert f.summary is not None
+
+
+def test_c8_diagnostic_finding_round_trip():
+    """DiagnosticFinding round-trips through dict."""
+    from src.capacium.trust import DiagnosticFinding, FindingCategory
+
+    f = DiagnosticFinding(
+        category=FindingCategory.DRIFT,
+        severity="error",
+        summary="version drift detected",
+        source="~/.capacium/packages/owner/name@1.0.0",
+        detail="expected v1.0.0, found v1.1.0",
+    )
+    d = f.to_dict()
+    assert d["category"] == "drift"
+    assert d["severity"] == "error"
+    rt = DiagnosticFinding.from_dict(d)
+    assert rt.category == f.category
+    assert rt.summary == f.summary
+    assert rt.detail == f.detail
+
+
+def test_c8_severity_values_are_distinct():
+    """All severity values are distinct."""
+    from src.capacium.trust import FindingSeverity
+
+    values = [e.value for e in FindingSeverity]
+    assert len(values) == len(set(values))
+    assert "info" in values
+    assert "warning" in values
+    assert "error" in values
+
+
+def test_c8_finding_category_from_string():
+    """FindingCategory can be constructed from string."""
+    from src.capacium.trust import FindingCategory
+
+    assert FindingCategory("provenance") == FindingCategory.PROVENANCE
+    assert FindingCategory("wrapper_parsing") == FindingCategory.WRAPPER_PARSING
+    assert FindingCategory("drift") == FindingCategory.DRIFT
+    assert FindingCategory("unknown_gui") == FindingCategory.UNKNOWN_GUI
+
+    with pytest.raises(ValueError):
+        FindingCategory("invalid")
+
+
+# ---------------------------------------------------------------------------
+# D1/D3 — the pipeline and finding model must have real consumers, not just
+# importable types. These proofs exercise the seed, unknown-install, reconcile
+# and doctor surfaces rather than the dataclasses in isolation.
+# ---------------------------------------------------------------------------
+
+def test_d3_seed_consumes_shared_pipeline(tmp_path, monkeypatch):
+    """`cap init` writes a seed EvidenceRecord through the shared pipeline."""
+    from src.capacium.commands.init import init_capability
+    from src.capacium.trust import EVIDENCE_RECORD_FILENAME, read_evidence_record
+
+    monkeypatch.chdir(tmp_path)
+    assert init_capability(name="demo-cap", kind="skill", version="0.1.0")
+
+    record = read_evidence_record(tmp_path)
+    assert record is not None, "seed wrote no durable EvidenceRecord"
+    assert record.origin == "seed"
+    assert record.publisher_authority.value == "null"
+    assert record.security_assessment.value == "none"
+    assert (tmp_path / EVIDENCE_RECORD_FILENAME).is_file()
+
+
+def test_d3_seed_config_unchanged():
+    """The seed record equals the record the unknown-install path builds."""
+    from src.capacium.trust import (
+        ORIGIN_SEED,
+        ORIGIN_UNKNOWN_INSTALL,
+        build_evidence_record,
+    )
+
+    seed = build_evidence_record(ORIGIN_SEED)
+    unknown = build_evidence_record(ORIGIN_UNKNOWN_INSTALL)
+    assert seed.to_dict().keys() == unknown.to_dict().keys()
+    assert seed.origin != unknown.origin
+    assert seed.publisher_authority == unknown.publisher_authority
+    assert seed.security_assessment == unknown.security_assessment
+
+
+def test_d3_unknown_install_manifest_writes_evidence(tmp_path):
+    """The generated-manifest path records evidence for an unknown capability."""
+    from src.capacium.commands.install import _auto_generate_manifest
+    from src.capacium.trust import read_evidence_record
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "SKILL.md").write_text("# demo\n")
+
+    _auto_generate_manifest(repo, "https://github.com/owner/demo", None)
+
+    record = read_evidence_record(repo)
+    assert record is not None, "unknown-install generated no EvidenceRecord"
+    assert record.origin == "unknown-install"
+    assert record.publisher_authority.value == "null"
+    assert record.security_assessment.value == "none"
+    assert record.install_consent is None
+
+
+def test_d3_reconcile_reports_shared_findings():
+    """reconcile's findings are also readable through the shared finding model."""
+    from src.capacium.commands.reconcile import reconcile, shared_findings
+    from src.capacium.trust import DiagnosticFinding
+
+    report = reconcile()
+    # The reconciled report's own contract is unchanged ...
+    assert "findings" in report
+    assert "shared_findings" not in report
+    # ... and every raw finding has a shared-model projection of equal length.
+    projected = shared_findings(report)
+    assert len(projected) == len(report["findings"])
+    for finding in projected:
+        assert isinstance(finding, DiagnosticFinding)
+        assert finding.category in set(_categories())
+
+
+def test_d3_reconcile_projection_never_drops_unknown_kind():
+    """An unrecognised reconcile kind still projects, never vanishes."""
+    from src.capacium.trust import map_reconcile_finding
+
+    finding = map_reconcile_finding({"kind": "brand_new_state"})
+    assert finding.category.value == "provenance"
+    assert finding.summary == "brand_new_state"
+
+
+def test_d3_doctor_projects_failed_checks_only():
+    """Doctor's deep checks become findings only when they fail."""
+    from src.capacium.commands.doctor import collect_deep_findings
+
+    results = [
+        ("Symlink depth", True, "ok"),
+        ("Registry drift", False, "2 rows without install_path"),
+    ]
+    findings = collect_deep_findings(results)
+    assert len(findings) == 1
+    assert findings[0].summary == "Registry drift"
+    assert findings[0].detail == "2 rows without install_path"
+    assert findings[0].severity == "error"
+
+
+def test_d3_reconcile_repair_doctor_share_one_model():
+    """One DiagnosticFinding type backs reconcile, repair and doctor."""
+    from src.capacium.commands.doctor import collect_deep_findings
+    from src.capacium.commands.repair import StaleEntry, stale_entry_findings
+    from src.capacium.trust import DiagnosticFinding, map_reconcile_finding
+
+    assert isinstance(map_reconcile_finding({"kind": "drift"}), DiagnosticFinding)
+    [finding] = collect_deep_findings([("Store health", False, "unreadable")])
+    assert isinstance(finding, DiagnosticFinding)
+    [repaired] = stale_entry_findings([
+        StaleEntry(
+            framework="codex",
+            config_path=Path("/tmp/config.toml"),
+            section_key="mcp_servers",
+            server_key="gone-server",
+            entry={},
+            reason="Command not found: /nope",
+            fix_action="remove",
+        )
+    ])
+    assert isinstance(repaired, DiagnosticFinding)
+    assert repaired.category.value == "wrapper_parsing"
+
+
+def _categories():
+    from src.capacium.trust import FindingCategory
+    return list(FindingCategory)
