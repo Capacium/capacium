@@ -195,6 +195,104 @@ class EvidenceVerificationResult:
         )
 
 
+# ---------------------------------------------------------------------------
+# Corroboration & abstention — CAP117-EVIDENCE-005 criterion 5
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CorroborationConfig:
+    """Two-source corroboration configuration.
+
+    required_sources: minimum independent sources to corroborate evidence.
+    """
+    required_sources: int = 2
+
+    def __post_init__(self):
+        if self.required_sources < 1:
+            raise ValueError("required_sources must be >= 1")
+
+
+class AbstentionReason(str, Enum):
+    """Why corroboration abstained."""
+    SINGLE_SOURCE = "single_source"
+    CORROBORATED = "corroborated"
+    INSUFFICIENT = "insufficient"
+
+
+@dataclass(frozen=True)
+class AbstentionResult:
+    """Recorded when corroboration cannot reach the required source count.
+
+    Follows the disclosed consent path rather than silently blocking or trusting.
+    """
+    reason: AbstentionReason
+    disclosed: bool
+    consent_path: Optional[str]
+
+    def to_dict(self) -> dict:
+        return {
+            "reason": self.reason.value,
+            "disclosed": self.disclosed,
+            "consent_path": self.consent_path,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AbstentionResult":
+        return cls(
+            reason=AbstentionReason(data["reason"]),
+            disclosed=data["disclosed"],
+            consent_path=data.get("consent_path"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ingest disposition — CAP117-EVIDENCE-005 criterion 6
+# ---------------------------------------------------------------------------
+
+class IngestOutcome(str, Enum):
+    """Deterministic outcome for an ingest attempt."""
+    ACCEPTED = "accepted"
+    CONFLICT = "conflict"
+    DUPLICATE = "duplicate"
+    QUARANTINED = "quarantined"
+    MALICIOUS_METADATA = "malicious_metadata"
+    UNAVAILABLE_EVIDENCE = "unavailable_evidence"
+    LICENCE_RESTRICTION = "licence_restriction"
+    MOVING_REFERENCE = "moving_reference"
+
+
+@dataclass(frozen=True)
+class IngestDisposition:
+    """Deterministic disposition for conflicts, moving references, unavailable
+    evidence, licences, redistribution rights, duplicates, malicious metadata
+    and low confidence quarantine.
+    """
+    outcome: IngestOutcome
+    reason: str
+    detail: Optional[str] = None
+
+    _KNOWN_FIELDS = frozenset({"outcome", "reason", "detail"})
+
+    def to_dict(self) -> dict:
+        d = {"outcome": self.outcome.value, "reason": self.reason}
+        if self.detail is not None:
+            d["detail"] = self.detail
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "IngestDisposition":
+        unknown = [k for k in data if k not in cls._KNOWN_FIELDS]
+        if unknown:
+            raise ValueError(
+                f"Unknown field(s) in IngestDisposition: {', '.join(sorted(unknown))}"
+            )
+        return cls(
+            outcome=IngestOutcome(data["outcome"]),
+            reason=data["reason"],
+            detail=data.get("detail"),
+        )
+
+
 @runtime_checkable
 class TrustProvider(Protocol):
     """Provider-neutral trust verification interface.
