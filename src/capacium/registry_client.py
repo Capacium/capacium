@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -8,6 +10,13 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from . import __version__
+
+EXTERNAL_SOURCE_PROTOCOL = "external-source/v1"
+VERIFIED_ARTIFACT_PROTOCOL = "verified-artifact/v1"
+
+_EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ENV_CREDENTIAL_PREFIX = "env:"
 
 
 @dataclass
@@ -59,13 +68,198 @@ class RegistryClientError(Exception):
         self.status_code = status_code
 
 
+class ExternalSourceError(RegistryClientError):
+    """An authenticated external artifact source cannot be honoured."""
+
+
+def _redact_url(url: str) -> str:
+    """Drop userinfo and query string so signed tokens never leave the process."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<redacted-url>"
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _verify_signature(public_key: bytes, signature: bytes, data: bytes) -> bool:
+    """Seam for signature verification, overridable in tests.
+
+    Delegates to ``capacium.signing.verify`` whose backend differs between
+    hosts (cryptography, PyNaCl or an OpenSSL subprocess).
+    """
+    from . import signing
+
+    return signing.verify(public_key, signature, data)
+
+
+@dataclass
+class CredentialRef:
+    """An opaque reference to credential material, never the material itself.
+
+    Only ``env:<NAME>`` references are accepted. The referenced value is
+    resolved on demand and is deliberately absent from ``repr``, ``str`` and
+    ``to_dict`` so it cannot leak into logs, JSON or receipts.
+    """
+
+    reference: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, str) or not self.reference.startswith(
+            _ENV_CREDENTIAL_PREFIX
+        ):
+            raise ExternalSourceError(
+                "credential must be an opaque 'env:<NAME>' reference, "
+                "never a literal secret"
+            )
+        name = self.reference[len(_ENV_CREDENTIAL_PREFIX):]
+        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ExternalSourceError(
+                "credential reference must name a valid environment variable"
+            )
+
+    def resolve(self) -> str:
+        name = self.reference[len(_ENV_CREDENTIAL_PREFIX):]
+        value = os.environ.get(name)
+        if not value:
+            raise ExternalSourceError(
+                f"credential reference {self.reference!r} is not set in the environment"
+            )
+        return value
+
+    def to_dict(self) -> Dict[str, str]:
+        return {"reference": self.reference}
+
+    def __repr__(self) -> str:
+        return f"CredentialRef(reference={self.reference!r})"
+
+    __str__ = __repr__
+
+
+@dataclass
+class SourceSignature:
+    """Ed25519 provenance material for an external artifact."""
+
+    public_key: bytes
+    signature: bytes
+    key_name: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "public_key": self.public_key.hex(),
+            "signature": self.signature.hex(),
+            "key_name": self.key_name,
+        }
+
+
+@dataclass
+class ExternalSourceRequest:
+    """Criterion 1: identity, exact version, digest and signature bound up front."""
+
+    listing_id: str
+    owner: str
+    name: str
+    version: str
+    digest: str
+    url: str
+    signature: Optional[SourceSignature] = None
+    credential: Optional[CredentialRef] = None
+    protocol: str = EXTERNAL_SOURCE_PROTOCOL
+
+    @property
+    def coordinate(self) -> str:
+        return f"{self.owner}/{self.name}"
+
+    def validate(self) -> "ExternalSourceRequest":
+        if not self.listing_id:
+            raise ExternalSourceError("external source requires a listing id")
+        if not self.owner:
+            raise ExternalSourceError("external source requires an owner")
+        if not self.name:
+            raise ExternalSourceError("external source requires a name")
+        if not isinstance(self.version, str) or not _EXACT_VERSION_RE.match(self.version):
+            raise ExternalSourceError(
+                f"external source requires an exact version, got {self.version!r}"
+            )
+        if not isinstance(self.digest, str) or not _SHA256_DIGEST_RE.match(self.digest):
+            raise ExternalSourceError(
+                "external source requires a 'sha256:<64 hex>' artifact digest"
+            )
+        if self.signature is None:
+            raise ExternalSourceError(
+                "external source requires a signature or provenance reference"
+            )
+        if not isinstance(self.url, str) or urllib.parse.urlsplit(self.url).scheme != "https":
+            raise ExternalSourceError("external source must be an https URL")
+        return self
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "listing_id": self.listing_id,
+            "coordinate": self.coordinate,
+            "version": self.version,
+            "digest": self.digest,
+            "url": _redact_url(self.url),
+            "signature": self.signature.to_dict() if self.signature else None,
+            "credential": self.credential.to_dict() if self.credential else None,
+        }
+
+
+@dataclass
+class VerifiedArtifact:
+    """Criterion 3: the verified-artifact envelope crossing the quarantine boundary."""
+
+    path: Path
+    coordinate: str
+    version: str
+    listing_id: str
+    digest: str
+    verification: str = "digest+signature"
+    source_class: str = "external-authenticated"
+    url: str = ""
+    key_name: str = ""
+    protocol: str = VERIFIED_ARTIFACT_PROTOCOL
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "path": str(self.path),
+            "coordinate": self.coordinate,
+            "version": self.version,
+            "listing_id": self.listing_id,
+            "digest": self.digest,
+            "verification": self.verification,
+            "source_class": self.source_class,
+            "url": self.url,
+            "key_name": self.key_name,
+        }
+
+
 class RegistryClient:
 
     DEFAULT_TIMEOUT = 30
 
-    def __init__(self, token: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        base_url: Optional[str] = None,
+        log_sink: Optional[List[str]] = None,
+    ):
         self._token = token
         self._base_url = base_url
+        self._log_sink = log_sink
+
+    def _log(self, message: str) -> None:
+        """Emit a redacted line; the sink is opt-in so nothing is stored by default."""
+        if self._log_sink is not None:
+            self._log_sink.append(message)
 
     @staticmethod
     def from_config() -> "RegistryClient":
@@ -358,10 +552,131 @@ class RegistryClient:
             raise RegistryClientError(f"Network error: {e}") from e
 
         if dest_path:
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            dest_path.write_bytes(body)
+            # Registry-hosted downloads funnel through the same materialisation
+            # step as external ones (criterion 3: one handoff path).
+            self._materialize_artifact(body, dest_path)
 
         return body
+
+    def _materialize_artifact(self, data: bytes, dest_path: Path) -> Path:
+        """The single mutation step both registry and external fetches use.
+
+        Writing to the destination is the only point where download bytes touch
+        the install tree, so a deployment that breaks this step breaks every
+        source class identically.
+        """
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(data)
+        return dest_path
+
+    def fetch_external(
+        self,
+        request: ExternalSourceRequest,
+        dest_path: Path,
+        quarantine_dir: Path,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> VerifiedArtifact:
+        """Fetch, quarantine and verify an artifact from an authenticated source.
+
+        Criterion 1 is enforced by ``request.validate()`` before any I/O,
+        criterion 2 by resolving an opaque credential reference (never logging
+        it), criterion 3 by quarantining, verifying digest and signature before
+        mutating, and materialising through ``_materialize_artifact``.
+        """
+        request.validate()
+        safe_url = _redact_url(request.url)
+
+        # Resolve the credential before touching the network: a missing secret
+        # must refuse up front rather than after a partial download.
+        credential_value = request.credential.resolve() if request.credential else None
+
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        quarantine_path = quarantine_dir / (
+            f"{request.listing_id}-{request.version}-{Path(safe_url).name}"
+        )
+
+        body = self._download_external_bytes(
+            request.url, credential_value, safe_url, timeout
+        )
+        quarantine_path.write_bytes(body)
+        self._log(
+            f"external source: quarantined {request.coordinate}@{request.version} "
+            f"({len(body)} bytes) at {quarantine_path}"
+        )
+
+        try:
+            actual_digest = "sha256:" + _sha256_hex(body)
+            if actual_digest != request.digest:
+                raise ExternalSourceError(
+                    f"digest mismatch for {request.coordinate}@{request.version}: "
+                    f"expected {request.digest}, got {actual_digest}"
+                )
+
+            signature = request.signature
+            if signature is None or not _verify_signature(
+                signature.public_key, signature.signature, body
+            ):
+                raise ExternalSourceError(
+                    f"signature verification failed for "
+                    f"{request.coordinate}@{request.version}"
+                )
+
+            # Verification passed: only now may install state change.
+            self._materialize_artifact(body, dest_path)
+            self._log(
+                f"external source: verified and installed {request.coordinate}"
+                f"@{request.version} ({request.digest}) at {dest_path}"
+            )
+        finally:
+            # Quarantine is drained whether the artifact verified or not.
+            try:
+                quarantine_path.unlink()
+            except OSError:
+                pass
+
+        return VerifiedArtifact(
+            path=dest_path,
+            coordinate=request.coordinate,
+            version=request.version,
+            listing_id=request.listing_id,
+            digest=request.digest,
+            url=safe_url,
+            key_name=request.signature.key_name if request.signature else "",
+        )
+
+    def _download_external_bytes(
+        self,
+        url: str,
+        credential_value: Optional[str],
+        safe_url: str,
+        timeout: int,
+    ) -> bytes:
+        req_headers = {
+            "Accept": "application/octet-stream",
+            "User-Agent": f"capacium/{__version__}",
+        }
+        if credential_value:
+            req_headers["Authorization"] = f"Bearer {credential_value}"
+
+        req = urllib.request.Request(url, headers=req_headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = getattr(resp, "status", 200)
+                if status and status >= 400:
+                    raise ExternalSourceError(
+                        f"HTTP {status} from {safe_url}", status_code=status
+                    )
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            # The redacted URL keeps signed query strings out of the message.
+            raise ExternalSourceError(
+                f"HTTP {e.code} from {safe_url}",
+                status_code=e.code,
+            ) from e
+        except urllib.error.URLError as e:
+            raise ExternalSourceError(f"Connection failed for {safe_url}: {e.reason}") from e
+        except OSError as e:
+            raise ExternalSourceError(f"Network error for {safe_url}: {e}") from e
 
 
     def submit(
