@@ -357,8 +357,16 @@ def install_capability(
     if from_tarball is not None and (not cap_spec or cap_spec.strip() == ""):
         autodetected_name = _detect_name_from_tarball(from_tarball)
         if autodetected_name is None:
-            print("Error: could not auto-detect capability name from tarball.")
-            print("  Specify the capability name: cap install --from-tarball <file.tar.gz> <name>")
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_spec": cap_spec or "",
+                    "status": "error",
+                    "error": "could not auto-detect capability name from tarball",
+                }))
+            else:
+                print("Error: could not auto-detect capability name from tarball.")
+                print("  Specify the capability name: cap install --from-tarball <file.tar.gz> <name>")
             return False
         cap_spec = autodetected_name
 
@@ -491,35 +499,66 @@ def install_capability(
             except Exception:
                 pass
         if conflict.state == ConflictState.OWNER_MISMATCH:
+            if not force:
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "cap_id": cap_id,
+                        "version": version_spec,
+                        "status": "error",
+                        "error": str(conflict.message),
+                        "existing_owner": conflict.existing_owner,
+                    }))
+                else:
+                    print(f"  {conflict.message}")
+                    print(f"  Existing owner: {conflict.existing_owner}")
+                    print("  Use --force to override (will remove existing installation)")
+                return False
             print(f"  {conflict.message}")
             print(f"  Existing owner: {conflict.existing_owner}")
-            if force:
-                print(f"  --force: overriding owner from '{conflict.existing_owner}' to '{owner}'")
-                _force_remove_conflicting_link(cap_name, conflict.existing_owner, target_framework=framework)
-            else:
-                print("  Use --force to override (will remove existing installation)")
-                return False
+            print(f"  --force: overriding owner from '{conflict.existing_owner}' to '{owner}'")
+            _force_remove_conflicting_link(cap_name, conflict.existing_owner, target_framework=framework)
         elif conflict.state == ConflictState.UNRECOGNIZED:
-            print(f"  {conflict.message}")
-            if auto_skip or PromptHandler.ask(
+            if not (auto_skip or PromptHandler.ask(
                 f"'{cap_name}' exists but was not installed via cap. Continue?",
                 default=False,
-            ):
-                print("  Proceeding with installation...")
-            else:
-                print("  Installation skipped.")
+            )):
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "cap_id": cap_id,
+                        "version": version_spec,
+                        "status": "error",
+                        "error": str(conflict.message),
+                    }))
+                else:
+                    print(f"  {conflict.message}")
+                    print("  Installation skipped.")
                 return False
-        elif conflict.state == ConflictState.VERSION_MISMATCH:
             print(f"  {conflict.message}")
-            print(f"  Existing version: {conflict.existing_version}")
-            if auto_skip or PromptHandler.ask(
+            print("  Proceeding with installation...")
+        elif conflict.state == ConflictState.VERSION_MISMATCH:
+            if not (auto_skip or PromptHandler.ask(
                 f"Upgrade '{cap_name}' from v{conflict.existing_version} to v{version_spec}?",
                 default=False,
-            ):
-                print("  Proceeding with installation...")
-            else:
-                print("  Installation skipped.")
+            )):
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "cap_id": cap_id,
+                        "version": version_spec,
+                        "status": "error",
+                        "error": str(conflict.message),
+                        "existing_version": conflict.existing_version,
+                    }))
+                else:
+                    print(f"  {conflict.message}")
+                    print(f"  Existing version: {conflict.existing_version}")
+                    print("  Installation skipped.")
                 return False
+            print(f"  {conflict.message}")
+            print(f"  Existing version: {conflict.existing_version}")
+            print("  Proceeding with installation...")
 
     # ── Check for updates vs registry if already installed ──────────
     existing = registry.get_capability(cap_id, version_spec)
@@ -540,6 +579,14 @@ def install_capability(
     if from_tarball is not None:
         resolved = _install_from_tarball(from_tarball, storage, cap_name, owner)
         if resolved is None:
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version_spec,
+                    "status": "error",
+                    "error": "failed to install from tarball",
+                }))
             return False
         source_dir, source_url = resolved
     elif source_dir is not None:
@@ -547,14 +594,31 @@ def install_capability(
         if _is_remote_source_reference(source_raw):
             resolved = _resolve_source(source_raw, version_spec=version_spec, github_token=github_token)
             if resolved is None:
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "cap_id": cap_id,
+                        "version": version_spec,
+                        "status": "error",
+                        "error": f"failed to resolve source: {source_raw}",
+                    }))
                 return False
             source_dir, source_url = resolved
     else:
         # No --source flag: try registry fetch. For sub-skill installs the
         # fetchable unit is the repository, not the member skill.
         if offline:
-            print("  Offline mode: registry fetch skipped.")
-            print("  Use --source to install from a local path.")
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version_spec,
+                    "status": "error",
+                    "error": "offline mode: registry fetch skipped",
+                }))
+            else:
+                print("  Offline mode: registry fetch skipped.")
+                print("  Use --source to install from a local path.")
             return False
         fetch_id = f"{owner}/{sub_skill_repo}" if sub_skill_repo else cap_id
         fetch_name = sub_skill_repo if sub_skill_repo else cap_name
@@ -607,6 +671,14 @@ def install_capability(
     if sub_skill_repo:
         member_dir = _resolve_sub_skill_dir(source_dir, cap_name)
         if member_dir is None:
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version_spec,
+                    "status": "error",
+                    "error": f"sub-skill '{cap_name}' not found in repository",
+                }))
             return False
         source_dir = member_dir
 
@@ -672,7 +744,16 @@ def install_capability(
     if existing and not (force or yes):
         if framework and not _is_framework_already(cap_name, owner, version, framework):
             return _append_framework(cap_name, owner, version, framework)
-        print(f"Capability {cap_id}@{version} already installed.")
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_id": cap_id,
+                "version": version,
+                "status": "error",
+                "error": f"capability '{cap_id}@{version}' already installed",
+            }))
+        else:
+            print(f"Capability {cap_id}@{version} already installed.")
         return False
 
     if not cap_name and source_manifest.name:
@@ -683,6 +764,14 @@ def install_capability(
     if not skip_runtime_check:
         interactive_rt = _is_interactive() and not yes
         if not _preflight_runtimes(source_manifest, interactive=interactive_rt, yes=yes):
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version_spec,
+                    "status": "error",
+                    "error": "runtime preflight check failed",
+                }))
             return False
 
     interactive = (
@@ -708,7 +797,16 @@ def install_capability(
         )
 
     if not resolved_frameworks:
-        print(f"  Error: '{source_manifest.kind or 'unknown'}' kind is not supported by the selected framework(s).")
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_id": cap_id,
+                "version": version,
+                "status": "error",
+                "error": f"kind '{source_manifest.kind or 'unknown'}' not supported by selected frameworks",
+            }))
+        else:
+            print(f"  Error: '{source_manifest.kind or 'unknown'}' kind is not supported by the selected framework(s).")
         return False
 
     _ALLOWED_KINDS = {k.value for k in Kind}
@@ -776,13 +874,10 @@ def install_capability(
             from ..manifest import infer_multi_skill_members
             nested = infer_multi_skill_members(package_dir)
             if nested:
-                print(f"Error: {cap_id} is a multi-skill repository "
-                      f"({len(nested)} member skills) declared as kind=skill.")
-                print("  A root link would be invisible to skill clients.")
-                print("  Model it as kind=bundle, or install a member directly:")
-                for m in nested[:8]:
-                    print(f"    cap install {cap_id}/{m['name']}")
-                return False
+                raise RuntimeError(
+                    f"{cap_id} is a multi-skill repository "
+                    f"({len(nested)} member skills) declared as kind=skill"
+                )
             print(f"Warning: {cap_id} has no SKILL.md — skill clients may not discover it.")
 
         # Install runtime dependencies before writing client configuration.
@@ -792,21 +887,18 @@ def install_capability(
             and not _is_go_project(package_dir, manifest)
         ):
             if not _install_npm_dependencies(package_dir, cap_name):
-                print(f"Error: npm install failed for {cap_name}. Installation aborted.")
-                return False
+                raise RuntimeError(f"npm install failed for {cap_name}")
 
         # V10/STAB-004: Go MCP servers get built from the local package.
         if manifest.kind == "mcp-server" and _is_go_project(package_dir, manifest):
             build_result = _build_go_binary(package_dir, cap_name, yes=yes)
             if build_result == "failed":
-                print(f"Error: could not build Go binary for {cap_name}. Installation aborted.")
-                return False
+                raise RuntimeError(f"could not build Go binary for {cap_name}")
             if build_result == "no-toolchain" and not (
                 skip_runtime_check
                 or os.environ.get("CAPACIUM_SKIP_RUNTIME_CHECK") == "1"
             ):
-                print(f"Error: go toolchain required to build {cap_name}. Installation aborted.")
-                return False
+                raise RuntimeError(f"go toolchain required to build {cap_name}")
 
         attempted_frameworks: set[str] = set()
         successful_frameworks: List[str] = []
@@ -932,8 +1024,6 @@ def install_capability(
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
             journal.restore()
             raise
-        print(f"Install of {cap_id}@{version} failed: {exc}")
-        print("  Rolling back — all changes restored.")
         journal.restore()
         if json_output:
             print(_json.dumps({
@@ -950,6 +1040,9 @@ def install_capability(
                     "registry_restored": journal._prior_cap is not None,
                 },
             }))
+        else:
+            print(f"Install of {cap_id}@{version} failed: {exc}")
+            print("  Rolling back — all changes restored.")
         return False
 
     journal.commit()
