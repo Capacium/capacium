@@ -181,6 +181,8 @@ class ResolveNode:
     optional: bool = False
     # The path(s) through which this node was reached (for diamond tracking)
     paths: List[List[str]] = field(default_factory=list)
+    # The intersected constraint that selected this version
+    constraint: Optional[str] = None
 
     def owner_identity(self) -> str:
         """Return the owner portion of the coordinate, or '' if none."""
@@ -429,7 +431,7 @@ def _intersect_constraints(a: str, b: str) -> Optional[str]:
     parts = []
     if min_lower is not None:
         v_str = ".".join(str(n) for n in min_lower)
-        parts.append(f">={'=' if min_lower_inclusive else ''}{v_str}")
+        parts.append(f">{'=' if min_lower_inclusive else ''}{v_str}")
     if max_upper is not None:
         v_str = ".".join(str(n) for n in max_upper)
         parts.append(f"<{'=' if max_upper_inclusive else ''}{v_str}")
@@ -471,14 +473,11 @@ class Resolver:
     rejected for versioned installs.
     """
 
-    # Known mutable branch-head names that must never satisfy a versioned install.
-    _BRANCH_HEAD_NAMES: Set[str] = {
-        "main", "master", "develop", "dev", "staging", "production",
-        "release", "HEAD",
-    }
-
-    # Revisions that contain a "/" are almost certainly branch names.
-    _BRANCH_HEAD_RE = re.compile(r"^(main|master|develop|dev|staging|production|release|HEAD)$")
+    # Revisions that look like mutable branch names — compared against lowercased revision.
+    _BRANCH_HEAD_RE = re.compile(
+        r"^(main|master|develop|dev|staging|production|release|head|latest|"
+        r"trunk|nightly|stable|snapshot)$"
+    )
 
     def __init__(
         self,
@@ -545,13 +544,27 @@ class Resolver:
                         "missing", f"No releases found for {root}",
                     ),
                 )
-            selected_root = _select_best_version(root_versions, version_spec)
+            # Apply pin to constrain root selection
+            pinned_root = self._pins.get(root)
+            effective_spec = version_spec
+            if pinned_root is not None:
+                if not _version_satisfies(pinned_root, version_spec):
+                    raise ConflictError(
+                        f"Pin on {root}@{pinned_root} conflicts with constraint "
+                        f"{version_spec!r}",
+                        plan=self._rejection_plan(
+                            "conflict",
+                            f"Pin on {root}@{pinned_root} conflicts with {version_spec!r}",
+                        ),
+                    )
+                effective_spec = pinned_root
+            selected_root = _select_best_version(root_versions, effective_spec)
             if selected_root is None:
                 raise MissingReleaseError(
-                    f"No version of {root} satisfies constraint {version_spec!r}",
+                    f"No version of {root} satisfies constraint {effective_spec!r}",
                     plan=self._rejection_plan(
                         "missing",
-                        f"No version of {root} satisfies {version_spec!r}",
+                        f"No version of {root} satisfies {effective_spec!r}",
                     ),
                 )
 
@@ -565,29 +578,69 @@ class Resolver:
         )
 
         # Walk dependencies with constraint tracking
-        pending: List[Tuple[str, str, List[str], bool]] = [
-            (root, selected_root, [root], False)
+        # pending entries: (coordinate, version, constraint, chain, is_optional)
+        pending: List[Tuple[str, str, str, List[str], bool]] = [
+            (root, selected_root, version_spec, [root], False)
         ]
 
-        while pending:
-            coordinate, version, chain, is_optional = pending.pop(0)
+        # Track per-coordinate constraint intersections for diamond resolution
+        constraint_state: Dict[str, str] = {}
 
-            # Already resolved — check for conflicts
+        while pending:
+            coordinate, version, dep_constraint, chain, is_optional = pending.pop(0)
+
+            # Already resolved — intersect constraints, not just compare versions
             if coordinate in plan.nodes:
                 existing = plan.nodes[coordinate]
-                if existing.version != version:
+                # Intersect the existing constraint with the new one
+                prev_constraint = constraint_state.get(coordinate, "*")
+                intersected = _intersect_constraints(prev_constraint, dep_constraint)
+                if intersected is None:
                     raise ConflictError(
-                        f"Conflict on {coordinate}: requires both "
-                        f"{existing.version} and {version}",
+                        f"Conflict on {coordinate}: constraints "
+                        f"{prev_constraint!r} and {dep_constraint!r} "
+                        f"cannot be satisfied together",
                         plan=self._rejection_plan(
                             "conflict",
-                            f"Conflict on {coordinate}: requires both "
-                            f"{existing.version} and {version}",
+                            f"Conflict on {coordinate}: constraints "
+                            f"{prev_constraint!r} and {dep_constraint!r} "
+                            f"are incompatible",
                         ),
                     )
+                # Check if the existing version satisfies the intersected constraint
+                if not _version_satisfies(existing.version, intersected):
+                    # Try to find a version satisfying the intersected constraint
+                    avail = self._available_versions(coordinate)
+                    re_selected = _select_best_version(avail, intersected)
+                    if re_selected is None:
+                        raise ConflictError(
+                            f"Conflict on {coordinate}: no version satisfies "
+                            f"intersected constraint {intersected!r}",
+                            plan=self._rejection_plan(
+                                "conflict",
+                                f"Conflict on {coordinate}: no version satisfies "
+                                f"{intersected!r}",
+                            ),
+                        )
+                    # Replace with the version that satisfies the intersection
+                    existing.version = re_selected
+                    existing.constraint = intersected
+                    constraint_state[coordinate] = intersected
+                    # Re-read metadata for the new version
+                    meta = self._catalog.get(coordinate, {}).get(re_selected, {})
+                    existing.kind = meta.get("kind")
+                    existing.source = meta.get("source")
+                    existing.source_revision = meta.get("source_revision")
+                    existing.artifact_digest = meta.get("artifact_digest")
+                    existing.dependencies = meta.get("deps", {})
+                else:
+                    constraint_state[coordinate] = intersected
+                    existing.constraint = intersected
+                # Add path for diamond tracking
+                existing.paths.append(chain)
                 # If already resolved as required, upgrade from optional
-                if is_optional and not existing.optional:
-                    pass
+                if not is_optional and existing.optional:
+                    existing.optional = False
                 continue
 
             meta = self._catalog.get(coordinate, {}).get(version, {})
@@ -599,8 +652,12 @@ class Resolver:
             # Branch-head rejection
             self._validate_no_branch_head(coordinate, version)
 
+            # Determine node type from catalog metadata
+            node_type = self._node_type_from_meta(meta, coordinate)
+            constraint_state[coordinate] = dep_constraint
+
             node = ResolveNode(
-                node_type=NodeType.CAPABILITY,
+                node_type=node_type,
                 coordinate=coordinate,
                 version=version,
                 kind=kind,
@@ -610,6 +667,7 @@ class Resolver:
                 dependencies=meta.get("deps", {}),
                 paths=[chain],
                 optional=is_optional,
+                constraint=dep_constraint,
             )
             plan.nodes[coordinate] = node
 
@@ -653,6 +711,22 @@ class Resolver:
 
         return plan
 
+    @staticmethod
+    def _node_type_from_meta(meta: Dict[str, Any], coordinate: str) -> NodeType:
+        """Determine the NodeType from catalog metadata or coordinate prefix."""
+        node_type_str = meta.get("node_type")
+        if node_type_str:
+            try:
+                return NodeType(node_type_str)
+            except ValueError:
+                pass
+        # Infer from coordinate prefix
+        if coordinate.startswith("runtime:"):
+            return NodeType.RUNTIME
+        if coordinate.startswith("host:"):
+            return NodeType.HOST_BINDING
+        return NodeType.CAPABILITY
+
     def _validate_no_branch_head(self, coordinate: str, version: str) -> None:
         """Raise BranchHeadError if *coordinate*@*version* has a branch-head revision."""
         meta = self._catalog.get(coordinate, {}).get(version, {})
@@ -672,7 +746,7 @@ class Resolver:
         dep_coord: str,
         dep_constraint: str,
         chain: List[str],
-        pending: List[Tuple[str, str, List[str], bool]],
+        pending: List[Tuple[str, str, str, List[str], bool]],
         optional: bool = False,
         harness_set: Optional[Set[str]] = None,
     ) -> None:
@@ -690,7 +764,7 @@ class Resolver:
                     ),
                 )
             new_chain = chain + [dep_coord]
-            pending.append((dep_coord, held, new_chain, optional))
+            pending.append((dep_coord, held, dep_constraint, new_chain, optional))
             return
 
         # Apply pin
@@ -706,7 +780,7 @@ class Resolver:
                     ),
                 )
             new_chain = chain + [dep_coord]
-            pending.append((dep_coord, pinned, new_chain, optional))
+            pending.append((dep_coord, pinned, dep_constraint, new_chain, optional))
             return
 
         dep_versions = self._available_versions(dep_coord)
@@ -735,7 +809,7 @@ class Resolver:
                 ),
             )
         new_chain = chain + [dep_coord]
-        pending.append((dep_coord, selected_dep, new_chain, optional))
+        pending.append((dep_coord, selected_dep, dep_constraint, new_chain, optional))
 
     @staticmethod
     def _rejection_plan(reason: str, detail: str) -> Dict[str, Any]:
@@ -851,7 +925,7 @@ class Resolver:
                     )
 
             node = ResolveNode(
-                node_type=NodeType.CAPABILITY,
+                node_type=Resolver._node_type_from_meta(meta, coordinate),
                 coordinate=coordinate,
                 version=version,
                 kind=meta.get("kind"),

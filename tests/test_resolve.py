@@ -1177,3 +1177,270 @@ class TestCriterion7OfflineReplay:
         replayed = Resolver.replay_from_lock(lock, catalog=catalog)
         replayed_lock = replayed.to_lock()
         assert replayed_lock == lock
+
+
+# ---------------------------------------------------------------------------
+# Fix A verification: satisfiable diamond, node type emission, HEAD/root-pin
+# ---------------------------------------------------------------------------
+
+
+class TestFixA_C1_ConstraintIntersection:
+    """C1 fix: satisfiable diamonds resolve via constraint intersection."""
+
+    def test_satisfiable_diamond_resolves_without_conflict(self):
+        """The review probe: root->a(shared>=1.0.0,<2.0.0), root->b(shared>=1.0.0);
+        shared has 1.0.0 and 2.0.0. Should select 1.0.0, not conflict."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0,<2.0.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        # Must select 1.0.0 (satisfies both >=1.0.0 and >=1.0.0,<2.0.0)
+        assert plan.selected_version("dan/shared") == "1.0.0"
+        # Must have both paths recorded
+        shared = plan.nodes["dan/shared"]
+        assert len(shared.paths) == 2, \
+            f"Expected 2 diamond paths, got {shared.paths}"
+        path_strings = ["->".join(p) for p in shared.paths]
+        assert any("carol/tool" in p for p in path_strings)
+        assert any("bob/util" in p for p in path_strings)
+
+    def test_false_conflict_on_intersection_detected(self):
+        """When constraints truly conflict (no version satisfies both),
+        a ConflictError is still raised."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=2.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0,<2.0.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ConflictError) as exc_info:
+            resolver.resolve("alice/lib", "1.0.0")
+        assert "dan/shared" in str(exc_info.value)
+
+    def test_diamond_reselection_upgrades_metadata(self):
+        """When a diamond requires a different version, metadata is re-read."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {
+                    "bob/util": ">=1.0.0",
+                    "carol/tool": ">=1.0.0",
+                }},
+            },
+            "bob/util": {
+                "1.0.0": {"deps": {"dan/shared": ">=1.0.0"}},
+            },
+            "carol/tool": {
+                "1.0.0": {"deps": {"dan/shared": ">=2.0.0"}},
+            },
+            "dan/shared": {
+                "1.0.0": {"source": "https://s1", "source_revision": "r1", "artifact_digest": "d1"},
+                "2.0.0": {"source": "https://s2", "source_revision": "r2", "artifact_digest": "d2"},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        # bob/util first selects dan/shared 1.0.0, then carol/tool needs >=2.0.0
+        # intersection >=1.0.0 ∩ >=2.0.0 = >=2.0.0, reselects 2.0.0
+        assert plan.selected_version("dan/shared") == "2.0.0"
+        shared = plan.nodes["dan/shared"]
+        assert shared.source == "https://s2"
+        assert shared.source_revision == "r2"
+        assert shared.artifact_digest == "d2"
+
+
+class TestFixA_C2_NodeTypeEmission:
+    """C2 fix: resolver emits runtime and host-binding nodes from catalog."""
+
+    def test_runtime_node_emitted_from_catalog_metadata(self):
+        """A node with node_type 'runtime' in catalog emits NodeType.RUNTIME."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"runtime:uv": ">=0.4.0"}},
+            },
+            "runtime:uv": {
+                "0.5.0": {"node_type": "runtime", "kind": None},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        uv_node = plan.nodes["runtime:uv"]
+        assert uv_node.node_type == NodeType.RUNTIME, \
+            f"Expected RUNTIME, got {uv_node.node_type}"
+
+    def test_runtime_node_inferred_from_coordinate_prefix(self):
+        """A coordinate starting with 'runtime:' is inferred as RUNTIME."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"runtime:node": ">=1.0.0"}},
+            },
+            "runtime:node": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        node = plan.nodes["runtime:node"]
+        assert node.node_type == NodeType.RUNTIME
+
+    def test_host_binding_inferred_from_prefix(self):
+        """A coordinate starting with 'host:' is inferred as HOST_BINDING."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"host:claude-code": ">=1.0.0"}},
+            },
+            "host:claude-code": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        hb_node = plan.nodes["host:claude-code"]
+        assert hb_node.node_type == NodeType.HOST_BINDING
+
+    def test_capability_node_still_default(self):
+        """Regular capability coordinates remain NodeType.CAPABILITY."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        plan = resolver.resolve("alice/lib", "1.0.0")
+        for coord, node in plan.nodes.items():
+            assert node.node_type == NodeType.CAPABILITY, \
+                f"{coord} expected CAPABILITY, got {node.node_type}"
+
+
+class TestFixA_C4_BranchHeadAndRootPin:
+    """C4 fix: HEAD/head rejected, root pins applied, extended branch names."""
+
+    def test_head_uppercase_rejected(self):
+        """'HEAD' is rejected as a branch head."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source_revision": "HEAD",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError) as exc_info:
+            resolver.resolve("alice/lib", "1.0.0")
+        assert "branch" in str(exc_info.value).lower() or \
+            "head" in str(exc_info.value).lower()
+
+    def test_head_lowercase_rejected(self):
+        """'head' is rejected as a branch head."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source_revision": "head",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError):
+            resolver.resolve("alice/lib", "1.0.0")
+
+    def test_latest_rejected(self):
+        """'latest' is rejected as a branch head."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source_revision": "latest",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError):
+            resolver.resolve("alice/lib", "1.0.0")
+
+    def test_trunk_rejected(self):
+        """'trunk' is rejected as a branch head."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source_revision": "trunk",
+                },
+            },
+        }
+
+        resolver = Resolver(catalog=catalog)
+        with pytest.raises(ResolveError):
+            resolver.resolve("alice/lib", "1.0.0")
+
+    def test_root_pin_constrains_selection(self):
+        """Root pin is applied to constrain the root version selection."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+                "2.0.0": {"deps": {"bob/util": ">=1.0.0"}},
+            },
+            "bob/util": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+        pins = {"alice/lib": "1.0.0"}
+
+        resolver = Resolver(catalog=catalog, pins=pins)
+        plan = resolver.resolve("alice/lib", ">=1.0.0")
+        # Pin should force 1.0.0 even though 2.0.0 would be the best match
+        assert plan.selected_version("alice/lib") == "1.0.0"
+
+    def test_root_pin_conflict_with_constraint_raises(self):
+        """Root pin that conflicts with the version spec raises ConflictError."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {},
+                "2.0.0": {},
+            },
+        }
+        pins = {"alice/lib": "2.0.0"}
+
+        resolver = Resolver(catalog=catalog, pins=pins)
+        # Pin 2.0.0 does NOT satisfy the constraint >=1.0.0,<2.0.0
+        with pytest.raises(ConflictError):
+            resolver.resolve("alice/lib", ">=1.0.0,<2.0.0")
