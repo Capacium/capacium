@@ -13,6 +13,32 @@ FINGERPRINT_EXCLUDES = [
     "capability.lock",
 ]
 
+#: Capacium-owned sidecar files. They describe a capability but are not part of
+#: its distributable bytes, so they never enter a provenance digest.
+EVIDENCE_SIDECAR_EXCLUDES = [
+    ".cap-evidence.json",
+    ".capacium-source.json",
+]
+
+
+def evidence_exclude_patterns(extra: Optional[List[str]] = None) -> List[str]:
+    """Canonical exclude list for digests that describe capability content.
+
+    Returns a copy of :data:`FINGERPRINT_EXCLUDES` extended with the Capacium
+    evidence sidecars. Every call site that hashes capability content — the
+    install, verify and sign paths, the ingest pipeline and install consent —
+    derives its list from here so the digest means the same thing everywhere.
+
+    The list never enters a shared hash cache and therefore may be freely
+    extended. Callers that need narrower provenance (for example to also skip
+    a vendored dependency tree) pass *extra*.
+    """
+    patterns = list(FINGERPRINT_EXCLUDES)
+    patterns.extend(EVIDENCE_SIDECAR_EXCLUDES)
+    if extra:
+        patterns.extend(p for p in extra if p not in patterns)
+    return patterns
+
 
 def compute_fingerprint(directory: Path, exclude_patterns: Optional[List[str]] = None) -> str:
     if exclude_patterns is None:
