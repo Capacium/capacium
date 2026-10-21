@@ -505,10 +505,10 @@ class TestJsonOutputCriterion5:
         assert "applied" in doc
         applied = doc["applied"]
         assert isinstance(applied["created"], list)
+        assert isinstance(applied["changed"], list)
         assert isinstance(applied["frameworks_installed"], list)
         assert applied["registry_upserted"] is True
-        assert "files_modified" in applied
-        assert "reused" in applied
+        assert isinstance(applied["reused"], list)
 
     def test_install_rollback_json_schema(
         self, tmp_home, source_skill_dir, capsys, monkeypatch
@@ -547,6 +547,9 @@ class TestJsonOutputCriterion5:
         assert "plan" in doc
         assert "reverted" in doc
         reverted = doc["reverted"]
+        assert "created" in reverted
+        assert "changed" in reverted
+        assert "reused" in reverted
         assert "files_restored" in reverted
         assert "links_restored" in reverted
         assert "paths_removed" in reverted
@@ -593,8 +596,9 @@ class TestJsonOutputCriterion5:
         assert doc["status"] == "applied"
         applied = doc["applied"]
         assert applied["removed"] is True
+        assert isinstance(applied["changed"], list)
+        assert isinstance(applied["reverted"], list)
         assert isinstance(applied["frameworks_affected"], list)
-        assert "files_modified" in applied
         assert "cascade_removed" in applied
 
     def test_remove_rollback_json_schema(self, tmp_home, capsys, monkeypatch):
@@ -643,6 +647,8 @@ class TestJsonOutputCriterion5:
         assert "error" in doc
         assert "injected remove failure" in doc["error"]
         reverted = doc["reverted"]
+        assert "changed" in reverted
+        assert "reverted" in reverted
         assert "files_restored" in reverted
         assert "links_restored" in reverted
         assert "trees_unparked" in reverted

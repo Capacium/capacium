@@ -444,6 +444,15 @@ def remove_capability(
                 "status": "rolled_back",
                 "error": str(exc),
                 "reverted": {
+                    "changed": [str(k) for k in snapshot._files],
+                    "reverted": [
+                        {
+                            "cap_id": f"{m.owner}/{m.name}",
+                            "version": m.version,
+                            "fingerprint": m.fingerprint[:16] if m.fingerprint else None,
+                        }
+                        for m in snapshot._rows
+                    ],
                     "files_restored": len(snapshot._files),
                     "links_restored": len(snapshot._links),
                     "trees_unparked": len(snapshot._moves),
@@ -461,8 +470,16 @@ def remove_capability(
             "status": "applied",
             "applied": {
                 "removed": True,
+                "changed": [str(k) for k in snapshot._files],
+                "reverted": [
+                    {
+                        "cap_id": f"{m.owner}/{m.name}",
+                        "version": m.version,
+                        "fingerprint": m.fingerprint[:16] if m.fingerprint else None,
+                    }
+                    for m in snapshot._rows
+                ],
                 "frameworks_affected": list(cap.frameworks or [cap.framework or "opencode"]),
-                "files_modified": len(snapshot._files),
                 "cascade_removed": removed_dependents,
             },
         }

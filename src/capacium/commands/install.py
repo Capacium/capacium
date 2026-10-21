@@ -699,7 +699,20 @@ def install_capability(
             return False
         source_dir = member_dir
 
-    source_manifest = Manifest.detect_source_declaration(source_dir)
+    try:
+        source_manifest = Manifest.detect_source_declaration(source_dir)
+    except ManifestDeclarationError as exc:
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_id": cap_id,
+                "version": version_spec,
+                "status": "error",
+                "error": str(exc),
+            }))
+        else:
+            print(f"Error: {exc}")
+        return False
     requested_cap_id = cap_id
     canonical_cap_id = _canonical_identity(
         source_manifest, requested_cap_id, source_url
@@ -1045,6 +1058,30 @@ def install_capability(
         # Re-raise SystemExit and KeyboardInterrupt so the CLI exit code
         # propagates correctly (130 for SIGINT).
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version,
+                    "status": "rolled_back",
+                    "error": str(exc),
+                    "plan": journal._plan,
+                    "reverted": {
+                        "created": [str(p) for p in journal._new_paths],
+                        "changed": [str(k) for k in journal._files],
+                        "reused": [
+                            {
+                                "cap_id": f"{journal._prior_cap.owner}/{journal._prior_cap.name}",
+                                "version": journal._prior_cap.version,
+                                "fingerprint": journal._prior_cap.fingerprint[:16] if journal._prior_cap.fingerprint else None,
+                            }
+                        ] if journal._prior_cap else [],
+                        "files_restored": len(journal._files),
+                        "links_restored": len(journal._links),
+                        "paths_removed": len(journal._new_paths),
+                        "registry_restored": journal._prior_cap is not None,
+                    },
+                }))
             journal.restore()
             raise
         journal.restore()
@@ -1057,6 +1094,15 @@ def install_capability(
                 "error": str(exc),
                 "plan": journal._plan,
                 "reverted": {
+                    "created": [str(p) for p in journal._new_paths],
+                    "changed": [str(k) for k in journal._files],
+                    "reused": [
+                        {
+                            "cap_id": f"{journal._prior_cap.owner}/{journal._prior_cap.name}",
+                            "version": journal._prior_cap.version,
+                            "fingerprint": journal._prior_cap.fingerprint[:16] if journal._prior_cap.fingerprint else None,
+                        }
+                    ] if journal._prior_cap else [],
                     "files_restored": len(journal._files),
                     "links_restored": len(journal._links),
                     "paths_removed": len(journal._new_paths),
@@ -1079,10 +1125,16 @@ def install_capability(
             "plan": journal._plan,
             "applied": {
                 "created": [str(p) for p in journal._new_paths],
+                "changed": [str(k) for k in journal._files],
                 "frameworks_installed": list(resolved_frameworks),
                 "registry_upserted": True,
-                "files_modified": len(journal._files),
-                "reused": bool(existing_before),
+                "reused": [
+                    {
+                        "cap_id": f"{existing_before.owner}/{existing_before.name}",
+                        "version": existing_before.version,
+                        "fingerprint": existing_before.fingerprint[:16] if existing_before.fingerprint else None,
+                    }
+                ] if existing_before else [],
             },
         }))
     else:

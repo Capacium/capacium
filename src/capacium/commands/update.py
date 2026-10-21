@@ -287,9 +287,31 @@ def update_capability(
         journal._flush()
     except BaseException as exc:
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            if json_output:
+                prior = journal._prior_cap
+                print(_json_mod.dumps({
+                    "operation": "update",
+                    "cap_id": cap_id,
+                    "version": cap.version,
+                    "status": "rolled_back",
+                    "error": str(exc),
+                    "reverted": {
+                        "changed": [str(k) for k in journal._files],
+                        "reused": [
+                            {
+                                "cap_id": f"{prior.owner}/{prior.name}",
+                                "version": prior.version,
+                                "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                            }
+                        ] if prior else [],
+                        "files_restored": len(journal._files),
+                        "registry_restored": prior is not None,
+                    },
+                }))
             journal.restore()
             raise
         if json_output:
+            prior = journal._prior_cap
             print(_json_mod.dumps({
                 "operation": "update",
                 "cap_id": cap_id,
@@ -297,8 +319,16 @@ def update_capability(
                 "status": "rolled_back",
                 "error": str(exc),
                 "reverted": {
+                    "changed": [str(k) for k in journal._files],
+                    "reused": [
+                        {
+                            "cap_id": f"{prior.owner}/{prior.name}",
+                            "version": prior.version,
+                            "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                        }
+                    ] if prior else [],
                     "files_restored": len(journal._files),
-                    "registry_restored": journal._prior_cap is not None,
+                    "registry_restored": prior is not None,
                 },
             }))
         else:
@@ -309,6 +339,7 @@ def update_capability(
 
     journal.commit()
     if json_output:
+        prior = journal._prior_cap
         print(_json_mod.dumps({
             "operation": "update",
             "cap_id": cap_id,
@@ -316,8 +347,15 @@ def update_capability(
             "status": "applied",
             "fingerprint": current_fingerprint[:16],
             "applied": {
+                "changed": [str(k) for k in journal._files],
                 "registry_upserted": True,
-                "files_modified": len(journal._files),
+                "reused": [
+                    {
+                        "cap_id": f"{prior.owner}/{prior.name}",
+                        "version": prior.version,
+                        "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                    }
+                ] if prior else [],
             },
         }))
     else:
