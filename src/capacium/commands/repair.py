@@ -13,6 +13,7 @@ from ..framework_detector import framework_skills_dirs
 from ..manifest import Manifest
 from ..registry import Registry
 from ..storage import StorageManager
+from ..trust import DiagnosticFinding, FindingCategory, FindingSeverity
 
 
 def _claude_desktop_path() -> Path:
@@ -552,6 +553,27 @@ def _apply_fix(entry: StaleEntry) -> bool:
     return False
 
 
+def stale_entry_findings(entries: List[StaleEntry]) -> List["DiagnosticFinding"]:
+    """Project stale MCP config entries onto the shared finding model.
+
+    A stale entry is exactly the wrapper-parsing shape the shared model names:
+    a harness config that points at a missing or superseded wrapper target.
+    Projecting here is what makes ``cap repair`` and ``cap reconcile`` agree on
+    what a wrapper-parsing finding *is*, rather than each carrying its own
+    vocabulary (``StaleEntry`` vs ``dead_mcp_config`` vs a doctor check tuple).
+    """
+    return [
+        DiagnosticFinding(
+            category=FindingCategory.WRAPPER_PARSING,
+            severity=FindingSeverity.WARNING.value,
+            summary=f"{entry.framework}: {entry.server_key}",
+            source=str(entry.config_path),
+            detail=entry.reason,
+        )
+        for entry in entries
+    ]
+
+
 def _auto_fixable(entry: StaleEntry) -> bool:
     """--yes may only remove missing-command-file entries (plus reversible
     key normalizations). Orphan removals always require interactive
@@ -657,6 +679,12 @@ def repair(args) -> bool:
     json_output = getattr(args, "json", False)
 
     entries = _find_stale_entries(cap_spec)
+    # Each stale MCP entry is also reported through the same finding model
+    # reconcile and doctor consume (category=wrapper_parsing), so the three
+    # domains are legible in one shape instead of three.
+    for finding in stale_entry_findings(entries):
+        if not json_output:
+            print(f"  [{finding.category.value}/{finding.severity}] {finding.summary}")
     _repair_entries(entries, dry_run=dry_run, auto_yes=auto_yes, json_output=json_output)
     # Preserve the established JSON array schema. Backup inventory/removal is
     # available from the regular attended and --dry-run repair paths.

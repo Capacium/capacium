@@ -5,6 +5,8 @@ Red proofs MUST fail before implementation.
 
 import pytest
 
+from pathlib import Path
+
 
 # ---------------------------------------------------------------------------
 # Criterion 1: Origin, publisher authority, technical verification, security
@@ -809,3 +811,130 @@ def test_c8_finding_category_from_string():
 
     with pytest.raises(ValueError):
         FindingCategory("invalid")
+
+
+# ---------------------------------------------------------------------------
+# D1/D3 — the pipeline and finding model must have real consumers, not just
+# importable types. These proofs exercise the seed, unknown-install, reconcile
+# and doctor surfaces rather than the dataclasses in isolation.
+# ---------------------------------------------------------------------------
+
+def test_d3_seed_consumes_shared_pipeline(tmp_path, monkeypatch):
+    """`cap init` writes a seed EvidenceRecord through the shared pipeline."""
+    from src.capacium.commands.init import init_capability
+    from src.capacium.trust import EVIDENCE_RECORD_FILENAME, read_evidence_record
+
+    monkeypatch.chdir(tmp_path)
+    assert init_capability(name="demo-cap", kind="skill", version="0.1.0")
+
+    record = read_evidence_record(tmp_path)
+    assert record is not None, "seed wrote no durable EvidenceRecord"
+    assert record.origin == "seed"
+    assert record.publisher_authority.value == "null"
+    assert record.security_assessment.value == "none"
+    assert (tmp_path / EVIDENCE_RECORD_FILENAME).is_file()
+
+
+def test_d3_seed_config_unchanged():
+    """The seed record equals the record the unknown-install path builds."""
+    from src.capacium.trust import (
+        ORIGIN_SEED,
+        ORIGIN_UNKNOWN_INSTALL,
+        build_evidence_record,
+    )
+
+    seed = build_evidence_record(ORIGIN_SEED)
+    unknown = build_evidence_record(ORIGIN_UNKNOWN_INSTALL)
+    assert seed.to_dict().keys() == unknown.to_dict().keys()
+    assert seed.origin != unknown.origin
+    assert seed.publisher_authority == unknown.publisher_authority
+    assert seed.security_assessment == unknown.security_assessment
+
+
+def test_d3_unknown_install_manifest_writes_evidence(tmp_path):
+    """The generated-manifest path records evidence for an unknown capability."""
+    from src.capacium.commands.install import _auto_generate_manifest
+    from src.capacium.trust import read_evidence_record
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "SKILL.md").write_text("# demo\n")
+
+    _auto_generate_manifest(repo, "https://github.com/owner/demo", None)
+
+    record = read_evidence_record(repo)
+    assert record is not None, "unknown-install generated no EvidenceRecord"
+    assert record.origin == "unknown-install"
+    assert record.publisher_authority.value == "null"
+    assert record.security_assessment.value == "none"
+    assert record.install_consent is None
+
+
+def test_d3_reconcile_reports_shared_findings():
+    """reconcile's findings are also readable through the shared finding model."""
+    from src.capacium.commands.reconcile import reconcile, shared_findings
+    from src.capacium.trust import DiagnosticFinding
+
+    report = reconcile()
+    # The reconciled report's own contract is unchanged ...
+    assert "findings" in report
+    assert "shared_findings" not in report
+    # ... and every raw finding has a shared-model projection of equal length.
+    projected = shared_findings(report)
+    assert len(projected) == len(report["findings"])
+    for finding in projected:
+        assert isinstance(finding, DiagnosticFinding)
+        assert finding.category in set(_categories())
+
+
+def test_d3_reconcile_projection_never_drops_unknown_kind():
+    """An unrecognised reconcile kind still projects, never vanishes."""
+    from src.capacium.trust import map_reconcile_finding
+
+    finding = map_reconcile_finding({"kind": "brand_new_state"})
+    assert finding.category.value == "provenance"
+    assert finding.summary == "brand_new_state"
+
+
+def test_d3_doctor_projects_failed_checks_only():
+    """Doctor's deep checks become findings only when they fail."""
+    from src.capacium.commands.doctor import collect_deep_findings
+
+    results = [
+        ("Symlink depth", True, "ok"),
+        ("Registry drift", False, "2 rows without install_path"),
+    ]
+    findings = collect_deep_findings(results)
+    assert len(findings) == 1
+    assert findings[0].summary == "Registry drift"
+    assert findings[0].detail == "2 rows without install_path"
+    assert findings[0].severity == "error"
+
+
+def test_d3_reconcile_repair_doctor_share_one_model():
+    """One DiagnosticFinding type backs reconcile, repair and doctor."""
+    from src.capacium.commands.doctor import collect_deep_findings
+    from src.capacium.commands.repair import StaleEntry, stale_entry_findings
+    from src.capacium.trust import DiagnosticFinding, map_reconcile_finding
+
+    assert isinstance(map_reconcile_finding({"kind": "drift"}), DiagnosticFinding)
+    [finding] = collect_deep_findings([("Store health", False, "unreadable")])
+    assert isinstance(finding, DiagnosticFinding)
+    [repaired] = stale_entry_findings([
+        StaleEntry(
+            framework="codex",
+            config_path=Path("/tmp/config.toml"),
+            section_key="mcp_servers",
+            server_key="gone-server",
+            entry={},
+            reason="Command not found: /nope",
+            fix_action="remove",
+        )
+    ])
+    assert isinstance(repaired, DiagnosticFinding)
+    assert repaired.category.value == "wrapper_parsing"
+
+
+def _categories():
+    from src.capacium.trust import FindingCategory
+    return list(FindingCategory)

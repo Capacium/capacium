@@ -1588,6 +1588,13 @@ def _auto_generate_manifest(
         import json
         dest.write_text(json.dumps(yaml_data, indent=2) + "\n")
 
+    # An unknown capability starts from null publisher authority and no
+    # security assessment, through the same pipeline entry the initial seed
+    # uses. It cannot reach reviewed or publisher-adopted without a signed
+    # event, and install consent never mutates these axes.
+    from ..trust import ORIGIN_UNKNOWN_INSTALL, build_evidence_record, write_evidence_record
+    write_evidence_record(repo_dir, build_evidence_record(ORIGIN_UNKNOWN_INSTALL))
+
     print(f"  Auto-generated capability.yaml for {owner}/{name}@{version}")
 
 

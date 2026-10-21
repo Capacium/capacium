@@ -1,4 +1,4 @@
-"""CAPN-P03 Lane A — TrustProvider SPI and EvidenceVerificationResult.
+"""CAPN-P03 Lane A — TrustProvider SPI, evidence records and diagnostics.
 
 Capacium Core boundary: signed evidence → TrustProvider → EvidenceVerificationResult → opaque consumer policy input.
 
@@ -15,7 +15,9 @@ Evidence & consent model (CAP117-EVIDENCE-005):
   assessment, distribution authority, lifecycle, and install consent.
 - Generated manifests default to NULL publisher authority and NONE security
   assessment; transitions to reviewed/publisher-adopted require a signed event.
-- Seed and unknown-capability installs share one durable EvidenceRecord schema.
+- Seed and unknown-capability installs share one durable EvidenceRecord schema
+  through the single :func:`build_evidence_record` entry point.
+- DiagnosticFinding is the one finding model reconcile, repair and doctor share.
 """
 
 import re
@@ -526,6 +528,68 @@ class EvidenceRecord:
         )
 
 
+#: Durable per-capability evidence file, namespaced as ``.cap-*``.
+EVIDENCE_RECORD_FILENAME = ".cap-evidence.json"
+
+#: Origin of a manifest Capacium generated for a source that shipped none.
+ORIGIN_UNKNOWN_INSTALL = "unknown-install"
+
+#: Origin of the first manifest written for a newly created capability.
+ORIGIN_SEED = "seed"
+
+
+def build_evidence_record(
+    origin: str,
+    technical_verification: Optional[str] = None,
+    install_consent: Optional[ConsentRecord] = None,
+) -> EvidenceRecord:
+    """Build the starting EvidenceRecord for *origin*.
+
+    One pipeline entry shared by the initial seed and by unknown-capability
+    installs: both start from null publisher authority with no security
+    assessment, and neither can reach reviewed or publisher-adopted without a
+    signed event. Install consent never mutates these axes.
+    """
+    return EvidenceRecord(
+        origin=origin,
+        publisher_authority=PublisherAuthority.NULL,
+        technical_verification=technical_verification,
+        security_assessment=SecurityAssessment.NONE,
+        distribution_authority=DistributionAuthority.UNKNOWN,
+        lifecycle=Lifecycle.ACTIVE,
+        install_consent=install_consent,
+    )
+
+
+def write_evidence_record(directory, record: EvidenceRecord):
+    """Persist *record* durably next to the manifest it describes.
+
+    Returns the path written. Raises OSError if the directory is unwritable, so
+    a caller that cannot record evidence does not silently proceed as though it
+    had.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(directory) / EVIDENCE_RECORD_FILENAME
+    path.write_text(json.dumps(record.to_dict(), indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def read_evidence_record(directory) -> Optional[EvidenceRecord]:
+    """Read a previously written evidence record, or None when absent/corrupt."""
+    import json
+    from pathlib import Path
+
+    path = Path(directory) / EVIDENCE_RECORD_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        return EvidenceRecord.from_dict(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Ingest pipeline — CAP117-EVIDENCE-005 criterion 7
 # ---------------------------------------------------------------------------
@@ -681,3 +745,73 @@ class DiagnosticFinding:
             source=data.get("source"),
             detail=data.get("detail"),
         )
+
+
+#: reconcile's per-kind exit states mapped onto the shared finding categories.
+_RECONCILE_KIND_CATEGORIES: dict[str, FindingCategory] = {
+    "phantom": FindingCategory.PROVENANCE,
+    "unregistered": FindingCategory.PROVENANCE,
+    "foreign": FindingCategory.PROVENANCE,
+    "orphaned_dir": FindingCategory.PROVENANCE,
+    "vestigial": FindingCategory.PROVENANCE,
+    "relocation_gap": FindingCategory.PROVENANCE,
+    "dead_mcp_config": FindingCategory.WRAPPER_PARSING,
+    "hold_drift": FindingCategory.DRIFT,
+}
+
+_RECONCILE_KIND_SEVERITIES: dict[str, FindingSeverity] = {
+    "phantom": FindingSeverity.ERROR,
+    "unregistered": FindingSeverity.WARNING,
+    "foreign": FindingSeverity.INFO,
+    "orphaned_dir": FindingSeverity.WARNING,
+    "vestigial": FindingSeverity.INFO,
+    "relocation_gap": FindingSeverity.WARNING,
+    "dead_mcp_config": FindingSeverity.ERROR,
+    "hold_drift": FindingSeverity.WARNING,
+}
+
+
+def map_reconcile_finding(finding: dict) -> DiagnosticFinding:
+    """Project one reconcile inventory entry onto the shared finding model.
+
+    Reconcile keeps emitting its own read-only dicts so its CLI output and JSON
+    contract are unchanged; this is the projection that makes those inventories
+    legible to the same model repair and doctor consume. An unrecognised kind
+    maps to provenance at warning severity rather than being dropped — dropping
+    a finding is how an unknown state silently reads as clean.
+    """
+    kind = str(finding.get("kind", ""))
+    category = _RECONCILE_KIND_CATEGORIES.get(kind, FindingCategory.PROVENANCE)
+    severity = _RECONCILE_KIND_SEVERITIES.get(kind, FindingSeverity.WARNING)
+    source = finding.get("path") or finding.get("capability") or finding.get("framework")
+    detail = finding.get("reason")
+    summary = f"{kind}: {detail}" if detail else kind
+    return DiagnosticFinding(
+        category=category,
+        severity=severity.value,
+        summary=summary,
+        source=source,
+        detail=detail,
+    )
+
+
+def finding_from_check(
+    summary: str,
+    passed: bool,
+    detail: Optional[str] = None,
+    source: Optional[str] = None,
+) -> Optional[DiagnosticFinding]:
+    """Project a doctor-style ``(name, ok, detail)`` check onto the shared model.
+
+    Returns None when the check passed — absence of a finding is how a healthy
+    check is represented, so callers never have to filter sentinel rows.
+    """
+    if passed:
+        return None
+    return DiagnosticFinding(
+        category=FindingCategory.DRIFT,
+        severity=FindingSeverity.ERROR.value,
+        summary=summary,
+        source=source,
+        detail=detail,
+    )
