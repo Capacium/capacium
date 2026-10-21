@@ -84,6 +84,11 @@ def main():
         "--policy",
         help=argparse.SUPPRESS,
     )
+    install_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output plan and result as stable JSON",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -97,6 +102,8 @@ def main():
     remove_parser = subparsers.add_parser("remove", help="Remove a capability")
     remove_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
     remove_parser.add_argument("--force", action="store_true", help="Force removal including sub-capabilities with dependents")
+    remove_parser.add_argument("--cascade", action="store_true", help="Accept cascade plan and remove dependents")
+    remove_parser.add_argument("--json", action="store_true", help="Output plan and result as stable JSON")
 
     list_parser = subparsers.add_parser("list", help="List installed capabilities")
     list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
@@ -590,6 +597,7 @@ def main():
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
                 registry_url=getattr(args, "registry", None),
                 project=getattr(args, "project", None),
+                json_output=getattr(args, "json", False),
             )
             if success:
                 from .commands.reconcile import show_reconcile_summary
@@ -607,7 +615,12 @@ def main():
 
         elif args.command == "remove":
             from .commands.remove import remove_capability
-            success = remove_capability(args.capability, force=args.force)
+            success = remove_capability(
+                args.capability,
+                force=args.force,
+                cascade=getattr(args, "cascade", False),
+                json_output=getattr(args, "json", False),
+            )
             sys.exit(0 if success else 1)
 
         elif args.command == "list":

@@ -241,6 +241,7 @@ def install_capability(
     registry_url: Optional[str] = None,
     project: Optional[str] = None,
     prune: bool = False,
+    json_output: bool = False,
 ) -> bool:
     local_source_manifest = None
     if source_dir is not None:
@@ -743,6 +744,12 @@ def install_capability(
             source_url = source_manifest.repository or _detect_git_remote(source_dir)
         if not manifest.kind or not str(manifest.kind).strip():
             raise ValueError(f"Manifest kind is required for installation: {cap_name}")
+        # Store manifest dependencies so reverse-dependency lookup works.
+        dep_strings = []
+        if manifest.dependencies:
+            for dep_name, dep_version in manifest.dependencies.items():
+                dep_strings.append(f"{dep_name}@{dep_version}")
+
         cap = Capability(
             owner=owner,
             name=cap_name,
@@ -751,7 +758,7 @@ def install_capability(
             fingerprint=fingerprint,
             install_path=package_dir,
             installed_at=datetime.now(),
-            dependencies=[],
+            dependencies=dep_strings,
             framework=first_fw,
             frameworks=list(resolved_frameworks),
             source_url=source_url,
@@ -805,10 +812,42 @@ def install_capability(
         print(f"Install of {cap_id}@{version} failed: {exc}")
         print("  Rolling back — all changes restored.")
         journal.restore()
+        if json_output:
+            print(_json.dumps({
+                "operation": "install",
+                "cap_id": cap_id,
+                "version": version,
+                "status": "rolled_back",
+                "error": str(exc),
+                "plan": journal._plan,
+                "reverted": {
+                    "files_restored": len(journal._files),
+                    "links_restored": len(journal._links),
+                    "paths_removed": len(journal._new_paths),
+                    "registry_restored": journal._prior_cap is not None,
+                },
+            }))
         return False
 
     journal.commit()
-    print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
+    if json_output:
+        print(_json.dumps({
+            "operation": "install",
+            "cap_id": cap_id,
+            "version": version,
+            "status": "applied",
+            "fingerprint": fingerprint[:16],
+            "plan": journal._plan,
+            "applied": {
+                "created": [str(p) for p in journal._new_paths],
+                "frameworks_installed": list(resolved_frameworks),
+                "registry_upserted": True,
+                "files_modified": len(journal._files),
+                "reused": bool(existing_before),
+            },
+        }))
+    else:
+        print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
     return True
 
 
@@ -967,6 +1006,11 @@ def _install_single_sub_cap(
     else:
         fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"])
 
+    dep_strings = []
+    if source_manifest.dependencies:
+        for dep_name, dep_version in source_manifest.dependencies.items():
+            dep_strings.append(f"{dep_name}@{dep_version}")
+
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
     source_url = source_manifest.repository or _detect_git_remote(source_path)
     capacity = Capability(
@@ -977,7 +1021,7 @@ def _install_single_sub_cap(
         fingerprint=fingerprint,
         install_path=package_dir,
         installed_at=datetime.now(),
-        dependencies=[],
+        dependencies=dep_strings,
         framework=first_fw,
         frameworks=list(sub_frameworks),
         source_url=source_url,

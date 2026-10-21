@@ -1,3 +1,4 @@
+import json as _json_mod
 import shutil
 from pathlib import Path
 from typing import List
@@ -175,7 +176,12 @@ def _other_registered_versions(registry: Registry, owner: str, cap_name: str,
     }
 
 
-def remove_capability(cap_spec: str, force: bool = False) -> bool:
+def remove_capability(
+    cap_spec: str,
+    force: bool = False,
+    cascade: bool = False,
+    json_output: bool = False,
+) -> bool:
     spec = VersionManager.parse_version_spec(cap_spec)
     version_spec = spec["version"]
     cap_id = resolve_cap_id(cap_spec)
@@ -207,6 +213,28 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
             "Cannot dispatch to adapter without a valid Capacium Kind."
         )
         return False
+
+    # ── Dependency guard (CAP117-TRANSACT-004 criterion 4) ──────────
+    # Block removal when other installed capabilities declare a dependency
+    # on this one, unless the operator accepts a cascade plan.
+    dependents = registry.get_dependents(bare_id)
+    if dependents and not force and not cascade:
+        dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
+        print(
+            f"Refusing to remove {bare_id}@{version}: it is a required dependency "
+            f"of {len(dep_ids)} installed capability(s): {', '.join(dep_ids[:8])}"
+        )
+        if len(dep_ids) > 8:
+            print(f"  ... and {len(dep_ids) - 8} more.")
+        print("  Use --cascade to accept a cascade plan and remove dependents too,")
+        print("  or --force to remove only this capability (may break dependents).")
+        return False
+
+    if cascade and dependents:
+        dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
+        print(f"  Cascade plan: also removing {len(dep_ids)} dependent(s):")
+        for did in dep_ids:
+            print(f"    - {did}")
 
     # Version-precise removal (CAP-REC-D1): a harness link points at exactly
     # one version directory. Deleting that directory orphans the harness, so
@@ -240,7 +268,38 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     # different, still-installed version.
     should_unlink = harness_target or force
 
+    removed_dependents = []
     try:
+        # Cascade: remove dependents first.
+        if cascade and dependents:
+            for dep in dependents:
+                dep_cap_id = f"{dep.owner}/{dep.name}"
+                dep_version = dep.version
+                print(f"  Cascade-removing dependent {dep_cap_id}@{dep_version}...")
+                dep_owner, dep_name = Registry.parse_cap_id(dep_cap_id)
+                dep_snap = _RemovalSnapshot(registry)
+                _snapshot_cap_surfaces(dep_snap, dep_name, list(dep.frameworks or []))
+                try:
+                    dep_kind = dep.kind.value if dep.kind else None
+                    dep_frameworks = dep.frameworks if dep.frameworks else [dep.framework or "opencode"]
+                    for fw_name in dep_frameworks:
+                        try:
+                            adapter = get_adapter(fw_name)
+                        except ValueError:
+                            continue
+                        adapter.remove_capability(dep_name, owner=dep_owner, kind=dep_kind)
+                    dep_pkg = storage.get_package_dir(dep_name, dep_version, owner=dep_owner)
+                    dep_snap.park_tree(dep_pkg)
+                    dep_snap.record_registry_row(dep)
+                    registry.remove_capability(dep_cap_id, dep_version)
+                    removed_dependents.append(f"{dep_cap_id}@{dep_version}")
+                    dep_snap.commit()
+                except Exception as dep_exc:
+                    dep_snap.restore()
+                    raise RuntimeError(
+                        f"Cascade removal of {dep_cap_id}@{dep_version} failed: {dep_exc}"
+                    )
+
         _remove_sub_capabilities(cap, registry, force, snapshot=snapshot)
 
         frameworks = cap.frameworks if cap.frameworks else [cap.framework or "opencode"]
@@ -270,10 +329,39 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
         snapshot.restore()
         print(f"Remove of {bare_id}@{version} failed: {exc}")
         print("  All changes rolled back — state restored.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "rolled_back",
+                "error": str(exc),
+                "reverted": {
+                    "files_restored": len(snapshot._files),
+                    "links_restored": len(snapshot._links),
+                    "trees_unparked": len(snapshot._moves),
+                    "rows_restored": len(snapshot._rows),
+                },
+            }))
         return False
 
     snapshot.commit()
-    print(f"Removed {bare_id}@{version}")
+    if json_output:
+        result = {
+            "operation": "remove",
+            "cap_id": bare_id,
+            "version": version,
+            "status": "applied",
+            "applied": {
+                "removed": True,
+                "frameworks_affected": list(cap.frameworks or [cap.framework or "opencode"]),
+                "files_modified": len(snapshot._files),
+                "cascade_removed": removed_dependents,
+            },
+        }
+        print(_json_mod.dumps(result))
+    else:
+        print(f"Removed {bare_id}@{version}")
     return True
 
 

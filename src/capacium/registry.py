@@ -1127,6 +1127,36 @@ class Registry:
             "aliases": aliases,
         }
 
+    def get_dependents(self, cap_id: str, version: Optional[str] = None) -> List["Capability"]:
+        """Return capabilities whose manifest depends on ``cap_id``.
+
+        Dependencies are stored as a comma-separated list in the ``dependencies``
+        column. Each entry has the form ``owner/name[@version]``. A match on
+        ``owner/name`` alone is enough to identify a dependent (the version
+        constraint is advisory).
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            deps: List[Capability] = []
+            for row in cursor.execute(
+                "SELECT * FROM capabilities WHERE dependencies IS NOT NULL AND dependencies != ''"
+            ):
+                dep_list = [
+                    d.strip() for d in (row["dependencies"] or "").split(",")
+                    if d.strip()
+                ]
+                matched = False
+                for dep in dep_list:
+                    if dep.startswith(f"{cap_id}@") or dep == cap_id:
+                        matched = True
+                        break
+                if not matched:
+                    continue
+                if version is not None and row["version"] != version:
+                    continue
+                deps.append(Capability.from_dict(dict(row)))
+            return deps
+
     def get_reference_count(self, member_id: str) -> int:
         with self._get_connection() as conn:
             cursor = conn.cursor()

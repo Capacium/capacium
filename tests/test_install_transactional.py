@@ -289,3 +289,567 @@ class TestInstallErrorInjection:
         after = registry.get_capability("global/tx-install-skill", "1.0.0")
         assert after is not None
         assert after.fingerprint == before_fingerprint
+
+
+# ── CAP117-TRANSACT-004 Criterion 4 ───────────────────────────────────
+# Removing a required dependency is blocked unless an explicit cascade
+# plan is accepted. Cascade removes dependents first; rollback restores
+# the target when any dependent removal fails.
+
+
+class TestDependencyGuard:
+    """Criterion 4: dependency guard blocks removal of required deps."""
+
+    @pytest.fixture
+    def base_and_dependent(self, tmp_home):
+        """Install a base skill + create a dependent that references it."""
+        from capacium.commands.install import install_capability
+
+        # Base capability: a real installed skill
+        base_dir = tmp_home / "base-skill"
+        base_dir.mkdir()
+        (base_dir / "capability.yaml").write_text(
+            "name: dep-base\nversion: 1.0.0\nkind: skill\ndescription: Base\n"
+        )
+        (base_dir / "SKILL.md").write_text("# dep-base\n")
+        assert install_capability(
+            "dep-base",
+            source_dir=base_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        registry = Registry()
+        # Dependent capability: directly inserted with a dependency on base
+        dep_pkg = (
+            tmp_home / ".capacium" / "packages" / "global" / "dep-child" / "1.0.0"
+        )
+        dep_pkg.mkdir(parents=True)
+        (dep_pkg / "capability.yaml").write_text(
+            "name: dep-child\nversion: 1.0.0\nkind: skill\n"
+        )
+        dep_cap = Capability(
+            owner="global", name="dep-child", version="1.0.0",
+            kind=Kind.SKILL, fingerprint="a" * 64,
+            install_path=dep_pkg,
+            dependencies=["global/dep-base@>=1.0.0"],
+        )
+        registry.add_capability(dep_cap)
+
+        return {
+            "base_id": "global/dep-base",
+            "dep_id": "global/dep-child",
+            "registry": registry,
+        }
+
+    def test_block_remove_when_dependents_exist(self, tmp_home, base_and_dependent):
+        """Removing a capability with dependents is refused."""
+        from capacium.commands.remove import remove_capability
+
+        result = remove_capability(
+            base_and_dependent["base_id"], cascade=False, force=False
+        )
+        assert result is False
+        # Base must still be present
+        assert (
+            base_and_dependent["registry"].get_capability(
+                base_and_dependent["base_id"], "1.0.0"
+            )
+            is not None
+        )
+
+    def test_force_bypasses_dependency_guard(self, tmp_home, base_and_dependent):
+        """--force bypasses the dependency guard and removes the target."""
+        from capacium.commands.remove import remove_capability
+
+        result = remove_capability(
+            base_and_dependent["base_id"], force=True, cascade=False
+        )
+        assert result is True
+        assert (
+            base_and_dependent["registry"].get_capability(
+                base_and_dependent["base_id"], "1.0.0"
+            )
+            is None
+        )
+
+    def test_cascade_removes_dependents_before_target(
+        self, tmp_home, base_and_dependent
+    ):
+        """--cascade removes each dependent transactionally, then the target."""
+        from capacium.commands.remove import remove_capability
+
+        result = remove_capability(
+            base_and_dependent["base_id"], cascade=True, force=False
+        )
+        assert result is True
+        registry = base_and_dependent["registry"]
+        assert registry.get_capability(base_and_dependent["base_id"], "1.0.0") is None
+        assert registry.get_capability(base_and_dependent["dep_id"], "1.0.0") is None
+
+    def test_cascade_rollback_restores_target_on_dependent_failure(
+        self, tmp_home, base_and_dependent, monkeypatch
+    ):
+        """When a dependent removal fails during cascade, the target is restored."""
+        from capacium.commands.remove import remove_capability
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        orig_remove = OpenCodeAdapter.remove_capability
+
+        def fail_for_dependent(self, cap_name, kind, owner="global"):
+            if cap_name == "dep-child":
+                raise RuntimeError("injected cascade failure")
+            return orig_remove(self, cap_name, kind, owner)
+
+        monkeypatch.setattr(OpenCodeAdapter, "remove_capability", fail_for_dependent)
+
+        result = remove_capability(
+            base_and_dependent["base_id"], cascade=True, force=False
+        )
+        assert result is False
+        # Target must still be present (rollback)
+        assert (
+            base_and_dependent["registry"].get_capability(
+                base_and_dependent["base_id"], "1.0.0"
+            )
+            is not None
+        )
+
+
+# ── CAP117-TRANSACT-004 Criterion 5 ───────────────────────────────────
+# Plan and apply results use stable JSON schemas and exit codes and
+# identify every created, reused, changed and reverted object.
+
+
+class TestJsonOutputCriterion5:
+    """Criterion 5: stable JSON schemas for plan/apply results."""
+
+    def test_install_success_json_schema(self, tmp_home, source_skill_dir, capsys):
+        """Successful install with --json prints stable schema."""
+        result = install_capability(
+            "tx-install-skill",
+            source_dir=source_skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+            json_output=True,
+        )
+        assert result is True
+        out = capsys.readouterr().out
+        # Find the JSON line (skip adapter status messages)
+        for line in out.splitlines():
+            try:
+                doc = json.loads(line)
+                if doc.get("operation") == "install" and doc.get("status") == "applied":
+                    break
+            except json.JSONDecodeError:
+                continue
+        else:
+            pytest.fail("No applied JSON line found in output")
+
+        assert doc["operation"] == "install"
+        assert doc["cap_id"] == "global/tx-install-skill"
+        assert doc["version"] == "1.0.0"
+        assert doc["status"] == "applied"
+        assert "fingerprint" in doc
+        assert "plan" in doc
+        assert doc["plan"]["operation"] == "install"
+        assert "applied" in doc
+        applied = doc["applied"]
+        assert isinstance(applied["created"], list)
+        assert isinstance(applied["frameworks_installed"], list)
+        assert applied["registry_upserted"] is True
+        assert "files_modified" in applied
+        assert "reused" in applied
+
+    def test_install_rollback_json_schema(
+        self, tmp_home, source_skill_dir, capsys, monkeypatch
+    ):
+        """Rollback during install with --json prints stable error schema."""
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        def boom(self, *a, **kw):
+            raise RuntimeError("injected adapter failure")
+
+        monkeypatch.setattr(OpenCodeAdapter, "install_capability", boom)
+
+        result = install_capability(
+            "tx-install-skill",
+            source_dir=source_skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+            json_output=True,
+        )
+        assert result is False
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            try:
+                doc = json.loads(line)
+                if doc.get("status") == "rolled_back":
+                    break
+            except json.JSONDecodeError:
+                continue
+        else:
+            pytest.fail("No rolled_back JSON line found in output")
+
+        assert doc["operation"] == "install"
+        assert doc["status"] == "rolled_back"
+        assert "error" in doc
+        assert "injected adapter failure" in doc["error"]
+        assert "plan" in doc
+        assert "reverted" in doc
+        reverted = doc["reverted"]
+        assert "files_restored" in reverted
+        assert "links_restored" in reverted
+        assert "paths_removed" in reverted
+        assert "registry_restored" in reverted
+
+    def test_remove_success_json_schema(self, tmp_home, capsys):
+        """Successful remove with --json prints stable schema."""
+        from capacium.commands.install import install_capability
+        from capacium.commands.remove import remove_capability
+
+        # First install something to remove
+        skill_dir = tmp_home / "json-rm-skill"
+        skill_dir.mkdir()
+        (skill_dir / "capability.yaml").write_text(
+            "name: json-rm-skill\nversion: 1.0.0\nkind: skill\ndescription: t\n"
+        )
+        (skill_dir / "SKILL.md").write_text("# json-rm-skill\n")
+        assert install_capability(
+            "json-rm-skill",
+            source_dir=skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        # Now remove with json_output
+        result = remove_capability(
+            "global/json-rm-skill", cascade=False, force=False, json_output=True
+        )
+        assert result is True
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            try:
+                doc = json.loads(line)
+                if doc.get("operation") == "remove" and doc.get("status") == "applied":
+                    break
+            except json.JSONDecodeError:
+                continue
+        else:
+            pytest.fail("No applied JSON line found in output")
+
+        assert doc["operation"] == "remove"
+        assert doc["cap_id"] == "global/json-rm-skill"
+        assert doc["version"] == "1.0.0"
+        assert doc["status"] == "applied"
+        applied = doc["applied"]
+        assert applied["removed"] is True
+        assert isinstance(applied["frameworks_affected"], list)
+        assert "files_modified" in applied
+        assert "cascade_removed" in applied
+
+    def test_remove_rollback_json_schema(self, tmp_home, capsys, monkeypatch):
+        """Rollback during remove with --json prints stable error schema."""
+        from capacium.commands.install import install_capability
+        from capacium.commands.remove import remove_capability
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        # Install first
+        skill_dir = tmp_home / "json-rm-fail"
+        skill_dir.mkdir()
+        (skill_dir / "capability.yaml").write_text(
+            "name: json-rm-fail\nversion: 1.0.0\nkind: skill\ndescription: t\n"
+        )
+        (skill_dir / "SKILL.md").write_text("# json-rm-fail\n")
+        assert install_capability(
+            "json-rm-fail",
+            source_dir=skill_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        # Inject failure during adapter removal
+        def boom(self, cap_name, kind, owner="global"):
+            raise RuntimeError("injected remove failure")
+
+        monkeypatch.setattr(OpenCodeAdapter, "remove_capability", boom)
+
+        result = remove_capability(
+            "global/json-rm-fail", cascade=False, force=True, json_output=True
+        )
+        assert result is False
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            try:
+                doc = json.loads(line)
+                if doc.get("status") == "rolled_back":
+                    break
+            except json.JSONDecodeError:
+                continue
+        else:
+            pytest.fail("No rolled_back JSON line found in output")
+
+        assert doc["operation"] == "remove"
+        assert doc["status"] == "rolled_back"
+        assert "error" in doc
+        assert "injected remove failure" in doc["error"]
+        reverted = doc["reverted"]
+        assert "files_restored" in reverted
+        assert "links_restored" in reverted
+        assert "trees_unparked" in reverted
+        assert "rows_restored" in reverted
+
+    def test_remove_cascade_json_includes_dependents(
+        self, tmp_home, capsys
+    ):
+        """JSON output for cascade remove identifies removed dependents."""
+        from capacium.commands.install import install_capability
+        from capacium.commands.remove import remove_capability
+        from capacium.registry import Registry
+
+        # Base
+        base_dir = tmp_home / "c5-base"
+        base_dir.mkdir()
+        (base_dir / "capability.yaml").write_text(
+            "name: c5-base\nversion: 1.0.0\nkind: skill\ndescription: Base\n"
+        )
+        (base_dir / "SKILL.md").write_text("# c5-base\n")
+        assert install_capability(
+            "c5-base",
+            source_dir=base_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        # Dependent in registry
+        registry = Registry()
+        dep_pkg = tmp_home / ".capacium" / "packages" / "global" / "c5-dep" / "1.0.0"
+        dep_pkg.mkdir(parents=True)
+        (dep_pkg / "capability.yaml").write_text(
+            "name: c5-dep\nversion: 1.0.0\nkind: skill\n"
+        )
+        dep_cap = Capability(
+            owner="global", name="c5-dep", version="1.0.0",
+            kind=Kind.SKILL, fingerprint="c" * 64,
+            install_path=dep_pkg,
+            dependencies=["global/c5-base@>=1.0.0"],
+        )
+        registry.add_capability(dep_cap)
+
+        result = remove_capability(
+            "global/c5-base", cascade=True, force=False, json_output=True
+        )
+        assert result is True
+        out = capsys.readouterr().out
+        for line in out.splitlines():
+            try:
+                doc = json.loads(line)
+                if doc.get("operation") == "remove" and doc.get("status") == "applied":
+                    break
+            except json.JSONDecodeError:
+                continue
+        else:
+            pytest.fail("No applied JSON line found in output")
+
+        applied = doc["applied"]
+        assert len(applied["cascade_removed"]) >= 1
+        assert any("c5-dep" in d for d in applied["cascade_removed"])
+
+
+# ── CAP117-TRANSACT-004 Criterion 6 ───────────────────────────────────
+# Foreign harness state and secrets are excluded from transaction
+# ownership and survive rollback.
+
+
+class TestForeignHarnessSurvivalCriterion6:
+    """Criterion 6: foreign harness state survives rollback."""
+
+    def test_foreign_config_survives_install_rollback(
+        self, tmp_home, source_mcp_dir, monkeypatch
+    ):
+        """Foreign MCP config entries survive install rollback."""
+        from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
+
+        config_path = ClaudeDesktopAdapter._resolve_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        original_config = {
+            "mcpServers": {
+                "foreign-server": {"command": "x"},
+                "another-foreign": {"command": "y", "env": {"SECRET": "s3cret"}},
+            }
+        }
+        config_path.write_text(json.dumps(original_config))
+
+        def boom(self, *a, **kw):
+            raise RuntimeError("injected adapter failure")
+
+        monkeypatch.setattr(ClaudeDesktopAdapter, "install_capability", boom)
+
+        result = install_capability(
+            "tx-install-mcp",
+            source_dir=source_mcp_dir,
+            skip_runtime_check=True,
+            yes=True,
+            framework="claude-desktop",
+        )
+        assert result is False
+
+        # Foreign entries must survive — including secrets
+        restored = json.loads(config_path.read_text())
+        servers = restored.get("mcpServers", {})
+        assert "foreign-server" in servers
+        assert servers["foreign-server"]["command"] == "x"
+        assert "another-foreign" in servers
+        assert servers["another-foreign"]["env"]["SECRET"] == "s3cret"
+
+    def test_foreign_config_survives_remove_rollback(
+        self, tmp_home, monkeypatch
+    ):
+        """Foreign MCP config entries survive remove rollback."""
+        from capacium.commands.install import install_capability
+        from capacium.commands.remove import remove_capability
+        from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
+
+        # Install an MCP server first (claude-desktop)
+        mcp_dir = tmp_home / "c6-mcp"
+        mcp_dir.mkdir()
+        (mcp_dir / "capability.yaml").write_text(
+            "name: c6-mcp\nversion: 1.0.0\nkind: mcp-server\n"
+            "description: C6 MCP\n"
+            "mcp:\n  command: echo\n  args: ['hello']\n"
+        )
+
+        assert install_capability(
+            "c6-mcp",
+            source_dir=mcp_dir,
+            skip_runtime_check=True,
+            yes=True,
+            framework="claude-desktop",
+        ) is True
+
+        # Verify the config has the installed entry plus we'll add a foreign one
+        config_path = ClaudeDesktopAdapter._resolve_config_path()
+        config = json.loads(config_path.read_text())
+        config["mcpServers"]["foreign-keep"] = {
+            "command": "keep-me",
+            "env": {"API_KEY": "sk-foreign"},
+        }
+        config_path.write_text(json.dumps(config))
+
+        # Inject failure during adapter removal
+        def boom(self, cap_name, kind, owner="global"):
+            raise RuntimeError("injected remove failure")
+
+        monkeypatch.setattr(ClaudeDesktopAdapter, "remove_capability", boom)
+
+        result = remove_capability(
+            "global/c6-mcp", cascade=False, force=True, json_output=False
+        )
+        assert result is False
+
+        # Foreign entry must survive
+        restored = json.loads(config_path.read_text())
+        servers = restored.get("mcpServers", {})
+        assert "foreign-keep" in servers
+        assert servers["foreign-keep"]["command"] == "keep-me"
+        assert servers["foreign-keep"]["env"]["API_KEY"] == "sk-foreign"
+
+    def test_secrets_in_config_survive_install_rollback(
+        self, tmp_home, source_mcp_dir, monkeypatch
+    ):
+        """Secrets (env vars, tokens) in MCP config survive install rollback."""
+        from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
+
+        config_path = ClaudeDesktopAdapter._resolve_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        original_config = {
+            "mcpServers": {
+                "prod-server": {
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {
+                        "DATABASE_URL": "postgres://user:pass@host/db",
+                        "API_KEY": "sk-prod-1234567890abcdef",
+                        "NODE_ENV": "production",
+                    },
+                }
+            }
+        }
+        config_path.write_text(json.dumps(original_config))
+
+        def boom(self, *a, **kw):
+            raise RuntimeError("injected adapter failure")
+
+        monkeypatch.setattr(ClaudeDesktopAdapter, "install_capability", boom)
+
+        result = install_capability(
+            "tx-install-mcp",
+            source_dir=source_mcp_dir,
+            skip_runtime_check=True,
+            yes=True,
+            framework="claude-desktop",
+        )
+        assert result is False
+
+        # All secrets must survive byte-identically
+        restored = json.loads(config_path.read_text())
+        prod = restored["mcpServers"]["prod-server"]
+        assert prod["env"]["DATABASE_URL"] == "postgres://user:pass@host/db"
+        assert prod["env"]["API_KEY"] == "sk-prod-1234567890abcdef"
+        assert prod["env"]["NODE_ENV"] == "production"
+
+    def test_foreign_config_survives_cascade_rollback(
+        self, tmp_home, monkeypatch
+    ):
+        """Foreign config entries survive cascade removal rollback."""
+        from capacium.commands.install import install_capability
+        from capacium.commands.remove import remove_capability
+        from capacium.adapters.opencode import OpenCodeAdapter
+
+        # Install base + create dependent
+        base_dir = tmp_home / "c6-base-skill"
+        base_dir.mkdir()
+        (base_dir / "capability.yaml").write_text(
+            "name: c6-base-skill\nversion: 1.0.0\nkind: skill\ndescription: Base\n"
+        )
+        (base_dir / "SKILL.md").write_text("# c6-base\n")
+        assert install_capability(
+            "c6-base-skill",
+            source_dir=base_dir,
+            skip_runtime_check=True,
+            yes=True,
+        ) is True
+
+        registry = Registry()
+        dep_pkg = tmp_home / ".capacium" / "packages" / "global" / "c6-dep-skill" / "1.0.0"
+        dep_pkg.mkdir(parents=True)
+        (dep_pkg / "capability.yaml").write_text(
+            "name: c6-dep-skill\nversion: 1.0.0\nkind: skill\n"
+        )
+        dep_cap = Capability(
+            owner="global", name="c6-dep-skill", version="1.0.0",
+            kind=Kind.SKILL, fingerprint="d" * 64,
+            install_path=dep_pkg,
+            dependencies=["global/c6-base-skill@>=1.0.0"],
+        )
+        registry.add_capability(dep_cap)
+
+        # Inject failure during dependent's adapter removal
+        orig_remove = OpenCodeAdapter.remove_capability
+
+        def fail_for_dependent(self, cap_name, kind, owner="global"):
+            if cap_name == "c6-dep-skill":
+                raise RuntimeError("injected cascade failure")
+            return orig_remove(self, cap_name, kind, owner)
+
+        monkeypatch.setattr(OpenCodeAdapter, "remove_capability", fail_for_dependent)
+
+        result = remove_capability(
+            "global/c6-base-skill", cascade=True, force=False
+        )
+        assert result is False
+
+        # Base must still be installed (rollback worked)
+        assert registry.get_capability("global/c6-base-skill", "1.0.0") is not None
+        # Dependent must still exist (its own snapshot rolled back)
+        assert registry.get_capability("global/c6-dep-skill", "1.0.0") is not None
