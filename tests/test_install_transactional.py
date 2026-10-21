@@ -12,6 +12,7 @@ import json
 import pytest
 
 from capacium.commands.install import install_capability, _InstallJournal
+from capacium.commands.remove import remove_capability
 from capacium.models import Capability, Kind
 from capacium.registry import Registry
 
@@ -1095,8 +1096,8 @@ class TestDurableJournal:
     def test_orphan_recovery_leaves_journal_on_failed_verification(
         self, tmp_home, capsys
     ):
-        """When recovery verification fails (e.g. journal references paths
-        that don't exist), the journal is kept for retry/inspection."""
+        """When recovery verification fails, the journal is kept for
+        retry/inspection rather than being silently deleted."""
         from pathlib import Path as _Path
         import json as _json
         from capacium.commands._journal import (
@@ -1104,11 +1105,10 @@ class TestDurableJournal:
             recover_orphaned_journals,
         )
 
-        # Create a journal with a new_path that references a non-existent
-        # package — verification checks that new_paths are gone, but since
-        # the path doesn't exist, recovery should succeed anyway.
-
-        # Create a journal with a prior_cap that doesn't match reality
+        # Create a journal with a malformed prior_cap (missing required
+        # fields).  _deserialize_cap raises KeyError during recovery, so
+        # the upsert never happens.  Verification then fails because the
+        # registry has no matching row, and the journal stays on disk.
         journal_path = _make_journal_path("global/ghost-skill", "1.0.0", "install")
         fake_journal = {
             "cap_id": "global/ghost-skill",
@@ -1118,28 +1118,18 @@ class TestDurableJournal:
             "links": {},
             "new_paths": [],
             "prior_cap": {
+                # Intentionally broken: missing name, version, fingerprint.
+                # _deserialize_cap raises KeyError, upsert is skipped,
+                # verification sees no matching registry row → False.
                 "owner": "global",
-                "name": "ghost-skill",
-                "version": "1.0.0",
-                "kind": "skill",
-                "fingerprint": "deadbeef" * 8,
-                "install_path": "/nonexistent/path",
-                "framework": "opencode",
-                "frameworks": ["opencode"],
-                "dependencies": [],
-                "source_url": None,
-                "source_ref": None,
-                "source_commit": None,
             },
             "committed": False,
         }
         _write_journal(journal_path, fake_journal)
 
-        # Recovery: prior_cap fingerprint won't match any registry row
-        # (ghost-skill was never installed), so verification fails
         recovered = recover_orphaned_journals()
 
-        # Journal should remain (verification failed, so we keep it)
+        # Journal must remain — verification failed, so it was NOT deleted.
         assert journal_path.exists(), (
             f"Journal should remain after failed recovery verification"
         )

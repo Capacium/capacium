@@ -12,7 +12,7 @@ from ..adapters import get_adapter
 from ._resolve import resolve_cap_id
 from ._journal import (
     _make_journal_path, _write_journal, _delete_journal,
-    _serialize_cap, _encode_file_content, _encode_bytes, recover_orphaned_journals,
+    _serialize_cap, _encode_bytes, recover_orphaned_journals,
 )
 
 

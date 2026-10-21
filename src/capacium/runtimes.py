@@ -34,7 +34,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple

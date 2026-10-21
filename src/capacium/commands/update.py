@@ -74,7 +74,6 @@ class _UpdateJournal:
 
     def _to_disk_data(self) -> dict:
         """Build a complete serializable snapshot for the durable journal."""
-        import base64
         return {
             "cap_id": self.cap_id,
             "version": self.version,
