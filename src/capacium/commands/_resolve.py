@@ -750,6 +750,15 @@ class Resolver:
                             optional_only[opt_coord] = True
 
         if not frontier:
+            # Reject assignments with mandatory cycles — backtracking
+            # must find an acyclic assignment. Only raise CycleError
+            # when every version choice leads to a cycle.
+            cycle_path = self._find_mandatory_cycle(selected)
+            if cycle_path is not None:
+                return False, None, {
+                    "reason": "cycle",
+                    "detail": f"Dependency cycle: {' -> '.join(cycle_path)}",
+                }
             return True, dict(selected), {}
 
         # Skip purely-optional deps with no available versions, and
@@ -779,6 +788,15 @@ class Resolver:
 
         effective_frontier = sorted(frontier - frontier_to_skip)
         if not effective_frontier:
+            # All remaining frontier nodes are optional-only — but we
+            # must still verify the mandatory graph is acyclic before
+            # accepting the assignment.
+            cycle_path = self._find_mandatory_cycle(selected)
+            if cycle_path is not None:
+                return False, None, {
+                    "reason": "cycle",
+                    "detail": f"Dependency cycle: {' -> '.join(cycle_path)}",
+                }
             return True, dict(selected), {}
 
         coord = effective_frontier[0]
@@ -1141,14 +1159,14 @@ class Resolver:
             return NodeType.HOST_BINDING.value
         return NodeType.CAPABILITY.value
 
-    def _has_mandatory_cycle(self, selected: Dict[str, str]) -> bool:
-        """Return True if the mandatory graph (deps + bundle_members) of
-        *selected* contains a cycle."""
+    def _find_mandatory_cycle(self, selected: Dict[str, str]) -> Optional[List[str]]:
+        """Return a cycle path if the mandatory graph (deps + bundle_members)
+        of *selected* contains a cycle, or None."""
         WHITE, GRAY, BLACK = 0, 1, 2
         color: Dict[str, int] = {}
         parent: Dict[str, Optional[str]] = {}
 
-        def dfs(coord: str) -> bool:
+        def dfs(coord: str) -> Optional[List[str]]:
             color[coord] = GRAY
             version = selected.get(coord)
             if version is not None:
@@ -1160,18 +1178,28 @@ class Resolver:
                 for nb in neighbours:
                     if nb not in color:
                         parent[nb] = coord
-                        if dfs(nb):
-                            return True
+                        result = dfs(nb)
+                        if result is not None:
+                            return result
                     elif color.get(nb) == GRAY:
-                        return True
+                        # Back edge found — reconstruct cycle
+                        cycle = [nb, coord]
+                        cur = coord
+                        while parent.get(cur) is not None and parent[cur] != nb:
+                            cur = parent[cur]  # type: ignore[assignment]
+                            cycle.append(cur)
+                        cycle.append(nb)
+                        cycle.reverse()
+                        return cycle
             color[coord] = BLACK
-            return False
+            return None
 
         for coord in selected:
             if coord not in color:
-                if dfs(coord):
-                    return True
-        return False
+                cycle = dfs(coord)
+                if cycle is not None:
+                    return cycle
+        return None
 
     def _validate_no_branch_head(self, coordinate: str, version: str) -> None:
         """Raise BranchHeadError if *coordinate*@*version* has a branch-head revision."""
