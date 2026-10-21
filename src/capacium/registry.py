@@ -324,6 +324,7 @@ class Registry:
 
     _ATTESTED_STATUSES = ("installed", "verified")
     _FINDING_STATUSES = ("blocked", "error", "stale")
+    _STATE_LIST_COLUMNS = ("published_frameworks", "desired_bindings")
 
     def get_state_schema_version(self) -> int:
         with self._get_connection() as conn:
@@ -465,6 +466,8 @@ class Registry:
         return self._get_state_list("desired_bindings", cap_id, version)
 
     def _get_state_list(self, column: str, cap_id: str, version: Optional[str]) -> List[str]:
+        if column not in self._STATE_LIST_COLUMNS:
+            raise ValueError(f"unsupported state column: {column!r}")
         owner, name = self.parse_cap_id(cap_id)
         sql = f"SELECT {column} FROM capabilities WHERE owner = ? AND name = ?"
         params: List[Any] = [owner, name]
