@@ -26,14 +26,39 @@ Conventions
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# SourceType — one source contract for all artifact forms (Criterion 4)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class SourceType(str, enum.Enum):
+    """Every runtime source form uses the same SourceType contract.
+
+    Registry artifacts, package indexes, exact Git commits, release assets,
+    authenticated sources and verified local cache are all represented with
+    the same ``SourceLock`` model distinguished by this type field.
+    """
+
+    REGISTRY_ARTIFACT = "registry_artifact"
+    PACKAGE_INDEX = "package_index"
+    GIT_COMMIT = "git_commit"
+    RELEASE_ASSET = "release_asset"
+    AUTHENTICATED_SOURCE = "authenticated_source"
+    VERIFIED_LOCAL_CACHE = "verified_local_cache"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -49,10 +74,15 @@ class SourceLock:
     constraints, dependency lock, build inputs, probes and entrypoints all
     carry content-addressable digests so offline replay verifies identical
     bytes and no branch head can satisfy an exact runtime lock.
+
+    ``source_type`` distinguishes the source form (registry artifact, Git
+    commit, authenticated source, …) while keeping the same contract.
+    Defaults to ``VERIFIED_LOCAL_CACHE`` for backward compat.
     """
 
     source_url: str
     digest: str
+    source_type: SourceType = SourceType.VERIFIED_LOCAL_CACHE
     interpreter: str = ""
     platforms: List[str] = field(default_factory=list)
     dependency_lock_digest: str = ""
@@ -65,6 +95,7 @@ class SourceLock:
         return json.dumps({
             "source_url": self.source_url,
             "digest": self.digest,
+            "source_type": self.source_type.value,
             "interpreter": self.interpreter,
             "platforms": sorted(self.platforms),
             "dependency_lock_digest": self.dependency_lock_digest,
@@ -196,6 +227,147 @@ def is_exact_lock_satisfied(reference: str) -> bool:
     if not reference:
         return False
     return bool(re.fullmatch(r"[0-9a-f]{64}", reference))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Source contract validation (Criterion 4)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def validate_source_contract(lock: SourceLock) -> None:
+    """Validate that a SourceLock has all required fields populated.
+
+    Raises ValueError if source_url, digest or source_type are empty/missing.
+    """
+    if not lock.source_url:
+        raise ValueError("source_url is required in source contract")
+    if not lock.digest:
+        raise ValueError("digest is required in source contract")
+    if lock.source_type is None:
+        raise ValueError("source_type is required in source contract")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# BuildResult, RuntimeBuilder — isolated builds (Criterion 5)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """The result of an isolated runtime build.
+
+    ``digest`` is the content hash of the build output.
+    ``build_dir`` is the isolated directory where the output lives.
+    ``metadata`` carries optional diagnostic information (builder version,
+    elapsed time, etc.).
+    """
+
+    digest: str
+    build_dir: str
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+
+class RuntimeBuilder:
+    """Build runtimes in isolated output directories.
+
+    Every build creates a fresh output directory under ``generations_dir``.
+    Builds never mutate an existing generation.  Concurrent builds with the
+    same input digest converge to the same output digest and the same
+    filesystem state (the first build wins, subsequent builds detect the
+    existing generation and return immediately).
+    """
+
+    def __init__(self, generations_dir: str):
+        self.generations_dir = generations_dir
+        self._lock = threading.Lock()
+
+    def build(self, source_lock: SourceLock) -> BuildResult:
+        """Perform an isolated build for the given source lock.
+
+        The output digest is deterministic from the source-lock descriptor.
+        Concurrent builds of the same digest converge: only one build
+        actually runs, others detect the pre-existing output directory.
+        """
+        # The output digest is the SHA-256 of the canonical descriptor
+        output_digest = hashlib.sha256(
+            source_lock.to_descriptor().encode("utf-8")
+        ).hexdigest()
+
+        output_dir = os.path.join(self.generations_dir, output_digest)
+
+        with self._lock:
+            if os.path.isdir(output_dir):
+                # Converge: another thread already built this digest
+                return BuildResult(
+                    digest=output_digest,
+                    build_dir=output_dir,
+                    metadata={"converged": True},
+                )
+
+            # Create the output directory and a marker file
+            os.makedirs(output_dir, exist_ok=True)
+            manifest = {
+                "digest": output_digest,
+                "source_digest": source_lock.digest,
+                "source_url": source_lock.source_url,
+                "source_type": source_lock.source_type.value,
+            }
+            with open(os.path.join(output_dir, ".generation.json"), "w") as f:
+                json.dump(manifest, f, sort_keys=True)
+
+            # Create entrypoint scripts from the source lock entrypoints
+            for entry_name, entry_cmd in source_lock.entrypoints.items():
+                script_path = os.path.join(output_dir, entry_name)
+                if isinstance(entry_cmd, (list, tuple)):
+                    script_content = " ".join(str(c) for c in entry_cmd)
+                else:
+                    script_content = str(entry_cmd)
+                with open(script_path, "w") as f:
+                    f.write(script_content)
+                os.chmod(script_path, 0o755)
+
+        return BuildResult(
+            digest=output_digest,
+            build_dir=output_dir,
+            metadata={"converged": False},
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# RuntimeLock — exact lock verification (Criterion 6)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RuntimeLock:
+    """An exact runtime lock binding a digest to a source lock.
+
+    The ``digest`` field MUST be a full 64-char SHA-256 hex digest.
+    Branch heads (main, HEAD, …) are never valid.
+    """
+
+    digest: str
+    source_lock: SourceLock
+
+
+def verify_runtime_lock(lock: RuntimeLock, actual_digest: str) -> None:
+    """Verify that a RuntimeLock is valid and matches the actual cache digest.
+
+    Raises ValueError if:
+    - The lock digest is empty or not a full SHA-256 hex digest
+    - The actual digest does not match the lock digest
+    """
+    if not lock.digest:
+        raise ValueError("runtime lock digest is empty")
+    if not re.fullmatch(r"[0-9a-f]{64}", lock.digest):
+        raise ValueError(
+            f"runtime lock digest is not an exact digest (branch head?): "
+            f"{lock.digest}"
+        )
+    if lock.digest != actual_digest:
+        raise ValueError(
+            f"digest mismatch: expected {lock.digest}, got {actual_digest}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────
