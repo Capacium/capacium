@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -13,6 +14,22 @@ from . import __version__
 
 EXTERNAL_SOURCE_PROTOCOL = "external-source/v1"
 VERIFIED_ARTIFACT_PROTOCOL = "verified-artifact/v1"
+RECEIPT_PROTOCOL = "receipt/v1.1.7"
+
+# Stable machine results (criterion 4). Callers branch on these strings, never
+# on message text, so a wording change cannot break a consumer.
+RESULT_AUTHENTICATION_DENIED = "EXTERNAL_SOURCE_AUTH_DENIED"
+RESULT_CREDENTIAL_EXPIRED = "EXTERNAL_SOURCE_CREDENTIAL_EXPIRED"
+RESULT_REDIRECT_REFUSED = "EXTERNAL_SOURCE_REDIRECT_REFUSED"
+RESULT_TRANSPORT_FAILED = "EXTERNAL_SOURCE_TRANSPORT_FAILED"
+RESULT_INTEGRITY_FAILED = "EXTERNAL_SOURCE_INTEGRITY_FAILED"
+RESULT_DIGEST_MISMATCH = "EXTERNAL_SOURCE_DIGEST_MISMATCH"
+RESULT_SIGNATURE_INVALID = "EXTERNAL_SOURCE_SIGNATURE_INVALID"
+RESULT_SOURCE_FAILED = "EXTERNAL_SOURCE_FAILED"
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_DENIAL_STATUSES = frozenset({401, 403})
+_EXPIRY_STATUSES = frozenset({410})
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -69,7 +86,66 @@ class RegistryClientError(Exception):
 
 
 class ExternalSourceError(RegistryClientError):
-    """An authenticated external artifact source cannot be honoured."""
+    """An authenticated external artifact source cannot be honoured.
+
+    Criterion 4: every failure carries a stable ``code`` so callers branch on
+    machine results rather than on prose. ``message`` is always redacted.
+    """
+
+    code = RESULT_SOURCE_FAILED
+    result = RESULT_SOURCE_FAILED
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "result": self.result,
+            "code": self.code,
+            "message": str(self),
+        }
+
+
+class ExternalSourceAuthenticationError(ExternalSourceError):
+    """Authentication was refused by the source (401/403)."""
+
+    code = RESULT_AUTHENTICATION_DENIED
+    result = RESULT_AUTHENTICATION_DENIED
+
+
+class ExternalSourceExpiryError(ExternalSourceError):
+    """The credential or grant was expired before or during the download."""
+
+    code = RESULT_CREDENTIAL_EXPIRED
+    result = RESULT_CREDENTIAL_EXPIRED
+
+
+class ExternalSourceRedirectError(ExternalSourceError):
+    """The source redirected off-host or onto a non-https scheme."""
+
+    code = RESULT_REDIRECT_REFUSED
+    result = RESULT_REDIRECT_REFUSED
+
+
+class ExternalSourceTransportError(ExternalSourceError):
+    """The transport failed before any bytes could be verified."""
+
+    code = RESULT_TRANSPORT_FAILED
+    result = RESULT_TRANSPORT_FAILED
+
+
+class ExternalSourceIntegrityError(ExternalSourceError):
+    """Verification of digest or signature failed."""
+
+    code = RESULT_INTEGRITY_FAILED
+    result = RESULT_INTEGRITY_FAILED
+
+
+class ExternalSourceDigestMismatchError(ExternalSourceIntegrityError):
+    code = RESULT_DIGEST_MISMATCH
+    result = RESULT_DIGEST_MISMATCH
+
+
+class ExternalSourceSignatureError(ExternalSourceIntegrityError):
+    code = RESULT_SIGNATURE_INVALID
+    result = RESULT_SIGNATURE_INVALID
 
 
 def _redact_url(url: str) -> str:
@@ -170,11 +246,31 @@ class ExternalSourceRequest:
     url: str
     signature: Optional[SourceSignature] = None
     credential: Optional[CredentialRef] = None
+    expires_at: Optional[str] = None
     protocol: str = EXTERNAL_SOURCE_PROTOCOL
 
     @property
     def coordinate(self) -> str:
         return f"{self.owner}/{self.name}"
+
+    def check_expiry(self, now: Optional[datetime] = None) -> None:
+        """Refuse an expired grant before touching the network (criterion 4)."""
+        if not self.expires_at:
+            return
+        try:
+            deadline = datetime.fromisoformat(self.expires_at)
+        except (TypeError, ValueError) as exc:
+            raise ExternalSourceExpiryError(
+                f"external source {self.coordinate}@{self.version} declares an "
+                f"unusable expiry {self.expires_at!r}"
+            ) from exc
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline <= (now or datetime.now(timezone.utc)):
+            raise ExternalSourceExpiryError(
+                f"external source grant for {self.coordinate}@{self.version} "
+                f"expired at {self.expires_at}"
+            )
 
     def validate(self) -> "ExternalSourceRequest":
         if not self.listing_id:
@@ -209,6 +305,7 @@ class ExternalSourceRequest:
             "url": _redact_url(self.url),
             "signature": self.signature.to_dict() if self.signature else None,
             "credential": self.credential.to_dict() if self.credential else None,
+            "expires_at": self.expires_at,
         }
 
 
@@ -240,6 +337,85 @@ class VerifiedArtifact:
             "url": self.url,
             "key_name": self.key_name,
         }
+
+
+@dataclass
+class ExternalSourceReceipt:
+    """Criterion 5: proof of provenance, stripped of anything commercial.
+
+    The receipt records the coordinate, version, digest, source class and
+    verification evidence. It deliberately has no customer, price, licence or
+    entitlement fields, and the URL is stored redacted so a signed query string
+    can never survive into an audit record.
+    """
+
+    coordinate: str
+    version: str
+    digest: str
+    listing_id: str
+    source_class: str = "external-authenticated"
+    verification: str = "digest+signature"
+    url: str = ""
+    key_name: str = ""
+    installed_at: str = ""
+    protocol: str = RECEIPT_PROTOCOL
+    path: Optional[Path] = None
+
+    #: The complete receipt schema. It is an allowlist: provenance fields only,
+    #: so no commercial or secret field has anywhere to live, and the neutral
+    #: Core never has to name commercial vocabulary to exclude it.
+    FIELD_NAMES = (
+        "protocol",
+        "coordinate",
+        "version",
+        "digest",
+        "listing_id",
+        "source_class",
+        "verification",
+        "url",
+        "key_name",
+        "installed_at",
+    )
+
+    @classmethod
+    def from_artifact(
+        cls,
+        artifact: "VerifiedArtifact",
+        installed_at: Optional[str] = None,
+    ) -> "ExternalSourceReceipt":
+        return cls(
+            coordinate=artifact.coordinate,
+            version=artifact.version,
+            digest=artifact.digest,
+            listing_id=artifact.listing_id,
+            source_class=artifact.source_class,
+            verification=artifact.verification,
+            url=artifact.url,
+            key_name=artifact.key_name,
+            installed_at=installed_at or _utc_now(),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "coordinate": self.coordinate,
+            "version": self.version,
+            "digest": self.digest,
+            "listing_id": self.listing_id,
+            "source_class": self.source_class,
+            "verification": self.verification,
+            "url": _redact_url(self.url) if self.url else "",
+            "key_name": self.key_name,
+            "installed_at": self.installed_at,
+        }
+
+    @classmethod
+    def field_names(cls) -> frozenset:
+        return frozenset(cls.FIELD_NAMES)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 class RegistryClient:
@@ -586,6 +762,9 @@ class RegistryClient:
         request.validate()
         safe_url = _redact_url(request.url)
 
+        # An expired grant is refused before any network call or local write.
+        request.check_expiry()
+
         # Resolve the credential before touching the network: a missing secret
         # must refuse up front rather than after a partial download.
         credential_value = request.credential.resolve() if request.credential else None
@@ -607,7 +786,7 @@ class RegistryClient:
         try:
             actual_digest = "sha256:" + _sha256_hex(body)
             if actual_digest != request.digest:
-                raise ExternalSourceError(
+                raise ExternalSourceDigestMismatchError(
                     f"digest mismatch for {request.coordinate}@{request.version}: "
                     f"expected {request.digest}, got {actual_digest}"
                 )
@@ -616,7 +795,7 @@ class RegistryClient:
             if signature is None or not _verify_signature(
                 signature.public_key, signature.signature, body
             ):
-                raise ExternalSourceError(
+                raise ExternalSourceSignatureError(
                     f"signature verification failed for "
                     f"{request.coordinate}@{request.version}"
                 )
@@ -644,6 +823,39 @@ class RegistryClient:
             key_name=request.signature.key_name if request.signature else "",
         )
 
+    def install_external(
+        self,
+        request: ExternalSourceRequest,
+        dest_path: Path,
+        quarantine_dir: Path,
+        receipt_path: Path,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> ExternalSourceReceipt:
+        """Criterion 6: install, then persist a redacted receipt.
+
+        The receipt is written only after ``fetch_external`` has verified and
+        materialised the artifact, so a denial or digest mismatch leaves no
+        destination file and no receipt behind.
+        """
+        artifact = self.fetch_external(
+            request,
+            dest_path=dest_path,
+            quarantine_dir=quarantine_dir,
+            timeout=timeout,
+        )
+        receipt = ExternalSourceReceipt.from_artifact(artifact)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(
+            json.dumps(receipt.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        receipt.path = receipt_path
+        self._log(
+            f"external source: receipt written for {receipt.coordinate}"
+            f"@{receipt.version} at {receipt_path}"
+        )
+        return receipt
+
     def _download_external_bytes(
         self,
         url: str,
@@ -663,20 +875,80 @@ class RegistryClient:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 status = getattr(resp, "status", 200)
                 if status and status >= 400:
-                    raise ExternalSourceError(
-                        f"HTTP {status} from {safe_url}", status_code=status
-                    )
+                    self._raise_for_status(status, safe_url)
+                self._reject_unsafe_final_url(resp, safe_url)
                 return resp.read()
+        except ExternalSourceError:
+            raise
         except urllib.error.HTTPError as e:
             # The redacted URL keeps signed query strings out of the message.
-            raise ExternalSourceError(
-                f"HTTP {e.code} from {safe_url}",
-                status_code=e.code,
-            ) from e
+            self._raise_for_status(e.code, safe_url, headers=e.headers)
+            raise  # pragma: no cover - _raise_for_status always raises
         except urllib.error.URLError as e:
-            raise ExternalSourceError(f"Connection failed for {safe_url}: {e.reason}") from e
+            raise ExternalSourceTransportError(
+                f"connection failed for {safe_url}: {e.reason}"
+            ) from e
         except OSError as e:
-            raise ExternalSourceError(f"Network error for {safe_url}: {e}") from e
+            raise ExternalSourceTransportError(
+                f"network error for {safe_url}: {e}"
+            ) from e
+
+    def _reject_unsafe_final_url(self, resp: Any, safe_url: str) -> None:
+        """Refuse a redirect that left the origin host or dropped to http.
+
+        ``urllib`` follows redirects silently, so the only place to detect one
+        is the final response URL. Cross-host and plaintext hops fail closed
+        (criterion 4: a redirect must be its own machine result).
+        """
+        final = ""
+        try:
+            final = resp.geturl() or ""
+        except Exception:
+            final = ""
+        if not final:
+            return
+        origin = urllib.parse.urlsplit(safe_url)
+        landed = urllib.parse.urlsplit(final)
+        if landed.scheme != "https":
+            raise ExternalSourceRedirectError(
+                f"external source refused a redirect to non-https {landed.scheme!r}",
+                status_code=None,
+            )
+        if (landed.hostname or "").lower() != (origin.hostname or "").lower():
+            raise ExternalSourceRedirectError(
+                f"external source refused a redirect from {origin.hostname!r} "
+                f"to {landed.hostname!r}"
+            )
+
+    @staticmethod
+    def _raise_for_status(
+        status: int, safe_url: str, headers: Any = None
+    ) -> None:
+        """Map an HTTP status onto the stable machine result for its class."""
+        if status in _REDIRECT_STATUSES:
+            location = ""
+            try:
+                location = (headers or {}).get("Location", "") or ""
+            except Exception:
+                location = ""
+            raise ExternalSourceRedirectError(
+                f"external source refused HTTP {status} redirect from {safe_url}"
+                + (f" to {_redact_url(location)}" if location else ""),
+                status_code=status,
+            )
+        if status in _DENIAL_STATUSES:
+            raise ExternalSourceAuthenticationError(
+                f"authentication denied (HTTP {status}) by {safe_url}",
+                status_code=status,
+            )
+        if status in _EXPIRY_STATUSES:
+            raise ExternalSourceExpiryError(
+                f"external source grant expired (HTTP {status}) for {safe_url}",
+                status_code=status,
+            )
+        raise ExternalSourceTransportError(
+            f"HTTP {status} from {safe_url}", status_code=status
+        )
 
 
     def submit(
