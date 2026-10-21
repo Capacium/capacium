@@ -2950,7 +2950,7 @@ class TestFixG_BacktrackingOracle:
                     opt_deps[root] = constraint
                     meta["optional_deps"] = opt_deps
 
-        return catalog, root, root_version_spec
+        return catalog, root, version_spec
 
     def test_brute_force_oracle_agreement(self):
         """The backtracking resolver agrees with brute-force oracle
