@@ -1,7 +1,7 @@
 import base64
 from typing import Optional
 from ..registry import Registry
-from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
+from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint, evidence_exclude_patterns
 from ..models import Kind
 from ..signing import load_public_key, verify
 from ._resolve import resolve_cap_id
@@ -79,7 +79,7 @@ def _verify_signature(cap, registry: Registry, key_name: str) -> bool:
     else:
         fingerprint = compute_fingerprint(
             cap.install_path,
-            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
+            exclude_patterns=evidence_exclude_patterns()
         )
 
     sig_bytes = base64.b64decode(sig_record["signature"])
@@ -104,7 +104,7 @@ def _verify_regular(cap, registry: Registry) -> bool:
         print(f"ERROR: Install path for {cap.id}@{cap.version} does not exist: {cap.install_path}")
         return False
 
-    actual = compute_fingerprint(cap.install_path, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"])
+    actual = compute_fingerprint(cap.install_path, exclude_patterns=evidence_exclude_patterns())
     if actual == cap.fingerprint:
         print(f"VERIFIED: {cap.id}@{cap.version}")
         return True

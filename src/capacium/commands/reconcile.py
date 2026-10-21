@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..framework_detector import harness_link_roots
 from ..registry import Registry
+from ..trust import DiagnosticFinding, map_reconcile_finding
 
 
 def _all_skill_roots() -> Dict[str, Path]:
@@ -614,6 +615,20 @@ def reconcile(home: Optional[Path] = None) -> Dict[str, Any]:
         "mcp": mcp,
         "findings": registry_findings + vestigial + hold_drift + dead_mcp,
     }
+
+
+def shared_findings(report: Dict[str, Any]) -> List["DiagnosticFinding"]:
+    """Project a reconcile *report* onto the shared finding model.
+
+    The report's own ``findings`` list stays the read-only dict contract the
+    CLI/JSON and ``gc`` consume; this is the projection that lets reconcile's
+    provenance and drift observations be read in the same shape repair and
+    doctor use. It is a function rather than a report key so the committed
+    reconcile output contract is unchanged.
+    """
+    return [
+        map_reconcile_finding(entry) for entry in report.get("findings", [])
+    ]
 
 def reconcile_cmd(args) -> int:
     """CLI entry point for ``cap reconcile``."""

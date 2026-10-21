@@ -1,7 +1,7 @@
 import base64
 from ..registry import Registry
 from ..signing import load_private_key, sign, list_keys, export_public_key_pem
-from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
+from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint, evidence_exclude_patterns
 from ..models import Kind
 from ._resolve import resolve_cap_id
 
@@ -43,7 +43,7 @@ def sign_capability(cap_spec: str, key_name: str) -> bool:
     else:
         fingerprint = compute_fingerprint(
             cap.install_path,
-            exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock"]
+            exclude_patterns=evidence_exclude_patterns()
         )
 
     sig_bytes = sign(privkey, fingerprint.encode("utf-8"))

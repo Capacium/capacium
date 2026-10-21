@@ -12,7 +12,8 @@ from datetime import datetime
 from ..storage import StorageManager
 from ..registry import Registry
 from ..versioning import VersionManager
-from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint
+from ..fingerprint import compute_fingerprint, compute_bundle_fingerprint, evidence_exclude_patterns
+from ..trust import IngestOutcome
 from ..manifest import Manifest, ManifestDeclarationError
 from ..models import Capability, ConflictResult, ConflictState, Kind
 from ..kinds import KIND_EXAMPLES, CapaciumKind
@@ -29,6 +30,30 @@ from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
 _GITHUB_SHORT_RE = re.compile(r"^([\w.-]+/[\w.-]+)$")
 _CANONICAL_ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SOURCE_PROVENANCE_FILE = ".capacium-source.json"
+
+
+def _install_disposition(existing_before, fingerprint: str):
+    """Classify a fresh install against whatever already occupies its slot.
+
+    The one place an install observes an ingest condition and asks for its
+    disposition, so the order of a re-install is deterministic:
+    unchanged bytes -> DUPLICATE, changed bytes -> CONFLICT, nothing there ->
+    ACCEPTED.
+    """
+    from ..trust import classify_ingest, IngestCondition
+
+    incoming = "sha256:" + fingerprint
+    if existing_before is None:
+        return classify_ingest(IngestCondition.ABSTIMMUNG_VORBEHALTEN)
+
+    existing = "sha256:" + existing_before.fingerprint
+    if existing == incoming:
+        return classify_ingest(IngestCondition.DOPPELT, incoming_digest=incoming)
+    return classify_ingest(
+        IngestCondition.KONFLIKT,
+        existing_digest=existing,
+        incoming_digest=incoming,
+    )
 
 
 @dataclass(frozen=True)
@@ -565,7 +590,7 @@ def install_capability(
         return False
     resolved_frameworks = successful_frameworks
 
-    _fingerprint_excludes = [".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"]
+    _fingerprint_excludes = evidence_exclude_patterns(["node_modules"])
     if manifest.kind == "bundle":
         sub_fingerprints = _install_bundle_members(
             manifest, owner, package_dir, registry, storage, no_lock, force=force,
@@ -602,7 +627,8 @@ def install_capability(
     # third connection -> `database is locked` on concurrent installs).
     existing_before = registry.get_capability(f"{owner}/{cap_name}", version)
     registry.upsert_capability(cap)
-    if existing_before and existing_before.fingerprint != cap.fingerprint:
+    disposition = _install_disposition(existing_before, cap.fingerprint)
+    if disposition.outcome is IngestOutcome.CONFLICT:
         print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
               f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
     _record_install_status(registry, cap_id, version, resolved_frameworks)
@@ -627,6 +653,35 @@ def install_capability(
         return False
 
     StorageManager.write_meta(cap, frameworks=resolved_frameworks)
+
+    # Install consent binds the exact manifest, source revision and artifact
+    # digests the user just accepted, on top of the record the source already
+    # carries. Only the install_consent axis changes; a capability whose
+    # evidence cannot be recorded is still installed, but never pretends to
+    # have recorded consent.
+    try:
+        from ..trust import (
+            build_evidence_record,
+            build_install_consent,
+            read_evidence_record,
+            record_install_consent,
+            ORIGIN_UNKNOWN_INSTALL,
+        )
+
+        evidence = read_evidence_record(package_dir) or build_evidence_record(
+            ORIGIN_UNKNOWN_INSTALL
+        )
+        binding = build_install_consent(
+            evidence,
+            package_dir,
+            (source_provenance.source_commit if source_provenance else "")
+            or (source_provenance.source_ref if source_provenance else "")
+            or version,
+            artifact_dir=source_dir,
+        )
+        record_install_consent(binding, package_dir)
+    except Exception as exc:  # pragma: no cover - never break an install
+        print(f"  Note: install consent not recorded: {exc}")
 
     if force or prune:
         from .gc import prune_superseded_versions
@@ -797,7 +852,7 @@ def _install_single_sub_cap(
         )
         fingerprint = compute_bundle_fingerprint(sub_sub_fingerprints)
     else:
-        fingerprint = compute_fingerprint(package_dir, exclude_patterns=[".git", "__pycache__", "*.pyc", ".DS_Store", ".capacium-meta.json", ".cap-meta.json", "capability.lock", "node_modules"])
+        fingerprint = compute_fingerprint(package_dir, exclude_patterns=evidence_exclude_patterns(["node_modules"]))
 
     first_fw = sub_frameworks[0] if sub_frameworks else "opencode"
     source_url = source_manifest.repository or _detect_git_remote(source_path)
@@ -1587,6 +1642,13 @@ def _auto_generate_manifest(
     except ImportError:
         import json
         dest.write_text(json.dumps(yaml_data, indent=2) + "\n")
+
+    # An unknown capability starts from null publisher authority and no
+    # security assessment, through the same pipeline entry the initial seed
+    # uses. It cannot reach reviewed or publisher-adopted without a signed
+    # event, and install consent never mutates these axes.
+    from ..trust import ORIGIN_UNKNOWN_INSTALL, build_evidence_record, write_evidence_record
+    write_evidence_record(repo_dir, build_evidence_record(ORIGIN_UNKNOWN_INSTALL))
 
     print(f"  Auto-generated capability.yaml for {owner}/{name}@{version}")
 

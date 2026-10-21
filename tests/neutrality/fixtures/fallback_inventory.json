@@ -24,7 +24,7 @@
         "file": "commands/init.py",
         "function": "init_skill",
         "is_exception": true,
-        "line": 243,
+        "line": 249,
         "pattern": "assign-enum-default",
         "resolved_kind": "skill",
         "sink_role": "dispatch-boundary",
