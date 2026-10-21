@@ -325,6 +325,7 @@ class Registry:
     _ATTESTED_STATUSES = ("installed", "verified")
     _FINDING_STATUSES = ("blocked", "error", "stale")
     _STATE_LIST_COLUMNS = ("published_frameworks", "desired_bindings")
+    _BINDING_STATES = ("present", "missing", "foreign", "broken")
 
     def get_state_schema_version(self) -> int:
         with self._get_connection() as conn:
@@ -464,6 +465,147 @@ class Registry:
 
     def get_desired_bindings(self, cap_id: str, version: Optional[str] = None) -> List[str]:
         return self._get_state_list("desired_bindings", cap_id, version)
+
+    def _update_desired_bindings(self, cap_id: str, version: str, mutate) -> bool:
+        """Apply ``mutate`` to one row's desired bindings.
+
+        Only the local ``desired_bindings`` column is written, so adding,
+        removing or replacing a desired harness target never touches the
+        published recommendation or the manifest on disk.
+        """
+        owner, name = self.parse_cap_id(cap_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, desired_bindings FROM capabilities"
+                " WHERE owner = ? AND name = ? AND version = ?",
+                (owner, name, version),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            row_id, raw = row[0], row[1]
+            try:
+                current = _json.loads(raw) if raw else []
+            except _json.JSONDecodeError:
+                current = []
+            if not isinstance(current, list):
+                current = []
+            updated = mutate(sorted({str(f).strip() for f in current if str(f).strip()}))
+            cursor.execute(
+                "UPDATE capabilities SET desired_bindings = ? WHERE id = ?",
+                (_json.dumps(sorted({str(f).strip() for f in updated if str(f).strip()})), row_id),
+            )
+            conn.commit()
+            return True
+
+    def add_desired_binding(self, cap_id: str, version: str, framework: str) -> bool:
+        """Add one desired harness target. Idempotent; no manifest edit."""
+        target = str(framework).strip()
+        if not target:
+            return False
+        return self._update_desired_bindings(
+            cap_id, version, lambda cur: list(cur) + ([target] if target not in cur else [])
+        )
+
+    def remove_desired_binding(self, cap_id: str, version: str, framework: str) -> bool:
+        """Drop one desired harness target. Idempotent; no manifest edit."""
+        target = str(framework).strip()
+        return self._update_desired_bindings(
+            cap_id, version, lambda cur: [f for f in cur if f != target]
+        )
+
+    def replace_desired_binding(
+        self, cap_id: str, version: str, old: str, new: str
+    ) -> bool:
+        """Swap one desired harness target for another. Idempotent; no manifest
+        edit. ``old`` absent means ``new`` is simply added."""
+        old_target = str(old).strip()
+        new_target = str(new).strip()
+        if not new_target:
+            return False
+        return self._update_desired_bindings(
+            cap_id,
+            version,
+            lambda cur: [f for f in cur if f != old_target] + [new_target],
+        )
+
+    def get_binding_states(
+        self, cap_id: str, version: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Classify every desired harness target against what is actually there.
+
+        Per target the state is exactly one of:
+
+        * ``present``  -- a Capacium-attested entry for this owner/name/version
+        * ``foreign``  -- an entry the harness has that Capacium did not write
+        * ``broken``   -- an entry that carries a Capacium mark but does not
+          match this owner/name/version (mismatched or unreadable mark)
+        * ``missing``  -- nothing at the harness location
+
+        ``location`` names where the binding was found; it is ``None`` for a
+        missing binding, which has no location to report. Classification reads
+        files only; it never installs and never edits a manifest, and it holds
+        no platform branch so the same fixtures run on macOS, Linux and Windows.
+        """
+        from .framework_detector import framework_skills_dirs
+
+        owner, name = self.parse_cap_id(cap_id)
+        desired = self.get_desired_bindings(cap_id, version)
+
+        target_version = version
+        if target_version is None:
+            cap = self.get_capability(cap_id)
+            target_version = cap.version if cap else None
+
+        try:
+            skills_dirs = framework_skills_dirs()
+        except Exception:
+            skills_dirs = {}
+
+        states: Dict[str, Dict[str, Any]] = {}
+        for fw in desired:
+            base = skills_dirs.get(fw)
+            location = base / name if base is not None else None
+            state = self._classify_binding(location, owner, name, target_version)
+            states[fw] = {
+                "desired": True,
+                "state": state,
+                "location": None if state == "missing" else str(location),
+            }
+        return states
+
+    @staticmethod
+    def _classify_binding(
+        location: Optional[Path], owner: str, name: str, target_version: Optional[str]
+    ) -> str:
+        if location is None:
+            return "missing"
+        try:
+            exists = location.exists()
+        except OSError:
+            return "missing"
+        if not exists:
+            # A dangling symlink is a broken binding, not an absent one.
+            return "broken" if location.is_symlink() else "missing"
+
+        meta_path = location / ".cap-meta.json"
+        if not meta_path.exists():
+            return "foreign"
+        try:
+            meta = _json.loads(meta_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            return "broken"
+        if not isinstance(meta, dict):
+            return "broken"
+        if (
+            meta.get("owner") == owner
+            and meta.get("name") == name
+            and target_version is not None
+            and meta.get("version") == target_version
+        ):
+            return "present"
+        return "broken"
 
     def _get_state_list(self, column: str, cap_id: str, version: Optional[str]) -> List[str]:
         if column not in self._STATE_LIST_COLUMNS:
