@@ -1869,7 +1869,7 @@ class TestFixC_C7_ConstraintValueVerification:
 
         with pytest.raises(ConflictError) as exc_info:
             Resolver.replay_from_lock(lock, catalog=tampered)
-        assert "constraint" in str(exc_info.value).lower()
+        assert "dependency" in str(exc_info.value).lower()
 
     def test_replay_verifies_platform(self):
         """Replay rejects a catalog where platform differs from lock."""
@@ -2067,5 +2067,238 @@ class TestFixC_C7_ConstraintValueVerification:
             Resolver.replay_from_lock(lock, catalog=tampered_catalog)
 
         # Untampered catalog — replay must be byte-identical
+        replayed = Resolver.replay_from_lock(lock, catalog=catalog)
+        assert replayed.to_lock() == lock
+
+
+class TestFixD_C7_OmittedFieldRejection:
+    """C7 Fix D: replay symmetrically verifies every field — lock omitting
+    a field means the catalog must also omit it (or carry the empty default).
+    node_type is always compared. One test per omitted-field vector."""
+
+    def test_leaf_lock_omits_kind_catalog_adds_kind_rejected(self):
+        """Lock has no kind; catalog adds kind — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        # Lock should NOT have 'kind' — the catalog had no kind
+        assert "kind" not in lock["nodes"]["alice/lib"]
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "kind": "skill",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "kind" in str(exc_info.value).lower()
+
+    def test_leaf_lock_omits_deps_catalog_adds_deps_rejected(self):
+        """Lock has no dependencies; catalog adds deps — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        # Leaf node has no dependencies
+        assert "dependencies" not in lock["nodes"]["alice/lib"]
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "deps": {"evil/pkg": ">=1.0.0"},
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "evil/pkg": {
+                "1.0.0": {
+                    "source": "https://e",
+                    "source_revision": "re",
+                    "artifact_digest": "de",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "dependency" in str(exc_info.value).lower()
+
+    def test_leaf_lock_omits_platform_catalog_adds_platform_rejected(self):
+        """Lock has no platform; catalog adds platform — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        assert "platform" not in lock["nodes"]["alice/lib"]
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "platform": "linux",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "platform" in str(exc_info.value).lower()
+
+    def test_leaf_lock_omits_source_catalog_adds_source_rejected(self):
+        """Lock has no source; catalog adds source — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        assert "source" not in lock["nodes"]["alice/lib"]
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://evil",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "source" in str(exc_info.value).lower()
+
+    def test_bundle_lock_omits_members_catalog_adds_members_rejected(self):
+        """Lock has no bundle_members; catalog adds bundle_members — rejected."""
+        catalog = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/bundle", "1.0.0").to_lock()
+        assert "bundle_members" not in lock["nodes"]["alice/bundle"]
+
+        tampered = {
+            "alice/bundle": {
+                "1.0.0": {
+                    "kind": "bundle",
+                    "bundle_members": ["evil/pkg"],
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+            "evil/pkg": {
+                "1.0.0": {
+                    "source": "https://e",
+                    "source_revision": "re",
+                    "artifact_digest": "de",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "bundle" in str(exc_info.value).lower()
+
+    def test_node_type_flip_capability_to_runtime_rejected(self):
+        """Catalog flips node_type from capability to runtime — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        assert lock["nodes"]["alice/lib"]["node_type"] == "capability"
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "node_type": "runtime",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "node_type" in str(exc_info.value).lower()
+
+    def test_node_type_flip_capability_to_host_binding_rejected(self):
+        """Catalog flips node_type from capability to host_binding — rejected."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
+        assert lock["nodes"]["alice/lib"]["node_type"] == "capability"
+
+        tampered = {
+            "alice/lib": {
+                "1.0.0": {
+                    "node_type": "host_binding",
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        with pytest.raises(ConflictError) as exc_info:
+            Resolver.replay_from_lock(lock, catalog=tampered)
+        assert "node_type" in str(exc_info.value).lower()
+
+    def test_untampered_replay_byte_identical_leaf(self):
+        """Untampered replay of a leaf node (no deps, no kind) is byte-identical."""
+        catalog = {
+            "alice/lib": {
+                "1.0.0": {
+                    "source": "https://a",
+                    "source_revision": "r1",
+                    "artifact_digest": "d1",
+                },
+            },
+        }
+        lock = Resolver(catalog=catalog).resolve("alice/lib", "1.0.0").to_lock()
         replayed = Resolver.replay_from_lock(lock, catalog=catalog)
         assert replayed.to_lock() == lock

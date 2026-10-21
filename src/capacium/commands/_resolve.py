@@ -746,6 +746,19 @@ class Resolver:
             return NodeType.HOST_BINDING
         return NodeType.CAPABILITY
 
+    @staticmethod
+    def _infer_node_type(coordinate: str) -> str:
+        """Infer node_type string from coordinate prefix alone.
+
+        Used during offline replay when the lock omits node_type
+        (defensive — current lock_entry always emits it).
+        """
+        if coordinate.startswith("runtime:"):
+            return NodeType.RUNTIME.value
+        if coordinate.startswith("host:"):
+            return NodeType.HOST_BINDING.value
+        return NodeType.CAPABILITY.value
+
     def _validate_no_branch_head(self, coordinate: str, version: str) -> None:
         """Raise BranchHeadError if *coordinate*@*version* has a branch-head revision."""
         meta = self._catalog.get(coordinate, {}).get(version, {})
@@ -978,157 +991,156 @@ class Resolver:
 
             meta = catalog[coordinate][version]
 
-            # Verify source URI if locked
-            locked_source = locked.get("source")
-            catalog_source = meta.get("source")
-            if locked_source is not None:
-                if catalog_source != locked_source:
-                    raise ConflictError(
-                        f"Offline replay: source URI mismatch for "
-                        f"{coordinate}@{version}: lock has {locked_source!r}, "
-                        f"catalog has {catalog_source!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Source URI mismatch: {coordinate}@{version} "
-                            f"lock={locked_source!r} catalog={catalog_source!r}",
-                        ),
-                    )
-
-            # Verify artifact digest if locked
-            locked_digest = locked.get("artifact_digest")
-            catalog_digest = meta.get("artifact_digest")
-            if locked_digest is not None:
-                if catalog_digest != locked_digest:
-                    raise ConflictError(
-                        f"Offline replay: artifact digest mismatch for "
-                        f"{coordinate}@{version}: lock has {locked_digest!r}, "
-                        f"catalog has {catalog_digest!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Digest mismatch: {coordinate}@{version} "
-                            f"lock={locked_digest!r} catalog={catalog_digest!r}",
-                        ),
-                    )
-
-            # Verify source revision if locked
-            locked_revision = locked.get("source_revision")
-            catalog_revision = meta.get("source_revision")
-            if locked_revision is not None:
-                if catalog_revision != locked_revision:
-                    raise ConflictError(
-                        f"Offline replay: source revision mismatch for "
-                        f"{coordinate}@{version}: lock has {locked_revision!r}, "
-                        f"catalog has {catalog_revision!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Revision mismatch: {coordinate}@{version} "
-                            f"lock={locked_revision!r} catalog={catalog_revision!r}",
-                        ),
-                    )
-
-            # Verify dependency set if locked — both keys AND constraint VALUES
+            # Build canonical normalized records from both lock and catalog.
+            # Omitted fields are treated as empty/default; node_type is always
+            # included so a catalog flip of node_type is caught.
             locked_deps = locked.get("dependencies", {})
             catalog_deps = meta.get("deps", {})
-            if locked_deps:
-                if set(locked_deps.keys()) != set(catalog_deps.keys()):
-                    raise ConflictError(
-                        f"Offline replay: dependency set mismatch for "
-                        f"{coordinate}@{version}: lock has deps "
-                        f"{sorted(locked_deps.keys())!r}, catalog has "
-                        f"{sorted(catalog_deps.keys())!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Dependency mismatch: {coordinate}@{version} "
-                            f"lock deps={sorted(locked_deps.keys())!r} "
-                            f"catalog deps={sorted(catalog_deps.keys())!r}",
-                        ),
-                    )
-                # Verify constraint VALUES match exactly
-                for dep_key, locked_constraint in locked_deps.items():
-                    catalog_constraint = catalog_deps.get(dep_key)
-                    if locked_constraint != catalog_constraint:
-                        raise ConflictError(
-                            f"Offline replay: dependency constraint mismatch "
-                            f"for {coordinate}@{version} dep {dep_key!r}: "
-                            f"lock has {locked_constraint!r}, "
-                            f"catalog has {catalog_constraint!r}",
-                            plan=Resolver._rejection_plan(
-                                "conflict",
-                                f"Constraint mismatch: {coordinate}@{version} "
-                                f"dep={dep_key!r} "
-                                f"lock={locked_constraint!r} "
-                                f"catalog={catalog_constraint!r}",
-                            ),
-                        )
-
-            # Verify platform if locked
-            locked_platform = locked.get("platform")
-            catalog_platform = meta.get("platform")
-            if locked_platform is not None:
-                if catalog_platform != locked_platform:
-                    raise ConflictError(
-                        f"Offline replay: platform mismatch for "
-                        f"{coordinate}@{version}: lock has "
-                        f"{locked_platform!r}, catalog has "
-                        f"{catalog_platform!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Platform mismatch: {coordinate}@{version} "
-                            f"lock={locked_platform!r} "
-                            f"catalog={catalog_platform!r}",
-                        ),
-                    )
-
-            # Verify kind if locked
-            locked_kind = locked.get("kind")
-            catalog_kind = meta.get("kind")
-            if locked_kind is not None:
-                if catalog_kind != locked_kind:
-                    raise ConflictError(
-                        f"Offline replay: kind mismatch for "
-                        f"{coordinate}@{version}: lock has "
-                        f"{locked_kind!r}, catalog has "
-                        f"{catalog_kind!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Kind mismatch: {coordinate}@{version} "
-                            f"lock={locked_kind!r} "
-                            f"catalog={catalog_kind!r}",
-                        ),
-                    )
-
-            # Verify bundle_members if locked
             locked_members = locked.get("bundle_members", [])
             catalog_members = meta.get("bundle_members", [])
-            if locked_members:
-                if sorted(locked_members) != sorted(catalog_members):
-                    raise ConflictError(
-                        f"Offline replay: bundle_members mismatch for "
-                        f"{coordinate}@{version}: lock has "
-                        f"{locked_members!r}, catalog has "
-                        f"{catalog_members!r}",
-                        plan=Resolver._rejection_plan(
-                            "conflict",
-                            f"Bundle members mismatch: {coordinate}@{version} "
-                            f"lock={locked_members!r} "
-                            f"catalog={catalog_members!r}",
-                        ),
-                    )
+            locked_kind = locked.get("kind")
+            catalog_kind = meta.get("kind")
+            locked_source = locked.get("source")
+            catalog_source = meta.get("source")
+            locked_revision = locked.get("source_revision")
+            catalog_revision = meta.get("source_revision")
+            locked_digest = locked.get("artifact_digest")
+            catalog_digest = meta.get("artifact_digest")
+            locked_platform = locked.get("platform")
+            catalog_platform = meta.get("platform")
+            locked_node_type = locked.get("node_type", Resolver._infer_node_type(coordinate))
+            catalog_node_type = (
+                meta.get("node_type")
+                or Resolver._infer_node_type(coordinate)
+            )
+
+            # Verify dependencies — both directions symmetrically
+            if dict(locked_deps) != dict(catalog_deps):
+                raise ConflictError(
+                    f"Offline replay: dependency mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{sorted(locked_deps.items())!r}, catalog has "
+                    f"{sorted(catalog_deps.items())!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Dependency mismatch: {coordinate}@{version} "
+                        f"lock={sorted(locked_deps.items())!r} "
+                        f"catalog={sorted(catalog_deps.items())!r}",
+                    ),
+                )
+
+            # Verify bundle_members — both directions symmetrically
+            if sorted(locked_members) != sorted(catalog_members):
+                raise ConflictError(
+                    f"Offline replay: bundle_members mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{locked_members!r}, catalog has "
+                    f"{catalog_members!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Bundle members mismatch: {coordinate}@{version} "
+                        f"lock={locked_members!r} "
+                        f"catalog={catalog_members!r}",
+                    ),
+                )
+
+            # Verify kind — both directions symmetrically (None vs None is equal)
+            if locked_kind != catalog_kind:
+                raise ConflictError(
+                    f"Offline replay: kind mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{locked_kind!r}, catalog has "
+                    f"{catalog_kind!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Kind mismatch: {coordinate}@{version} "
+                        f"lock={locked_kind!r} "
+                        f"catalog={catalog_kind!r}",
+                    ),
+                )
+
+            # Verify source — both directions symmetrically
+            if locked_source != catalog_source:
+                raise ConflictError(
+                    f"Offline replay: source URI mismatch for "
+                    f"{coordinate}@{version}: lock has {locked_source!r}, "
+                    f"catalog has {catalog_source!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Source URI mismatch: {coordinate}@{version} "
+                        f"lock={locked_source!r} catalog={catalog_source!r}",
+                    ),
+                )
+
+            # Verify source_revision — both directions symmetrically
+            if locked_revision != catalog_revision:
+                raise ConflictError(
+                    f"Offline replay: source revision mismatch for "
+                    f"{coordinate}@{version}: lock has {locked_revision!r}, "
+                    f"catalog has {catalog_revision!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Revision mismatch: {coordinate}@{version} "
+                        f"lock={locked_revision!r} catalog={catalog_revision!r}",
+                    ),
+                )
+
+            # Verify artifact_digest — both directions symmetrically
+            if locked_digest != catalog_digest:
+                raise ConflictError(
+                    f"Offline replay: artifact digest mismatch for "
+                    f"{coordinate}@{version}: lock has {locked_digest!r}, "
+                    f"catalog has {catalog_digest!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Digest mismatch: {coordinate}@{version} "
+                        f"lock={locked_digest!r} catalog={catalog_digest!r}",
+                    ),
+                )
+
+            # Verify platform — both directions symmetrically
+            if locked_platform != catalog_platform:
+                raise ConflictError(
+                    f"Offline replay: platform mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{locked_platform!r}, catalog has "
+                    f"{catalog_platform!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Platform mismatch: {coordinate}@{version} "
+                        f"lock={locked_platform!r} "
+                        f"catalog={catalog_platform!r}",
+                    ),
+                )
+
+            # Verify node_type — both directions symmetrically
+            if locked_node_type != catalog_node_type:
+                raise ConflictError(
+                    f"Offline replay: node_type mismatch for "
+                    f"{coordinate}@{version}: lock has "
+                    f"{locked_node_type!r}, catalog has "
+                    f"{catalog_node_type!r}",
+                    plan=Resolver._rejection_plan(
+                        "conflict",
+                        f"Node type mismatch: {coordinate}@{version} "
+                        f"lock={locked_node_type!r} "
+                        f"catalog={catalog_node_type!r}",
+                    ),
+                )
 
             node = ResolveNode(
-                node_type=Resolver._node_type_from_meta(meta, coordinate),
+                node_type=NodeType(locked_node_type),
                 coordinate=coordinate,
                 version=version,
-                kind=locked_kind if locked_kind is not None else meta.get("kind"),
-                source=meta.get("source"),
-                source_revision=catalog_revision,
-                artifact_digest=catalog_digest,
-                # Use LOCKED dependency values so the replayed plan is byte-identical
-                dependencies=dict(locked_deps) if locked_deps else meta.get("deps", {}),
+                kind=locked_kind,
+                source=locked_source,
+                source_revision=locked_revision,
+                artifact_digest=locked_digest,
+                dependencies=dict(locked_deps),
                 optional=locked.get("optional", False),
                 harness=set(locked["harness"]) if locked.get("harness") else None,
-                platform=locked_platform if locked_platform is not None else meta.get("platform"),
-                bundle_members=locked_members if locked_members else meta.get("bundle_members", []),
+                platform=locked_platform,
+                bundle_members=list(locked_members),
             )
             plan.nodes[coordinate] = node
 
