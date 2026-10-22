@@ -45,14 +45,18 @@ from capacium.commands.exec import (
     probes_to_json,
     rollback,
     run_probes,
+    _clear_pid_file,
     _find_executable,
     _generations_dir,
+    _is_process_alive,
+    _pid_path,
     _pointer_path,
     _probe_cli,
     _probe_import,
     _probe_protocol,
     _probe_version,
     _read_pointer,
+    _write_pid_file,
     _write_pointer,
 )
 from capacium.runtimes import (
@@ -727,6 +731,7 @@ class TestStatusResult:
         expected_keys = {
             "capability_id", "package_version",
             "active_generation_digest", "previous_generation_digest",
+            "observed_process_generation", "observed_process_pid",
             "desired_bindings", "verified_bindings",
             "flags", "error",
         }
@@ -869,7 +874,10 @@ class TestStatusFlags:
 
         result = get_status(unit_id, registry=registry, manager=manager)
         assert result.flags.runtime_drift is True
-        assert result.flags.restart_required is True
+        # restart_required is NOT set from runtime_drift alone — that
+        # was the "guessing" pattern. It requires an observed process
+        # whose generation differs from the active pointer.
+        assert result.flags.restart_required is False
 
     def test_handle_status_json(self, temp_home, capsys):
         cap_home = temp_home / ".capacium"
@@ -900,16 +908,8 @@ class TestStatusFlags:
         assert "runtime_drift" in captured.out
         assert "rollback_available" in captured.out
 
-    def test_restart_required_derived_from_drift(self, temp_home):
-        """restart_required is derived from runtime_drift — not guessed."""
-        flags = StatusFlags(runtime_drift=True)
-        result = StatusResult(
-            capability_id="test/skill",
-            flags=flags,
-        )
-        # Runtime drift alone doesn't set restart_required in the data
-        # model — that's computed in get_status() which derives it.
-        # Here we test the derivation logic directly.
+    def test_restart_required_derived_from_drift_and_process_differs(self, temp_home):
+        """restart_required requires runtime_drift AND observed process mismatch."""
         from capacium.registry import Registry
         cap_home = temp_home / ".capacium"
         cap_home.mkdir(exist_ok=True)
@@ -919,15 +919,384 @@ class TestStatusFlags:
         active_path = _pointer_path(unit_id)
         _write_pointer(active_path, "a" * 64)
 
+        # Write a PID file with a different generation — simulating
+        # an observed process launched from a stale generation.
+        _write_pid_file(unit_id, "b" * 64)
+
         from capacium.runtimes import GenerationManager, RuntimeGeneration, SourceLock
         manager = GenerationManager()
-        source_lock = SourceLock(source_url="file:///tmp", digest="b" * 64)
-        generation = RuntimeGeneration(digest="b" * 64, source_lock=source_lock)
+        source_lock = SourceLock(source_url="file:///tmp", digest="c" * 64)
+        generation = RuntimeGeneration(digest="c" * 64, source_lock=source_lock)
         manager.store.add(generation)
+        manager.store.set_active("c" * 64)
+
+        result = get_status(unit_id, registry=registry, manager=manager)
+        assert result.flags.runtime_drift is True
+        # Observed process ("b"*64) differs from active pointer ("a"*64)
+        # → restart_required is derived from evidence, not guessed.
+        assert result.flags.restart_required is True
+
+        _clear_pid_file(unit_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Process observation (PID tracking)
+# ──────────────────────────────────────────────────────────────────────
+
+class TestProcessObservation:
+    def test_pid_write_and_read(self, temp_home):
+        unit_id = "test/pid-skill"
+        _write_pid_file(unit_id, "a" * 64)
+        data = __import__("capacium.commands.exec", fromlist=["_read_pid_file"])._read_pid_file(unit_id)
+        assert data is not None
+        assert "pid" in data
+        assert data["generation"] == "a" * 64
+        _clear_pid_file(unit_id)
+
+    def test_pid_clear(self, temp_home):
+        unit_id = "test/pid-clear"
+        _write_pid_file(unit_id, "x" * 64)
+        _clear_pid_file(unit_id)
+        assert not _pid_path(unit_id).exists()
+
+    def test_pid_read_missing(self, temp_home):
+        from capacium.commands.exec import _read_pid_file
+        assert _read_pid_file("test/nonexistent-pid") is None
+
+    def test_is_process_alive_self(self):
+        assert _is_process_alive(os.getpid()) is True
+
+    def test_is_process_alive_bogus(self):
+        assert _is_process_alive(999999) is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 4: MCP stdio with real child process
+# ──────────────────────────────────────────────────────────────────────
+
+class TestMcpStdioRealChild:
+    def test_mcp_stdio_real_child_stdout_only(self, tmp_path):
+        """MCP stdio emits protocol bytes on stdout, diagnostics on stderr."""
+        script = tmp_path / "mcp_real"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import sys, json
+            line = sys.stdin.readline()
+            resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+            sys.stdout.write(resp + "\\n")
+            sys.stdout.flush()
+            sys.stderr.write("DEBUG: processed request\\n")
+            sys.stderr.flush()
+        """))
+        script.chmod(0o755)
+        result = exec_mcp_stdio(script, [])
+        assert result.exit_code == 0
+
+    def test_mcp_stdio_real_child_exit_code(self, tmp_path):
+        script = tmp_path / "mcp_exit_real"
+        script.write_text("#!/bin/sh\nexit 42\n")
+        script.chmod(0o755)
+        result = exec_mcp_stdio(script, [])
+        assert result.exit_code == 42
+
+    def test_mcp_stdio_real_child_not_found(self):
+        result = exec_mcp_stdio(Path("/nonexistent/mcp_bin"), [])
+        assert result.exit_code == 1
+        assert "not found" in result.error.lower()
+
+    def test_mcp_stdio_handle_exec_mcp_mode_resolves_generation(self, temp_home, fake_generation,
+                                                                generation_manager, monkeypatch):
+        digest, gen_dir = fake_generation
+        unit = RuntimeUnit(owner="test", name="test-skill",
+                           entrypoints={"main": "python3 main"})
+
+        activate(unit, digest, gen_dir, skip_probes=True)
+
+        source_lock = SourceLock(
+            source_url=f"file://{gen_dir}",
+            digest=digest,
+            entrypoints={"main": ("python3", "main")},
+        )
+        generation = RuntimeGeneration(digest=digest, source_lock=source_lock)
+        generation_manager.store.add(generation)
+
+        monkeypatch.setattr(
+            "capacium.commands.exec.GenerationManager",
+            lambda: generation_manager,
+        )
+
+        import argparse
+        ns = argparse.Namespace(capability="test/test-skill", args=[], mcp=True)
+        rc = handle_exec(ns)
+        assert rc == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 5: cap status four-way separation
+# ──────────────────────────────────────────────────────────────────────
+
+class TestStatusFourWaySeparation:
+    def test_observed_process_generation_in_result(self, temp_home):
+        sr = StatusResult(
+            capability_id="test/skill",
+            package_version="1.2.3",
+            active_generation_digest="a" * 64,
+            previous_generation_digest="b" * 64,
+            observed_process_generation="a" * 64,
+            observed_process_pid=12345,
+            desired_bindings=["claude-code"],
+            verified_bindings=["claude-code"],
+        )
+        assert sr.observed_process_generation == "a" * 64
+        assert sr.observed_process_pid == 12345
+
+        j = sr.to_json()
+        assert j["observed_process_generation"] == "a" * 64
+        assert j["observed_process_pid"] == 12345
+
+    def test_observed_process_from_pid_file(self, temp_home):
+        unit_id = "test/observed-skill"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+
+        _write_pid_file(unit_id, "a" * 64)
+
+        result = get_status(unit_id)
+        assert result.observed_process_generation == "a" * 64
+        assert result.observed_process_pid is not None
+        assert result.observed_process_pid == os.getpid()
+
+        _clear_pid_file(unit_id)
+
+    def test_observed_process_is_none_when_no_pid_file(self, temp_home):
+        result = get_status("test/no-pid")
+        assert result.observed_process_generation is None
+        assert result.observed_process_pid is None
+
+    def test_four_way_separation_all_present(self, temp_home):
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        owner, name = "test", "four-way"
+        registry._insert_raw(owner, name, "1.0.0",
+                             desired_bindings=["claude-code"])
+        registry.set_adapter_status(f"{owner}/{name}", "1.0.0",
+                                    "claude-code", "verified")
+
+        unit_id = f"{owner}/{name}"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+        _write_pid_file(unit_id, "a" * 64)
+
+        from capacium.runtimes import GenerationManager, RuntimeGeneration, SourceLock
+        manager = GenerationManager()
+        source_lock = SourceLock(source_url="file:///tmp", digest="a" * 64)
+        generation = RuntimeGeneration(digest="a" * 64, source_lock=source_lock)
+        manager.store.add(generation)
+        manager.store.set_active("a" * 64)
+
+        result = get_status(unit_id, registry=registry, manager=manager)
+
+        assert result.package_version == "1.0.0"
+        assert result.active_generation_digest == "a" * 64
+        assert "claude-code" in result.desired_bindings
+        assert "claude-code" in result.verified_bindings
+        assert result.observed_process_generation == "a" * 64
+        assert result.observed_process_pid == os.getpid()
+
+        _clear_pid_file(unit_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 6: Seven states without guessing — process_stale assigned
+# ──────────────────────────────────────────────────────────────────────
+
+class TestSevenStatesNoGuessing:
+    def test_process_stale_set_when_pid_file_exists_but_process_dead(self, temp_home):
+        unit_id = "test/stale-skill"
+        _write_pid_file(unit_id, "a" * 64)
+
+        import capacium.commands.exec as exec_mod
+        original = exec_mod._is_process_alive
+        try:
+            exec_mod._is_process_alive = lambda pid: False
+            result = get_status(unit_id)
+            assert result.flags.process_stale is True
+        finally:
+            exec_mod._is_process_alive = original
+
+        _clear_pid_file(unit_id)
+
+    def test_process_stale_not_set_when_process_alive(self, temp_home):
+        unit_id = "test/alive-skill"
+        _write_pid_file(unit_id, "a" * 64)
+
+        result = get_status(unit_id)
+        assert result.flags.process_stale is False
+
+        _clear_pid_file(unit_id)
+
+    def test_restart_required_when_process_stale(self, temp_home):
+        unit_id = "test/restart-stale"
+        _write_pid_file(unit_id, "a" * 64)
+
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "b" * 64)
+
+        import capacium.commands.exec as exec_mod
+        original = exec_mod._is_process_alive
+        try:
+            exec_mod._is_process_alive = lambda pid: False
+            result = get_status(unit_id, registry=registry)
+            assert result.flags.process_stale is True
+            assert result.flags.restart_required is True
+        finally:
+            exec_mod._is_process_alive = original
+
+        _clear_pid_file(unit_id)
+
+    def test_restart_required_when_drift_and_process_differs(self, temp_home):
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        unit_id = "test/drift-restart-obs"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+        _write_pid_file(unit_id, "b" * 64)
+
+        from capacium.runtimes import GenerationManager, RuntimeGeneration, SourceLock
+        manager = GenerationManager()
+        source_lock = SourceLock(source_url="file:///tmp", digest="c" * 64)
+        generation = RuntimeGeneration(digest="c" * 64, source_lock=source_lock)
+        manager.store.add(generation)
+        manager.store.set_active("c" * 64)
 
         result = get_status(unit_id, registry=registry, manager=manager)
         assert result.flags.runtime_drift is True
         assert result.flags.restart_required is True
+
+        _clear_pid_file(unit_id)
+
+    def test_no_guessing_empty_state(self, temp_home):
+        result = get_status("test/empty")
+        assert result.flags.runtime_drift is False
+        assert result.flags.process_stale is False
+        assert result.flags.binding_drift is False
+        assert result.flags.unverified is False
+        assert result.flags.orphaned is False
+        assert result.flags.restart_required is False
+        assert result.flags.rollback_available is False
+
+    def test_seven_states_each_only_when_evidence(self, temp_home):
+        unit_id = "test/seven-evidence"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+
+        result = get_status(unit_id)
+        assert result.flags.rollback_available is False
+        assert result.flags.orphaned is False
+        assert result.flags.unverified is False
+        assert result.flags.binding_drift is False
+        assert result.flags.runtime_drift is False
+        assert result.flags.process_stale is False
+        assert result.flags.restart_required is False
+
+    def test_handle_status_json_includes_observed_process(self, temp_home, capsys):
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        _ = __import__("capacium.registry", fromlist=["Registry"]).Registry(
+            db_path=cap_home / "registry.db"
+        )
+
+        unit_id = "test/json-observed"
+        _write_pid_file(unit_id, "a" * 64)
+
+        import argparse
+        ns = argparse.Namespace(capability=unit_id, json=True)
+        rc = handle_status(ns)
+        captured = capsys.readouterr()
+        assert rc == 0
+        parsed = json.loads(captured.out)
+        assert "observed_process_generation" in parsed
+        assert "observed_process_pid" in parsed
+        assert parsed["observed_process_pid"] == os.getpid()
+        assert parsed["observed_process_generation"] == "a" * 64
+
+        _clear_pid_file(unit_id)
+
+    def test_handle_status_human_includes_observed_process(self, temp_home, capsys):
+        import argparse
+        ns = argparse.Namespace(capability="test/human-observed", json=False)
+        handle_status(ns)
+        captured = capsys.readouterr()
+        assert "Observed process generation" in captured.out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 4 (continued): MCP stdio protocol-clean
+# ──────────────────────────────────────────────────────────────────────
+
+class TestMcpStdioProtocolClean:
+    def test_mcp_stdio_stdout_clean_with_real_child(self, tmp_path):
+        script = tmp_path / "mcp_proto"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import sys, json
+            line = sys.stdin.readline()
+            resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})
+            sys.stdout.write(resp + "\\n")
+            sys.stdout.flush()
+            sys.stderr.write("DEBUG: init done\\n")
+            sys.stderr.flush()
+        """))
+        script.chmod(0o755)
+
+        import subprocess as sp
+        proc = sp.run(
+            [str(script)],
+            input=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            capture_output=True, text=True,
+        )
+        stdout_data = proc.stdout.strip()
+        stderr_data = proc.stderr.strip()
+        assert "jsonrpc" in stdout_data
+        assert "DEBUG" in stderr_data
+
+    def test_mcp_stdio_child_receives_stdin(self, tmp_path):
+        script = tmp_path / "mcp_stdin"
+        script.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            import sys, json
+            line = sys.stdin.readline()
+            req = json.loads(line)
+            if req.get("method") == "tools/list":
+                sys.stdout.write(json.dumps({
+                    "jsonrpc": "2.0", "id": req["id"],
+                    "result": {"tools": []}
+                }) + "\\n")
+            sys.stdout.flush()
+        """))
+        script.chmod(0o755)
+
+        import subprocess as sp
+        req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        proc = sp.run(
+            [str(script)],
+            input=req + "\n",
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0
+        resp = json.loads(proc.stdout.strip())
+        assert resp["result"]["tools"] == []
 
 
 # ──────────────────────────────────────────────────────────────────────

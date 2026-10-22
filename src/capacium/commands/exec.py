@@ -52,6 +52,44 @@ def _generations_dir() -> Path:
     return Path.home() / ".capacium" / "generations"
 
 
+def _pid_path(unit_id: str) -> Path:
+    safe = unit_id.replace("/", "_")
+    return _active_dir() / f"{safe}.pid"
+
+
+# ── Process observation (PID tracking) ─────────────────────────────────
+
+def _write_pid_file(unit_id: str, generation_digest: str) -> None:
+    """Record the current PID and generation so status can observe it."""
+    path = _pid_path(unit_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "pid": os.getpid(),
+        "generation": generation_digest,
+    }))
+
+
+def _read_pid_file(unit_id: str) -> Optional[Dict[str, Any]]:
+    """Read the PID tracking file, returning None if absent or unreadable."""
+    try:
+        return json.loads(_pid_path(unit_id).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _clear_pid_file(unit_id: str) -> None:
+    _pid_path(unit_id).unlink(missing_ok=True)
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Return True if a process with the given PID exists."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 # ── Low-level pointer I/O (atomic via rename) ──────────────────────────
 
 def _write_pointer(path: Path, value: str) -> None:
@@ -699,6 +737,8 @@ class StatusResult:
     package_version: str = ""
     active_generation_digest: Optional[str] = None
     previous_generation_digest: Optional[str] = None
+    observed_process_generation: Optional[str] = None
+    observed_process_pid: Optional[int] = None
     desired_bindings: List[str] = field(default_factory=list)
     verified_bindings: List[str] = field(default_factory=list)
     flags: StatusFlags = field(default_factory=StatusFlags)
@@ -710,6 +750,8 @@ class StatusResult:
             "package_version": self.package_version,
             "active_generation_digest": self.active_generation_digest,
             "previous_generation_digest": self.previous_generation_digest,
+            "observed_process_generation": self.observed_process_generation,
+            "observed_process_pid": self.observed_process_pid,
             "desired_bindings": self.desired_bindings,
             "verified_bindings": self.verified_bindings,
             "flags": {
@@ -734,13 +776,31 @@ def get_status(
     """Compute the separated status for one capability.
 
     Queries the registry for package version and bindings, reads pointer
-    files for active/previous generations, and derives status flags from
-    observed state. No flag is ever guessed — if the evidence is missing,
-    the flag stays False.
+    files for active/previous generations, inspects PID files for observed
+    process state, and derives status flags from observed evidence.
+
+    No flag is ever guessed — if the evidence is missing, the flag stays
+    False.
     """
     flags = StatusFlags()
     active_digest = get_active_digest(capability_id)
     previous_digest = get_previous_digest(capability_id)
+
+    # ── Observed process generation (from PID file) ─────────────────
+    observed_process_generation: Optional[str] = None
+    observed_process_pid: Optional[int] = None
+    pid_data = _read_pid_file(capability_id)
+    if pid_data is not None:
+        observed_pid = pid_data.get("pid")
+        if isinstance(observed_pid, int):
+            observed_process_pid = observed_pid
+            if _is_process_alive(observed_pid):
+                observed_gen = pid_data.get("generation")
+                if isinstance(observed_gen, str):
+                    observed_process_generation = observed_gen
+            else:
+                # PID file exists but the process is dead → stale
+                flags.process_stale = True
 
     # Rollback available if a previous generation pointer exists
     if previous_digest:
@@ -772,8 +832,9 @@ def get_status(
         except Exception:
             pass
     else:
-        # Without a registry we can still observe pointer files but
-        # bindings and version are unknown — not orphaned, just missing.
+        # Without a registry we can still observe pointer files and PID
+        # state but bindings and version are unknown — not orphaned,
+        # just missing.
         pass
 
     # Binding drift: desired target exists but is not verified
@@ -787,19 +848,29 @@ def get_status(
     elif desired_bindings and not verified_bindings:
         flags.unverified = True
 
-    # Process stale: active generation digest exists but differs from
-    # the generation digest in the store (if we can check).
+    # Runtime drift: the active pointer digest differs from what the
+    # persistent store knows as active, or the active digest is not in
+    # the store at all.
     if manager is not None and active_digest:
-        generation = manager.store.get(active_digest)
-        if generation is None:
+        stored_active = manager.store.active_generation_id
+        if stored_active is None or stored_active != active_digest:
             flags.runtime_drift = True
-        elif generation.digest != active_digest:
+        elif manager.store.get(active_digest) is None:
             flags.runtime_drift = True
 
-    # Restart required: runtime_drift combined with an active process
-    # that was launched from a different generation. We only set this
-    # when runtime_drift is already true — it's a derived signal.
-    if flags.runtime_drift:
+    # Restart required: an observed process is running but its generation
+    # differs from the active generation — the running process was
+    # launched from a stale generation. We only set this when the
+    # evidence is conclusive: we have both an active digest and a live
+    # observed process, and they disagree.
+    if (flags.runtime_drift and observed_process_generation is not None
+            and active_digest is not None
+            and observed_process_generation != active_digest):
+        flags.restart_required = True
+
+    # Also set restart_required when process_stale is true — a dead
+    # process that was launched from a different generation.
+    if flags.process_stale and active_digest is not None:
         flags.restart_required = True
 
     return StatusResult(
@@ -807,6 +878,8 @@ def get_status(
         package_version=package_version,
         active_generation_digest=active_digest,
         previous_generation_digest=previous_digest,
+        observed_process_generation=observed_process_generation,
+        observed_process_pid=observed_process_pid,
         desired_bindings=desired_bindings,
         verified_bindings=verified_bindings,
         flags=flags,
@@ -939,6 +1012,11 @@ def _print_status_human(result: StatusResult) -> None:
         print(f"  Package version: {result.package_version}")
     print(f"  Active generation: {result.active_generation_digest or 'none'}")
     print(f"  Previous generation: {result.previous_generation_digest or 'none'}")
+    if result.observed_process_generation:
+        pid_info = f" (pid {result.observed_process_pid})" if result.observed_process_pid else ""
+        print(f"  Observed process generation: {result.observed_process_generation}{pid_info}")
+    else:
+        print("  Observed process generation: none")
     if result.desired_bindings:
         print(f"  Desired bindings: {', '.join(result.desired_bindings)}")
     if result.verified_bindings:
