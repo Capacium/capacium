@@ -981,3 +981,265 @@ def _register_raw_insert():
 
 
 _register_raw_insert()
+
+
+# ── Criterion 7: SkillWeave, MemPalace, Understand activation/rollback ──────
+# from warm and offline caches ──────────────────────────────────────────────
+
+def _make_warm_gen(tmp_path, owner, name, version, entrypoint="run.py"):
+    """Create a warm-cache generation directory inside the test's
+    generations dir and return (digest, gen_dir)."""
+    gen_root = _generations_dir()
+    import uuid
+    gen_id = str(uuid.uuid4())[:8]
+    digest = f"{gen_id}_{version}"
+    gen_dir = gen_root / digest
+    gen_dir.mkdir(parents=True, exist_ok=True)
+
+    script = gen_dir / entrypoint
+    script.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        if len(sys.argv) > 1 and sys.argv[1] == "--version":
+            print("{owner}/{name} v{version}")
+        elif len(sys.argv) > 1 and sys.argv[1] == "--help":
+            print("Usage: {entrypoint} [options]")
+            print("  --version  Show version")
+            print("  --help     Show help")
+        else:
+            print("running {owner}/{name} v{version}")
+    """))
+    script.chmod(0o755)
+
+    (gen_dir / ".generation.json").write_text(json.dumps({"digest": digest}))
+    return digest, gen_dir
+
+
+def _make_runtime_unit(owner, name, entrypoint="run.py"):
+    """Build a RuntimeUnit matching the existing test pattern."""
+    return RuntimeUnit(
+        owner=owner,
+        name=name,
+        entrypoints={entrypoint: f"python3 {entrypoint}"},
+    )
+
+
+class TestCriterion7RealisticFixtures:
+    """C7: SkillWeave, MemPalace, Understand activation/rollback from
+    warm and offline caches."""
+
+    # ── SkillWeave ──────────────────────────────────────────────────
+
+    def test_skillweave_activate_warm_skip_probes(self, temp_home):
+        owner, name = "skillweave", "skillweave"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir, skip_probes=True)
+        assert result.activated
+        assert result.generation_digest == digest
+        assert get_active_digest(f"{owner}/{name}") == digest
+
+    def test_skillweave_activate_warm_with_probes(self, temp_home):
+        owner, name = "skillweave", "skillweave"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir)
+        assert result.activated
+        assert result.generation_digest == digest
+        assert len(result.probes) >= 3
+        assert all(p.passed for p in result.probes)
+
+    def test_skillweave_rollback_warm(self, temp_home):
+        owner, name = "skillweave", "skillweave"
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
+        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+
+        activate(unit, d2, g2, skip_probes=True)
+        activate(unit, d1, g1, skip_probes=True)
+
+        assert rollback(unit_id)
+        assert get_active_digest(unit_id) == d2
+        assert get_previous_digest(unit_id) == d1
+
+    def test_skillweave_status_warm(self, temp_home):
+        owner, name = "skillweave", "skillweave"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        activate(unit, digest, gen_dir, skip_probes=True)
+
+        status = get_status(unit_id)
+        assert status.active_generation_digest == digest
+        assert status.flags.rollback_available is False
+
+    # ── MemPalace ───────────────────────────────────────────────────
+
+    def test_mempalace_activate_warm_skip_probes(self, temp_home):
+        owner, name = "mempalace", "mempalace"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir, skip_probes=True)
+        assert result.activated
+        assert result.generation_digest == digest
+
+    def test_mempalace_activate_warm_with_probes(self, temp_home):
+        owner, name = "mempalace", "mempalace"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir)
+        assert result.activated
+        assert all(p.passed for p in result.probes)
+
+    def test_mempalace_rollback_warm(self, temp_home):
+        owner, name = "mempalace", "mempalace"
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
+        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+
+        activate(unit, d2, g2, skip_probes=True)
+        activate(unit, d1, g1, skip_probes=True)
+
+        assert rollback(unit_id)
+        assert get_active_digest(unit_id) == d2
+
+    def test_mempalace_status_warm(self, temp_home):
+        owner, name = "mempalace", "mempalace"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        activate(unit, digest, gen_dir, skip_probes=True)
+
+        status = get_status(unit_id)
+        assert status.active_generation_digest == digest
+
+    # ── Understand ──────────────────────────────────────────────────
+
+    def test_understand_activate_warm_skip_probes(self, temp_home):
+        owner, name = "understand", "understand"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir, skip_probes=True)
+        assert result.activated
+        assert result.generation_digest == digest
+
+    def test_understand_activate_warm_with_probes(self, temp_home):
+        owner, name = "understand", "understand"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir)
+        assert result.activated
+        assert all(p.passed for p in result.probes)
+
+    def test_understand_rollback_warm(self, temp_home):
+        owner, name = "understand", "understand"
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
+        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+
+        activate(unit, d2, g2, skip_probes=True)
+        activate(unit, d1, g1, skip_probes=True)
+
+        assert rollback(unit_id)
+        assert get_active_digest(unit_id) == d2
+
+    def test_understand_status_warm(self, temp_home):
+        owner, name = "understand", "understand"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        activate(unit, digest, gen_dir, skip_probes=True)
+
+        status = get_status(unit_id)
+        assert status.active_generation_digest == digest
+
+    # ── Cross-package offline cycle ─────────────────────────────────
+
+    def test_all_three_offline_activate_rollback_cycle(self, temp_home):
+        packages = [
+            ("skillweave", "skillweave"),
+            ("mempalace", "mempalace"),
+            ("understand", "understand"),
+        ]
+
+        for owner, name in packages:
+            unit = _make_runtime_unit(owner, name)
+            unit_id = f"{owner}/{name}"
+
+            d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
+            d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+
+            r = activate(unit, d2, g2, skip_probes=True)
+            assert r.activated
+            r = activate(unit, d1, g1, skip_probes=True)
+            assert r.activated
+
+            assert rollback(unit_id)
+            assert get_active_digest(unit_id) == d2
+
+    def test_offline_failed_probe_leaves_previous(self, temp_home):
+        owner, name = "skillweave", "skillweave"
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        r1 = activate(unit, d1, g1, skip_probes=True)
+        assert r1.activated
+
+        # v2 has a broken executable that fails --version
+        gen_root = _generations_dir()
+        d2 = "broken_v2.0.0"
+        g2 = gen_root / d2
+        g2.mkdir(parents=True)
+        broken = g2 / "run.py"
+        broken.write_text("#!/usr/bin/env python3\nimport sys; sys.exit(1)\n")
+        broken.chmod(0o755)
+        (g2 / ".generation.json").write_text(json.dumps({"digest": d2}))
+
+        result = activate(unit, d2, g2)
+        assert not result.activated
+        # v1 still active
+        assert get_active_digest(unit_id) == d1
+
+    def test_offline_rollback_preserves_both_generations(self, temp_home):
+        owner, name = "understand", "understand"
+        unit = _make_runtime_unit(owner, name)
+        unit_id = f"{owner}/{name}"
+
+        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
+        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+
+        activate(unit, d2, g2, skip_probes=True)
+        activate(unit, d1, g1, skip_probes=True)
+        rollback(unit_id)
+
+        assert g2.exists()
+        assert g1.exists()
+
+    def test_offline_activation_json_output(self, temp_home):
+        owner, name = "mempalace", "mempalace"
+        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit = _make_runtime_unit(owner, name)
+
+        result = activate(unit, digest, gen_dir, skip_probes=True)
+        j = activation_to_json(result)
+
+        assert j["unit_id"] == f"{owner}/{name}"
+        assert j["generation_digest"] == digest
+        assert j["activated"] is True
+        assert j["previous_digest"] is None
