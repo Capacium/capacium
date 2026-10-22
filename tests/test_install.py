@@ -596,7 +596,7 @@ class TestFrameworkListOutput:
         )
 
         from capacium.commands.list_capabilities import _print_capabilities
-        _print_capabilities([cap], "")
+        _print_capabilities([cap], "", details=True)
         out = capsys.readouterr().out
         assert "claude-code, opencode, gemini-cli" in out
 

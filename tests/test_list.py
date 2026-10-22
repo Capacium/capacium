@@ -116,3 +116,46 @@ def test_list_json_keeps_existing_keys(tmp_home, capsys):
         "previous_identities",
     ):
         assert key in entry, f"cap list --json dropped existing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Criterion 2: compact table output
+# ---------------------------------------------------------------------------
+
+def test_compact_table_shows_coordinate_version_harnesses_health(
+    tmp_home, capsys, monkeypatch
+):
+    """cap list defaults to a compact table with coordinate, version,
+    verified harnesses and one stable health marker."""
+    _installed_registry(tmp_home, ["opencode"])
+    _no_harness_dirs(monkeypatch)
+
+    list_capabilities()
+    out = capsys.readouterr().out
+
+    assert "Coordinate" in out
+    assert "Version" in out
+    assert "Harnesses" in out
+    assert "Health" in out
+    assert "acme/state-cap" in out
+    assert "1.0.0" in out
+
+
+def test_compact_table_health_unverified(tmp_home, capsys, monkeypatch):
+    """Capabilities with no verified harnesses show unverified marker."""
+    _installed_registry(tmp_home, [])
+    _no_harness_dirs(monkeypatch)
+
+    list_capabilities()
+    out = capsys.readouterr().out
+    assert "unverified" in out
+
+
+def test_details_flag_shows_detailed_output(tmp_home, capsys, monkeypatch):
+    """--details flag shows per-adapter status, not the compact table."""
+    _installed_registry(tmp_home, ["opencode"])
+    _no_harness_dirs(monkeypatch)
+
+    list_capabilities(details=True)
+    out = capsys.readouterr().out
+    assert "Frameworks:" in out or "fingerprint" in out

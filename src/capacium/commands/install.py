@@ -659,6 +659,7 @@ def install_capability(
             storage=storage,
             github_token=github_token,
             registry_url=registry_url,
+            json_output=json_output,
         )
         if source_dir is None and sub_skill_repo:
             resolved = _resolve_source(
@@ -2304,6 +2305,7 @@ def _fetch_from_registry(
     storage: StorageManager,
     github_token: Optional[str] = None,
     registry_url: Optional[str] = None,
+    json_output: bool = False,
 ) -> tuple[Optional[Path], Optional[str]]:
     """Fetch a capability from the configured Exchange registry.
 
@@ -2319,22 +2321,25 @@ def _fetch_from_registry(
     try:
         remote = client.get_detail(f"{owner}/{cap_name}", registry_url=registry_url)
     except Exception as e:
-        msg = str(e).lower()
-        if "404" in msg or "not found" in msg:
-            print(f"  Capability '{cap_id}' not found in registry.")
-            print("  Publish it first via: cap registry publish")
-        else:
-            print(f"  Registry unavailable: {e}")
-            print("  Use --source to install from a local path, or --offline to skip network calls.")
+        if not json_output:
+            msg = str(e).lower()
+            if "404" in msg or "not found" in msg:
+                print(f"  Capability '{cap_id}' not found in registry.")
+                print("  Publish it first via: cap registry publish")
+            else:
+                print(f"  Registry unavailable: {e}")
+                print("  Use --source to install from a local path, or --offline to skip network calls.")
         return None, None
 
     if remote is None:
-        print(f"  Capability '{cap_id}' not found in registry.")
+        if not json_output:
+            print(f"  Capability '{cap_id}' not found in registry.")
         return None, None
 
     repository = remote.repository
     if not repository:
-        print(f"  No source repository for {cap_id}@{remote.version}")
+        if not json_output:
+            print(f"  No source repository for {cap_id}@{remote.version}")
         return None, None
 
     floating_version = version_spec in ("latest", "stable", "")
@@ -2346,7 +2351,8 @@ def _fetch_from_registry(
     if not floating_version:
         cache_dir = storage.get_package_dir(cap_name, best_version, owner=owner)
         if cache_dir.exists() and (cache_dir / "capability.yaml").exists():
-            print(f"  Using cached {cap_id}@{best_version}")
+            if not json_output:
+                print(f"  Using cached {cap_id}@{best_version}")
             return cache_dir, repository
         # CAP-REC-001 R8 site (install.py:1636): a stale cache entry without a
         # manifest is cleared before re-fetch. It cannot consult the live-linked
