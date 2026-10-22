@@ -1187,6 +1187,67 @@ def install_capability(
     else:
         print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
 
+    # ── Build + activate runtime generation (CAP117-ACTIVATE-011) ──
+    # If the capability requires a RuntimeUnit, build an isolated
+    # generation and atomically activate it after the committed install.
+    from ..runtimes import (
+        RuntimeUnit,
+        SourceLock,
+        SourceType,
+    )
+    from .exec import build_and_activate
+
+    mcp_section = getattr(manifest, "mcp", None)
+    mcp_command = mcp_section.get("command") if isinstance(mcp_section, dict) else None
+    mcp_args = mcp_section.get("args") if isinstance(mcp_section, dict) else None
+    if isinstance(mcp_args, list):
+        mcp_args = [str(a) for a in mcp_args]
+    else:
+        mcp_args = None
+
+    required_runtimes = infer_required_runtimes(manifest)
+    if RuntimeUnit.needed_for(
+        required_runtimes,
+        mcp_command=mcp_command,
+    ):
+        try:
+            unit = RuntimeUnit.from_manifest(
+                owner=owner,
+                name=cap_name,
+                version=version,
+                runtimes=required_runtimes,
+                mcp_command=mcp_command,
+                mcp_args=mcp_args,
+            )
+            entrypoints_raw: Dict[str, Tuple[str, ...]] = {}
+            for k, v in unit.entrypoints.items():
+                entrypoints_raw[k] = tuple(v.split())
+            source_lock = SourceLock(
+                source_url=f"capacium://{cap_id}@{version}",
+                digest=fingerprint,
+                source_type=SourceType.VERIFIED_LOCAL_CACHE,
+                entrypoints=entrypoints_raw,
+            )
+            build_and_activate(
+                unit, source_lock,
+                probe_timeout=10.0,
+                json_output=json_output,
+                source_dir=str(package_dir) if package_dir else None,
+            )
+        except Exception as exc:
+            # Build/activation failure does not roll back the install;
+            # the capability is installed but not activated.
+            if json_output:
+                print(_json.dumps({
+                    "operation": "activate",
+                    "cap_id": cap_id,
+                    "version": version,
+                    "status": "activation_skipped",
+                    "error": str(exc),
+                }))
+            else:
+                print(f"  Note: runtime activation skipped — {exc}")
+
     # Install consent binds the exact manifest, source revision and artifact
     # digests the user just accepted, on top of the record the source already
     # carries. Only the install_consent axis changes; a capability whose

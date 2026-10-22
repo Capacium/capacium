@@ -355,6 +355,36 @@ def main():
     runtimes_sub = runtimes_parser.add_subparsers(
         dest="runtimes_command", help="Runtime subcommand"
     )
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execute an installed capability entrypoint (no build, no mutation)",
+    )
+    exec_parser.add_argument("capability", help="Capability specification (owner/name)")
+    exec_parser.add_argument("args", nargs=argparse.REMAINDER,
+                             help="Arguments forwarded to the entrypoint")
+    exec_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="MCP stdio mode: protocol bytes on stdout only, diagnostics on stderr",
+    )
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show separated package, runtime, binding and process status",
+    )
+    status_parser.add_argument("capability", help="Capability specification (owner/name)")
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output status as stable JSON",
+    )
+
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Roll back a runtime generation to the previous verified generation",
+    )
+    rollback_parser.add_argument("capability", help="Capability specification (owner/name)")
+
     runtimes_sub.add_parser("list", help="List known runtimes and their detection state")
     runtimes_install_parser = runtimes_sub.add_parser(
         "install",
@@ -1046,6 +1076,18 @@ def main():
             else:
                 mcp_parser.print_help()
                 sys.exit(1)
+
+        elif args.command == "exec":
+            from .commands.exec import handle_exec
+            sys.exit(handle_exec(args))
+
+        elif args.command == "status":
+            from .commands.exec import handle_status
+            sys.exit(handle_status(args))
+
+        elif args.command == "rollback":
+            from .commands.exec import handle_rollback
+            sys.exit(handle_rollback(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management
