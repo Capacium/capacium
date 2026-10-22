@@ -355,6 +355,14 @@ def main():
     runtimes_sub = runtimes_parser.add_subparsers(
         dest="runtimes_command", help="Runtime subcommand"
     )
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execute an installed capability entrypoint (no build, no mutation)",
+    )
+    exec_parser.add_argument("capability", help="Capability specification (owner/name)")
+    exec_parser.add_argument("args", nargs=argparse.REMAINDER,
+                             help="Arguments forwarded to the entrypoint")
+
     runtimes_sub.add_parser("list", help="List known runtimes and their detection state")
     runtimes_install_parser = runtimes_sub.add_parser(
         "install",
@@ -1046,6 +1054,10 @@ def main():
             else:
                 mcp_parser.print_help()
                 sys.exit(1)
+
+        elif args.command == "exec":
+            from .commands.exec import handle_exec
+            sys.exit(handle_exec(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management
