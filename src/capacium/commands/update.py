@@ -1,3 +1,4 @@
+import json as _json_mod
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,125 @@ from ..commands.install import (
 )
 from .hold import get_hold
 from ._resolve import resolve_cap_id
+from ._journal import (
+    _make_journal_path, _write_journal, _delete_journal,
+    _serialize_cap, _encode_file_content, recover_orphaned_journals,
+)
+
+
+class _UpdateJournal:
+    """Rollback journal for transactional update (CAP117-TRANSACT-004).
+
+    Snapshots adapter config files and the prior registry row before
+    any mutation. Persisted to disk so orphan recovery after a crash
+    or signal can roll back incomplete operations.
+    """
+
+    def __init__(self, cap_id: str, version: str):
+        self.cap_id = cap_id
+        self.version = version
+        self._files: dict = {}
+        self._prior_cap = None
+        self._journal_path: Optional[Path] = None
+
+    def snapshot_adapter_surfaces(self, cap, manifest) -> None:
+        """Record adapter config files and package-dir metadata that
+        update may touch.
+
+        Only snapshot config files for frameworks this capability actually
+        targets. Foreign harness configs (and their secrets) must never
+        enter the transaction journal (CAP117-TRANSACT-004 criterion 6).
+
+        Also snapshots .capacium-meta.json and .cap-meta.json inside the
+        install path — the adapter and StorageManager.write_meta may
+        create or rewrite these during update.
+        """
+        frameworks = _reconcile_frameworks(cap, manifest)
+        for fw_name in set(frameworks):
+            try:
+                adapter = get_adapter(fw_name)
+            except Exception:
+                continue
+            config_path = getattr(adapter, "config_path", None)
+            if config_path is not None:
+                path = Path(config_path)
+                if path not in self._files:
+                    self._files[path] = _encode_file_content(path)
+
+        # Snapshot metadata files inside the install path — the adapter
+        # writes .capacium-meta.json and StorageManager.write_meta writes
+        # .cap-meta.json during update.
+        if cap.install_path is not None and cap.install_path.exists():
+            for meta_name in (".capacium-meta.json", ".cap-meta.json"):
+                meta_path = cap.install_path / meta_name
+                if meta_path not in self._files:
+                    self._files[meta_path] = _encode_file_content(meta_path)
+
+    def set_prior_cap(self, cap) -> None:
+        """Record the pre-update registry row so it can be restored.
+
+        Deep-copies the capability so later mutations to the live object
+        (e.g. ``cap.fingerprint = new_fp``) do not alias into the journal
+        snapshot (CAP117-TRANSACT-004 criterion 2 — live-object aliasing
+        would restore the post-mutation fingerprint on rollback).
+        """
+        import copy
+        self._prior_cap = copy.deepcopy(cap)
+
+    def persist(self) -> Path:
+        """Write the journal to disk before the first mutation."""
+        self._journal_path = _make_journal_path(
+            self.cap_id, self.version, "update"
+        )
+        _write_journal(self._journal_path, self._to_disk_data())
+        return self._journal_path
+
+    def _to_disk_data(self) -> dict:
+        """Build a complete serializable snapshot for the durable journal."""
+        return {
+            "cap_id": self.cap_id,
+            "version": self.version,
+            "files": {str(k): v for k, v in self._files.items()},
+            "prior_cap": _serialize_cap(self._prior_cap),
+            "committed": False,
+        }
+
+    def _flush(self) -> None:
+        """Re-persist the journal after a mutation so the durable record
+        always contains the complete set of operations performed so far."""
+        if self._journal_path is not None:
+            _write_journal(self._journal_path, self._to_disk_data())
+
+    def restore(self) -> None:
+        """Roll back adapter config files and the registry row."""
+        registry = Registry()
+
+        # 1. Restore registry row
+        if self._prior_cap is not None:
+            try:
+                registry.upsert_capability(self._prior_cap)
+            except Exception:
+                pass
+
+        # 2. Restore adapter config files
+        import base64
+        for path, content_b64 in self._files.items():
+            path = Path(path)
+            try:
+                if content_b64 is None:
+                    if path.is_file():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(base64.b64decode(content_b64))
+            except OSError:
+                pass
+
+    def commit(self) -> None:
+        """Delete the durable journal — the operation completed."""
+        if self._journal_path is not None:
+            _delete_journal(self._journal_path)
+            self._journal_path = None
 
 
 FINGERPRINT_EXCLUDES = [
@@ -95,7 +215,11 @@ def update_capability(
     cap_spec: str,
     force: bool = False,
     skip_runtime_check: bool = False,
+    json_output: bool = False,
 ) -> bool:
+    # Recover any orphaned journals before starting a new mutation.
+    recover_orphaned_journals()
+
     registry = Registry()
     spec = VersionManager.parse_version_spec(cap_spec)
     cap_id = resolve_cap_id(cap_spec)
@@ -104,11 +228,27 @@ def update_capability(
 
     cap = _resolve_installed_capability(registry, cap_spec, cap_id, cap_name, version_spec)
     if cap is None:
-        print(f"Capability {cap_id} not found. Use 'cap install' first.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "status": "error",
+                "error": f"capability '{cap_id}' not found",
+            }))
+        else:
+            print(f"Capability {cap_id} not found. Use 'cap install' first.")
         return False
 
     if not cap.install_path or not cap.install_path.exists():
-        print(f"Source path {cap.install_path} no longer exists. Use 'cap install' to re-install.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "status": "error",
+                "error": f"source path '{cap.install_path}' no longer exists",
+            }))
+        else:
+            print(f"Source path {cap.install_path} no longer exists. Use 'cap install' to re-install.")
         return False
 
     manifest = Manifest.detect_from_directory(cap.install_path)
@@ -120,13 +260,27 @@ def update_capability(
     # V8/UP-001: held packages (locally patched) are never updated.
     hold = get_hold(f"{cap.owner}/{cap.name}")
     if hold is not None and not force:
-        print(f"{cap_label} is held: {hold.get('reason') or 'locally patched'}")
-        print("  Skipping update. Release with 'cap unhold' or use --force.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "version": cap.version,
+                "status": "skipped",
+                "reason": "held",
+                "hold_reason": hold.get("reason") or "locally patched",
+            }))
+        else:
+            print(f"{cap_label} is held: {hold.get('reason') or 'locally patched'}")
+            print("  Skipping update. Release with 'cap unhold' or use --force.")
         return True
 
-    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
-    remove_git_metadata(cap.install_path)
-    ensure_execution_permissions(cap.install_path)
+    # ── Transaction journal (CAP117-TRANSACT-004 criterion 1) ─────────
+    # Persist the journal BEFORE the first mutation.  The fingerprint is
+    # computed from the pre-mutation tree so the journal snapshot reflects
+    # the state that rollback must restore.
+    journal = _UpdateJournal(cap_id, cap.version)
+    journal.snapshot_adapter_surfaces(cap, manifest)
+    journal.set_prior_cap(cap)
 
     current_fingerprint = compute_fingerprint(
         cap.install_path,
@@ -134,32 +288,119 @@ def update_capability(
     )
     fingerprint_drift = current_fingerprint != cap.fingerprint
 
-    if not fingerprint_drift and not force:
-        print(f"{cap_label} content is already up to date; reconciling adapters...")
-    else:
-        print(f"Updating {cap_label} from {cap.install_path}...")
+    journal.persist()
 
-    success = _reconcile_adapter_config(cap, manifest)
-    if not success:
+    from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
+    remove_git_metadata(cap.install_path)
+    ensure_execution_permissions(cap.install_path)
+
+    try:
+        if not fingerprint_drift and not force:
+            if not json_output:
+                print(f"{cap_label} content is already up to date; reconciling adapters...")
+        else:
+            if not json_output:
+                print(f"Updating {cap_label} from {cap.install_path}...")
+
+        success = _reconcile_adapter_config(cap, manifest)
+        if not success:
+            raise RuntimeError("Adapter reconciliation failed")
+        journal._flush()
+
+        frameworks = _reconcile_frameworks(cap, manifest)
+        cap.fingerprint = current_fingerprint
+        cap.kind = Kind(manifest.kind) if manifest.kind else cap.kind
+        cap.framework = frameworks[0]
+        cap.frameworks = frameworks
+        cap.installed_at = datetime.now()
+        # Write metadata first; if it fails the registry is not yet committed.
+        StorageManager.write_meta(cap)
+        journal._flush()
+        registry.update_capability(cap)
+        journal._flush()
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            if json_output:
+                prior = journal._prior_cap
+                print(_json_mod.dumps({
+                    "operation": "update",
+                    "cap_id": cap_id,
+                    "version": cap.version,
+                    "status": "rolled_back",
+                    "error": str(exc),
+                    "reverted": {
+                        "changed": [str(k) for k in journal._files],
+                        "reused": [
+                            {
+                                "cap_id": f"{prior.owner}/{prior.name}",
+                                "version": prior.version,
+                                "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                            }
+                        ] if prior else [],
+                        "files_restored": len(journal._files),
+                        "registry_restored": prior is not None,
+                    },
+                }))
+            journal.restore()
+            raise
+        if json_output:
+            prior = journal._prior_cap
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "version": cap.version,
+                "status": "rolled_back",
+                "error": str(exc),
+                "reverted": {
+                    "changed": [str(k) for k in journal._files],
+                    "reused": [
+                        {
+                            "cap_id": f"{prior.owner}/{prior.name}",
+                            "version": prior.version,
+                            "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                        }
+                    ] if prior else [],
+                    "files_restored": len(journal._files),
+                    "registry_restored": prior is not None,
+                },
+            }))
+        else:
+            print(f"Update of {cap_label} failed: {exc}")
+            print("  Rolling back — all changes restored.")
+        journal.restore()
         return False
 
-    frameworks = _reconcile_frameworks(cap, manifest)
-    cap.fingerprint = current_fingerprint
-    cap.kind = Kind(manifest.kind) if manifest.kind else cap.kind
-    cap.framework = frameworks[0]
-    cap.frameworks = frameworks
-    cap.installed_at = datetime.now()
-    registry.update_capability(cap)
-    StorageManager.write_meta(cap)
-
-    print(f"Updated {cap_label}")
+    journal.commit()
+    if json_output:
+        prior = journal._prior_cap
+        print(_json_mod.dumps({
+            "operation": "update",
+            "cap_id": cap_id,
+            "version": cap.version,
+            "status": "applied",
+            "fingerprint": current_fingerprint[:16],
+            "applied": {
+                "changed": [str(k) for k in journal._files],
+                "registry_upserted": True,
+                "reused": [
+                    {
+                        "cap_id": f"{prior.owner}/{prior.name}",
+                        "version": prior.version,
+                        "fingerprint": prior.fingerprint[:16] if prior.fingerprint else None,
+                    }
+                ] if prior else [],
+            },
+        }))
+    else:
+        print(f"Updated {cap_label}")
 
     if version_spec in ("latest", "stable"):
         if fingerprint_drift and not force:
             # V8: local modifications would be wiped by a force-reinstall.
-            print("  Local modifications detected (fingerprint drift).")
-            print("  Skipping newer-version fetch — keep the patch with 'cap hold'")
-            print("  or overwrite explicitly with 'cap update --force'.")
+            if not json_output:
+                print("  Local modifications detected (fingerprint drift).")
+                print("  Skipping newer-version fetch — keep the patch with 'cap hold'")
+                print("  or overwrite explicitly with 'cap update --force'.")
         else:
             _check_for_newer_version(cap_id, cap.version, cap.source_url)
 
