@@ -335,9 +335,10 @@ def remove_capability(
 
     if cascade and dependents:
         dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
-        print(f"  Cascade plan: also removing {len(dep_ids)} dependent(s):")
-        for did in dep_ids:
-            print(f"    - {did}")
+        if not json_output:
+            print(f"  Cascade plan: also removing {len(dep_ids)} dependent(s):")
+            for did in dep_ids:
+                print(f"    - {did}")
 
     # Version-precise removal (CAP-REC-D1): a harness link points at exactly
     # one version directory. Deleting that directory orphans the harness, so
@@ -465,8 +466,9 @@ def remove_capability(
             snapshot.restore()
             raise
         snapshot.restore()
-        print(f"Remove of {bare_id}@{version} failed: {exc}")
-        print("  All changes rolled back — state restored.")
+        if not json_output:
+            print(f"Remove of {bare_id}@{version} failed: {exc}")
+            print("  All changes rolled back — state restored.")
         if json_output:
             print(_json_mod.dumps({
                 "operation": "remove",

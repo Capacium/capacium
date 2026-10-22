@@ -600,7 +600,7 @@ def main():
                 project=getattr(args, "project", None),
                 json_output=getattr(args, "json", False),
             )
-            if success:
+            if success and not getattr(args, "json", False):
                 from .commands.reconcile import show_reconcile_summary
                 show_reconcile_summary()
             sys.exit(0 if success else 1)

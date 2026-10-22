@@ -362,13 +362,13 @@ def install_capability(
                 if json_output:
                     print(_json.dumps({
                         "operation": "install",
-                        "source": source_raw,
+                        "cap_id": cap_spec,
                         "status": "error",
                         "error": str(exc),
                     }))
                 else:
                     print(f"Error: {exc}")
-                return False
+                raise
 
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
