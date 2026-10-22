@@ -34,6 +34,7 @@ def framework_skills_dirs() -> Dict[str, Path]:
         "trae": Path.home() / ".trae" / "skills",
         "nanobot": Path.home() / ".nanobot" / "workspace" / "skills",
         "kiro": Path.home() / ".kiro" / "skills",
+        "openclaude": Path.home() / ".openclaude" / "skills",
     }
     project_root = get_project_root()
     if project_root is not None:
@@ -115,6 +116,10 @@ def _detect_cursor() -> bool:
 
 def _detect_openclaw() -> bool:
     return (Path.home() / ".openclaw").is_dir()
+
+
+def _detect_openclaude() -> bool:
+    return (Path.home() / ".openclaude").is_dir()
 
 
 def _detect_gemini_cli() -> bool:
@@ -212,6 +217,7 @@ FRAMEWORK_DETECTORS: Dict[str, callable] = {
     "trae": _detect_trae,
     "nanobot": _detect_nanobot,
     "kiro": _detect_kiro,
+    "openclaude": _detect_openclaude,
 }
 
 
