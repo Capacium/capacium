@@ -169,6 +169,18 @@ class McpConfigPatcher:
         cls.prune_backups(config_path, keep_last=keep_last)
         return backup_path
 
+    @classmethod
+    def restore_backup(cls, config_path: Path, backup_path: Path) -> bool:
+        """Restore a config file from a backup and remove the backup.
+
+        Returns True on success, False if the backup does not exist.
+        """
+        if not backup_path.exists():
+            return False
+        shutil.copy2(backup_path, config_path)
+        backup_path.unlink()
+        return True
+
     @staticmethod
     def read_json(config_path: Path) -> dict:
         """Read and parse a JSON config file, returning empty dict if missing."""
@@ -288,17 +300,12 @@ class McpConfigPatcher:
         mcp_meta: Optional[Dict[str, Any]] = None,
         resolver=None,
     ) -> Dict[str, Any]:
-        """Build a standard MCP server entry from a capability's manifest metadata.
+        """Build a standard MCP server entry that invokes the stable cap exec surface.
 
-        Returns a dict like:
-            {
-                "command": "npx",
-                "args": ["-y", "my-mcp-server"],
-                "env": {}
-            }
-
-        Relative args paths are materialized to absolute paths pointing into
-        the installed package directory (source_dir).
+        Returns a ``cap exec <name> --mcp`` entry (or ``<python> -m capacium.cli
+        exec <name> --mcp`` when ``cap`` is not on PATH).  The host never invokes
+        a raw interpreter — all execution goes through the stable activation
+        surface (CAP117-ACTIVATE-011).
 
         Raises :class:`RuntimeUnavailableError` when the host lacks a runtime
         required by the manifest or the resulting command (set
@@ -315,66 +322,50 @@ class McpConfigPatcher:
                 "transport": transport,
             }
 
-        # stdio transport (default)
+        # Resolve the command that WOULD be used so we can validate runtimes
+        # before writing any host config.  The actual execution is deferred
+        # to cap exec — we only need the command name for the runtime check.
         command = meta.get("command", "")
-        args = list(meta.get("args", [])) if meta.get("args") else []
-        env = McpConfigPatcher.sanitize_env_block(meta.get("env", {}), cap_name)
-
-        # V10/STAB-004: prefer the binary built from the local package over
-        # any 'go run' form — especially 'go run ...@latest' network fetches.
         is_go_project = (source_dir / "go.mod").exists() or (package_root / "go.mod").exists()
         if command == "go" or (not command and is_go_project):
             binary = McpConfigPatcher._find_go_binary(source_dir, package_root, cap_name)
             if binary is not None:
                 command = str(binary)
-                args = []
-            elif command == "go" and any("@latest" in str(a) for a in args):
-                # No binary yet (e.g. pre-build path): run the LOCAL package,
-                # never the @latest remote module.
-                args = ["run", "."]
+            elif not command:
+                command = "go"
 
         if not command:
-            # Auto-detect: look for common entry points. go.mod wins over
-            # package.json — Go repos often ship docs tooling manifests, and a
-            # Go server configured as npx can never start (V5 regression).
             if is_go_project:
                 command = "go"
-                args = ["run", "."]
             elif (source_dir / "package.json").exists():
                 command = "npx"
-                args = ["-y", str(source_dir)]
             elif (source_dir / "pyproject.toml").exists():
                 command = "uvx"
-                args = [cap_name]
             elif (source_dir / "main.py").exists():
                 command = "python"
-                args = [str(source_dir / "main.py")]
             else:
                 command = str(source_dir / cap_name)
 
-        # BUG-005: Materialize relative args paths to absolute paths
-        args = McpConfigPatcher._materialize_args_paths(args, source_dir)
+        # Validate runtimes BEFORE returning the cap exec entry — a missing
+        # runtime must abort before any host config is written.
+        temp_entry: Dict[str, Any] = {"command": command}
+        McpConfigPatcher.validate_entry_runtimes(temp_entry, package_root, resolver=resolver)
 
-        # For uvx packages with --from, prefer the installed local package.
-        if command == "uvx" and "--from" in args:
-            from_idx = args.index("--from")
-            if from_idx + 1 < len(args):
-                pkg_spec = args[from_idx + 1]
-                if not pkg_spec.startswith("/"):
-                    extras_match = re.match(r"^[^\[\s]+(\[[^\]]+\])?", pkg_spec)
-                    extras = extras_match.group(1) if extras_match and extras_match.group(1) else ""
-                    args[from_idx + 1] = f"{source_dir}{extras}"
-
-        entry: Dict[str, Any] = {"command": command}
-        if args:
-            entry["args"] = args
-        if env:
-            entry["env"] = env
-        cwd_root = McpConfigPatcher._resolve_cwd(source_dir)
-        if cwd_root is not None:
-            entry["cwd"] = cwd_root
-        McpConfigPatcher.validate_entry_runtimes(entry, package_root, resolver=resolver)
-        return entry
+        # Build the stable cap exec entry — the host invokes cap exec, not
+        # a raw interpreter.
+        import shutil as _shutil
+        import sys as _sys
+        cap_exe = _shutil.which("cap")
+        if cap_exe:
+            return {
+                "command": cap_exe,
+                "args": ["exec", cap_name, "--mcp"],
+            }
+        else:
+            return {
+                "command": _sys.executable,
+                "args": ["-m", "capacium.cli", "exec", cap_name, "--mcp"],
+            }
 
     @staticmethod
     def sanitize_env_block(env: Dict[str, Any], cap_name: str = "") -> Dict[str, str]:
@@ -545,18 +536,39 @@ class McpConfigPatcher:
         """
         entry = cls.build_mcp_entry(cap_name, source_dir, mcp_meta, resolver=resolver)
         entry["_capacium_owner"] = f"capacium:{cap_name}:mcp-server"
-        cls.backup(config_path)
+        backup_path = cls.backup(config_path)
         config = cls.read_json(config_path)
         servers = config.setdefault(mcp_section_key, {})
+        # Only remove entries that carry our ownership marker — never
+        # delete foreign entries by key or suffix matching.
         for key in list(servers):
-            if (
-                key == cap_name
-                or key.endswith("/" + cap_name)
-                or key.endswith("-" + cap_name)
-            ):
+            entry_data = servers.get(key)
+            if not isinstance(entry_data, dict):
+                continue
+            marker = entry_data.get("_capacium_owner", "")
+            if marker.startswith(f"capacium:{cap_name}:"):
                 del servers[key]
-        servers[server_key] = entry
-        cls.write_json(config_path, config)
+        # If the target key is occupied by a foreign entry (no marker
+        # or a different owner), use a suffixed key to avoid clobbering.
+        actual_key = server_key
+        if server_key in servers:
+            existing = servers.get(server_key)
+            if isinstance(existing, dict):
+                existing_marker = existing.get("_capacium_owner", "")
+                if not existing_marker.startswith(f"capacium:{cap_name}:"):
+                    actual_key = f"{server_key}-capacium"
+        servers[actual_key] = entry
+        try:
+            cls.write_json(config_path, config)
+            # Post-write validation: re-read and verify the entry was written
+            verify = cls.read_json(config_path)
+            verify_servers = verify.get(mcp_section_key, {})
+            if actual_key not in verify_servers:
+                raise RuntimeError("post-write validation failed: entry not in config")
+        except Exception:
+            if backup_path is not None:
+                cls.restore_backup(config_path, backup_path)
+            raise
         return True
 
     @classmethod
@@ -566,13 +578,29 @@ class McpConfigPatcher:
         server_key: str,
         mcp_section_key: str,
     ) -> bool:
-        """Remove an MCP server entry from a JSON config."""
+        """Remove an MCP server entry ONLY if it carries a Capacium marker.
+
+        Checks both the exact *server_key* and the suffixed
+        ``server_key-capacium`` variant (used when the exact key was
+        occupied by a foreign entry during register).
+        """
         config = cls.read_json(config_path)
         servers = config.get(mcp_section_key, {})
-        if server_key in servers:
+        keys_to_try = [server_key, f"{server_key}-capacium"]
+        for key in keys_to_try:
+            if key not in servers:
+                continue
+            entry_data = servers.get(key)
+            if not isinstance(entry_data, dict):
+                continue
+            marker = entry_data.get("_capacium_owner", "")
+            if not marker.startswith("capacium:"):
+                # Foreign entry — never delete
+                continue
             cls.backup(config_path)
-            del servers[server_key]
+            del servers[key]
             cls.write_json(config_path, config)
+            return True
         return True
 
     @classmethod
@@ -589,11 +617,11 @@ class McpConfigPatcher:
             return True
         keys_to_remove = []
         for key in list(servers.keys()):
-            if (
-                key == cap_name
-                or key.endswith("/" + cap_name)
-                or key.endswith("-" + cap_name)
-            ):
+            entry_data = servers.get(key)
+            if not isinstance(entry_data, dict):
+                continue
+            marker = entry_data.get("_capacium_owner", "")
+            if marker.startswith(f"capacium:{cap_name}:"):
                 keys_to_remove.append(key)
         if keys_to_remove:
             cls.backup(config_path)
@@ -609,6 +637,15 @@ class McpConfigPatcher:
         server_key: str,
         mcp_section_key: str,
     ) -> bool:
-        """Check if an MCP server entry exists in a JSON config."""
+        """Check if a Capacium-owned MCP server entry exists in a JSON config.
+
+        Checks both the exact *server_key* and the suffixed variant used
+        when the exact key is occupied by a foreign entry.
+        """
         config = cls.read_json(config_path)
-        return server_key in config.get(mcp_section_key, {})
+        servers = config.get(mcp_section_key, {})
+        for key in (server_key, f"{server_key}-capacium"):
+            entry = servers.get(key)
+            if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                return True
+        return False

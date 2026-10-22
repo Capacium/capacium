@@ -169,7 +169,14 @@ class ClaudeCodeAdapter(FrameworkAdapter):
             config = McpConfigPatcher.read_json(self.config_path)
             server_key = McpConfigPatcher.build_server_key(capability_id, owner)
             servers = config.get("mcpServers", {})
-            current = "present" if server_key in servers else "missing"
+            # Check both exact key and suffixed variant (used when foreign
+            # entry occupies the exact key)
+            current = "missing"
+            for key in (server_key, f"{server_key}-capacium"):
+                entry = servers.get(key)
+                if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                    current = "present"
+                    break
             if operation == "register":
                 target = "present"
                 if current != target:
@@ -257,11 +264,19 @@ class ClaudeCodeAdapter(FrameworkAdapter):
                 plan=plan,
             )
         elif kind == "mcp-server":
-            return HostOperationResult(
-                framework="claude-code", operation="register",
-                success=self.install_mcp_server(capability_id, "", source_dir, owner),
-                plan=plan,
-            )
+            # install_mcp_server → inject_json_mcp_server handles its own
+            # backup/restore.  Surface any error truthfully.
+            try:
+                success = self.install_mcp_server(capability_id, "", source_dir, owner)
+                return HostOperationResult(
+                    framework="claude-code", operation="register",
+                    success=success, plan=plan,
+                )
+            except Exception as e:
+                return HostOperationResult(
+                    framework="claude-code", operation="register",
+                    success=False, plan=plan, error=str(e),
+                )
         return HostOperationResult(
             framework="claude-code", operation="register",
             success=False, plan=plan,

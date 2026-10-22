@@ -1,7 +1,5 @@
 import json
 
-import pytest
-from pathlib import Path
 from capacium.commands.info import (
     _resolve_from_local_registry,
     _fingerprint_status,

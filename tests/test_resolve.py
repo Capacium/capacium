@@ -1581,7 +1581,7 @@ class TestFixB_C5_HarnessInheritance:
         # bob/util (required). It MUST be marked required.
         shared = plan.nodes["dan/shared"]
         assert shared.optional is False, \
-            f"dan/shared reached by required dep should not be optional"
+            "dan/shared reached by required dep should not be optional"
 
 
 class TestFixB_C6_PlatformAndPaths:

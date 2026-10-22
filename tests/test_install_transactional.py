@@ -925,7 +925,6 @@ class TestDurableJournal:
         """After install succeeds, the journal file on disk must contain
         the new_paths and prior_cap, and committed=True after commit."""
         from pathlib import Path as _Path
-        import json as _json
 
         result = install_capability(
             "tx-install-skill",
@@ -1038,7 +1037,6 @@ class TestDurableJournal:
         """An uncommitted journal left on disk after a crash is recovered
         by the next command: state is rolled back and the journal is deleted."""
         from pathlib import Path as _Path
-        import json as _json
         from capacium.registry import Registry
 
         # Simulate a crash: install up to package dir creation, then
@@ -1104,8 +1102,6 @@ class TestDurableJournal:
     ):
         """When recovery verification fails, the journal is kept for
         retry/inspection rather than being silently deleted."""
-        from pathlib import Path as _Path
-        import json as _json
         from capacium.commands._journal import (
             _make_journal_path, _write_journal,
             recover_orphaned_journals,
@@ -1137,7 +1133,7 @@ class TestDurableJournal:
 
         # Journal must remain — verification failed, so it was NOT deleted.
         assert journal_path.exists(), (
-            f"Journal should remain after failed recovery verification"
+            "Journal should remain after failed recovery verification"
         )
         # recovered list should be empty (nothing was successfully recovered)
         assert "global/ghost-skill" not in recovered

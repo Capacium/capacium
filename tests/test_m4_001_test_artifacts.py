@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from capacium.commands.clean import clean_test_artifacts, is_temp_path, is_test_fingerprint
+from capacium.commands.clean import clean_test_artifacts
 from capacium.commands.list_capabilities import (
     _has_unknown_or_invalid_status,
     _is_invalid_or_test_fingerprint,

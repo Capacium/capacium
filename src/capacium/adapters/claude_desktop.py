@@ -188,7 +188,12 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
             config = McpConfigPatcher.read_json(self.config_path)
             server_key = McpConfigPatcher.build_server_key(capability_id, owner)
             servers = config.get("mcpServers", {})
-            current = "present" if server_key in servers else "missing"
+            current = "missing"
+            for key in (server_key, f"{server_key}-capacium"):
+                entry = servers.get(key)
+                if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                    current = "present"
+                    break
             target = "present" if operation == "register" else "absent"
             if current != target:
                 will_modify = True
@@ -260,7 +265,7 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
 
         if kind == "skill":
             from .mcp_config_patcher import McpConfigPatcher
-            McpConfigPatcher.backup(self.config_path)
+            backup_path = McpConfigPatcher.backup(self.config_path)
             try:
                 success = self.install_skill(capability_id, "", source_dir, owner)
                 # Post-write validation: verify config is still valid JSON
@@ -269,15 +274,20 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
                 return HostOperationResult(
                     framework="claude-desktop", operation="register",
                     success=success, plan=plan,
+                    backup_path=str(backup_path) if backup_path else None,
                 )
             except Exception as e:
+                if backup_path is not None:
+                    McpConfigPatcher.restore_backup(self.config_path, backup_path)
                 return HostOperationResult(
                     framework="claude-desktop", operation="register",
                     success=False, plan=plan, error=str(e),
+                    rollback_applied=(backup_path is not None),
+                    backup_path=str(backup_path) if backup_path else None,
                 )
         elif kind == "mcp-server":
-            from .mcp_config_patcher import McpConfigPatcher
-            McpConfigPatcher.backup(self.config_path)
+            # install_mcp_server → inject_json_mcp_server handles its own
+            # backup/restore.  Surface any error truthfully.
             try:
                 success = self.install_mcp_server(capability_id, "", source_dir, owner)
                 if self.config_path.exists():

@@ -6,12 +6,7 @@ Criterion 7: Rollback generations are retained and basic GC deletes only
 """
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-from pathlib import Path
 
-import pytest
 
 from capacium.runtimes import (
     GenerationLease,

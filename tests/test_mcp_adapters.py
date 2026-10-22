@@ -101,12 +101,13 @@ class TestMcpConfigPatcherToml:
 
 class TestBuildMcpEntry:
     def test_stdio_with_explicit_command(self, tmp_path):
+        """After Fix A: all stdio entries use cap exec surface."""
         entry = McpConfigPatcher.build_mcp_entry(
             "test-server", tmp_path,
             {"command": "npx", "args": ["-y", "test-server"], "transport": "stdio"}
         )
-        assert entry["command"] == "npx"
-        assert entry["args"] == ["-y", "test-server"]
+        assert "command" in entry
+        assert entry["args"] == ["exec", "test-server", "--mcp"]
 
     def test_sse_transport(self, tmp_path):
         entry = McpConfigPatcher.build_mcp_entry(
@@ -117,21 +118,23 @@ class TestBuildMcpEntry:
         assert entry["transport"] == "sse"
 
     def test_auto_detect_package_json(self, tmp_path):
+        """Auto-detection still runs (runtime gate), but output is cap exec."""
         (tmp_path / "package.json").write_text("{}")
         entry = McpConfigPatcher.build_mcp_entry("my-server", tmp_path, {})
-        assert entry["command"] == "npx"
+        assert entry["args"] == ["exec", "my-server", "--mcp"]
 
     def test_auto_detect_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[build-system]")
         entry = McpConfigPatcher.build_mcp_entry("my-server", tmp_path, {})
-        assert entry["command"] == "uvx"
+        assert entry["args"] == ["exec", "my-server", "--mcp"]
 
     def test_auto_detect_main_py(self, tmp_path):
         (tmp_path / "main.py").write_text("print('hello')")
         entry = McpConfigPatcher.build_mcp_entry("my-server", tmp_path, {})
-        assert entry["command"] == "python"
+        assert entry["args"] == ["exec", "my-server", "--mcp"]
 
     def test_uvx_from_uses_local_source_with_extras(self, tmp_path):
+        """After Fix A: cap exec surface, no --from rewriting."""
         entry = McpConfigPatcher.build_mcp_entry(
             "perplexity-ai",
             tmp_path,
@@ -144,14 +147,10 @@ class TestBuildMcpEntry:
                 ],
             },
         )
-
-        assert entry["args"] == [
-            "--from",
-            f"{tmp_path}[mcp]",
-            "perplexity-mcp",
-        ]
+        assert entry["args"] == ["exec", "perplexity-ai", "--mcp"]
 
     def test_entrypoint_directory_is_used_for_auto_detection(self, tmp_path):
+        """Entrypoint directory is still resolved for runtime gate, output is cap exec."""
         runtime_dir = tmp_path / "mcp-server"
         runtime_dir.mkdir()
         (runtime_dir / "package.json").write_text('{"name": "entrypoint-mcp"}')
@@ -165,18 +164,16 @@ class TestBuildMcpEntry:
         )
 
         entry = McpConfigPatcher.build_mcp_entry("entrypoint-mcp", tmp_path, {})
-
-        assert entry["command"] == "npx"
-        assert entry["args"] == ["-y", str(runtime_dir)]
-        assert "cwd" in entry
+        # Cap exec entry — no cwd or raw command
+        assert entry["args"] == ["exec", "entrypoint-mcp", "--mcp"]
 
     def test_cwd_is_set_in_stdio_entry(self, tmp_path):
+        """Cap exec entries do not include cwd — execution is delegated."""
         entry = McpConfigPatcher.build_mcp_entry(
             "test-server", tmp_path,
             {"command": "npx", "args": ["-y", "test-server"], "transport": "stdio"}
         )
-        assert "cwd" in entry
-        assert entry["cwd"] == str(tmp_path)
+        assert "cwd" not in entry
 
     def test_cwd_not_set_for_sse_transport(self, tmp_path):
         entry = McpConfigPatcher.build_mcp_entry(
@@ -186,8 +183,7 @@ class TestBuildMcpEntry:
         assert "cwd" not in entry
 
     def test_cwd_falls_back_to_parent_for_workspace_node_modules(self, tmp_path):
-        """When entrypoint is subdirectory with package.json but no node_modules,
-        and parent has hoisted node_modules, CWD resolves to parent."""
+        """Cap exec entries do not include cwd — execution is delegated."""
         sub = tmp_path / "mcp-server"
         sub.mkdir()
         (sub / "package.json").write_text('{"bin": {"mcp": "dist/cli.js"}}')
@@ -198,11 +194,10 @@ class TestBuildMcpEntry:
             "entrypoint: mcp-server\nmcp:\n  transport: stdio\n"
         )
         entry = McpConfigPatcher.build_mcp_entry("workspace-mcp", tmp_path, {})
-        assert "cwd" in entry
-        assert entry["cwd"] == str(tmp_path)
+        assert "cwd" not in entry
 
     def test_cwd_stays_at_entrypoint_when_node_modules_present(self, tmp_path):
-        """When subdirectory has its own node_modules, CWD stays there."""
+        """Cap exec entries do not include cwd — execution is delegated."""
         sub = tmp_path / "mcp-server"
         sub.mkdir()
         (sub / "package.json").write_text('{"bin": {"mcp": "dist/cli.js"}}')
@@ -212,7 +207,7 @@ class TestBuildMcpEntry:
             "entrypoint: mcp-server\nmcp:\n  transport: stdio\n"
         )
         entry = McpConfigPatcher.build_mcp_entry("self-contained", tmp_path, {})
-        assert entry["cwd"] == str(sub)
+        assert "cwd" not in entry
 
     def test_cwd_not_applied_for_sse_transport(self, tmp_path):
         """SSE transport entries do not include cwd."""
@@ -239,7 +234,8 @@ class TestInjectAndRemoveMcpServer:
         assert result is True
         data = json.loads(config.read_text())
         assert "test-mcp" in data["mcpServers"]
-        assert data["mcpServers"]["test-mcp"]["command"] == "echo"
+        # After Fix A, entries use cap exec, not raw interpreter
+        assert "_capacium_owner" in data["mcpServers"]["test-mcp"]
 
     def test_inject_preserves_existing_servers(self, tmp_path):
         config = tmp_path / "config.json"
@@ -261,6 +257,7 @@ class TestInjectAndRemoveMcpServer:
         assert "existing" in data["mcpServers"]
         assert data["mcpServers"]["existing"]["command"] == "keep-me"
         assert "new-mcp" in data["mcpServers"]
+        assert "_capacium_owner" in data["mcpServers"]["new-mcp"]
         assert data["otherConfig"] == "untouched"
 
     def test_inject_creates_backup(self, tmp_path):
@@ -275,10 +272,14 @@ class TestInjectAndRemoveMcpServer:
         assert len(backups) == 1
 
     def test_inject_replaces_legacy_server_keys(self, tmp_path):
+        """Inject replaces only Capacium-owned entries (marker-based)."""
         config = tmp_path / "config.json"
         config.write_text(json.dumps({
             "mcpServers": {
-                "perplexity-ai": {"command": "old"},
+                "perplexity-ai": {
+                    "command": "old",
+                    "_capacium_owner": "capacium:perplexity-ai:mcp-server",
+                },
                 "helallao/perplexity-ai": {"command": "older"},
             }
         }))
@@ -293,15 +294,24 @@ class TestInjectAndRemoveMcpServer:
         )
 
         servers = json.loads(config.read_text())["mcpServers"]
-        assert servers["helallao-perplexity-ai"]["command"] == "new"
-        assert "cwd" in servers["helallao-perplexity-ai"]
+        # Old Capacium-owned entry was replaced (marker matched)
+        # The "perplexity-ai" key is gone because it had our marker
+        # The foreign "helallao/perplexity-ai" survives because no marker
+        assert "helallao/perplexity-ai" in servers
+        assert servers["helallao/perplexity-ai"]["command"] == "older"
+        # Our new entry is at the target key with the cap exec entry
+        assert "helallao-perplexity-ai" in servers
+        assert "_capacium_owner" in servers["helallao-perplexity-ai"]
 
     def test_remove_mcp_server(self, tmp_path):
         config = tmp_path / "config.json"
         config.write_text(json.dumps({
             "mcpServers": {
                 "keep": {"command": "stay"},
-                "remove-me": {"command": "go"}
+                "remove-me": {
+                    "command": "go",
+                    "_capacium_owner": "capacium:remove-me:mcp-server",
+                },
             }
         }))
 
@@ -328,10 +338,20 @@ class TestInjectAndRemoveMcpServer:
 
     def test_exists_check(self, tmp_path):
         config = tmp_path / "config.json"
-        config.write_text(json.dumps({"mcpServers": {"present": {}}}))
+        config.write_text(json.dumps({
+            "mcpServers": {
+                "present": {"_capacium_owner": "capacium:present:mcp-server"},
+            }
+        }))
 
         assert McpConfigPatcher.mcp_server_exists_json(config, "present", "mcpServers") is True
         assert McpConfigPatcher.mcp_server_exists_json(config, "absent", "mcpServers") is False
+
+    def test_exists_check_rejects_unmarked_entry(self, tmp_path):
+        """An entry without _capacium_owner is NOT reported as existing."""
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({"mcpServers": {"foreign": {"command": "x"}}}))
+        assert McpConfigPatcher.mcp_server_exists_json(config, "foreign", "mcpServers") is False
 
 
 class TestFullRoundtrip:
@@ -522,7 +542,8 @@ class TestCursorAdapterMcp:
         data = json.loads(adapter.global_mcp_path.read_text())
         assert "mcpServers" in data
         assert "cursor-test" in data["mcpServers"]
-        assert data["mcpServers"]["cursor-test"]["command"] == "uvx"
+        # After Fix A: entry carries _capacium_owner marker
+        assert "_capacium_owner" in data["mcpServers"]["cursor-test"]
 
     def test_remove_clears_global_mcp(self, tmp_path, monkeypatch):
         from capacium.adapters.cursor import CursorAdapter
@@ -532,7 +553,7 @@ class TestCursorAdapterMcp:
         adapter.global_mcp_path = tmp_path / "global" / ".cursor" / "mcp.json"
         adapter.global_mcp_path.parent.mkdir(parents=True, exist_ok=True)
         adapter.global_mcp_path.write_text(
-            json.dumps({"mcpServers": {"x": {"command": "echo"}}})
+            json.dumps({"mcpServers": {"x": {"command": "echo", "_capacium_owner": "capacium:x:mcp-server"}}})
         )
 
         assert adapter.remove_mcp_server("x") is True
@@ -549,10 +570,10 @@ class TestCursorAdapterMcp:
         # Neither registered yet
         assert adapter.capability_exists("nope") is False
 
-        # Register via MCP only
+        # Register via MCP only — entry needs _capacium_owner marker
         adapter.global_mcp_path.parent.mkdir(parents=True, exist_ok=True)
         adapter.global_mcp_path.write_text(
-            json.dumps({"mcpServers": {"yep": {"command": "echo"}}})
+            json.dumps({"mcpServers": {"yep": {"command": "echo", "_capacium_owner": "capacium:yep:mcp-server"}}})
         )
         assert adapter.capability_exists("yep") is True
 
@@ -592,7 +613,8 @@ class TestContinueDevAdapterMcp:
         # New MCP entry alongside it
         assert "mcpServers" in data
         assert "continue-mcp" in data["mcpServers"]
-        assert data["mcpServers"]["continue-mcp"]["command"] == "node"
+        # After Fix A: entry carries _capacium_owner marker
+        assert "_capacium_owner" in data["mcpServers"]["continue-mcp"]
 
     def test_remove_only_clears_mcp_section(self, tmp_path):
         from capacium.adapters.continue_dev import ContinueDevAdapter
@@ -603,7 +625,8 @@ class TestContinueDevAdapterMcp:
         adapter.config_dir.mkdir(parents=True, exist_ok=True)
         adapter.config_path.write_text(json.dumps({
             "contextProviders": [{"name": "skill-a"}],
-            "mcpServers": {"server-a": {"command": "x"}, "server-b": {"command": "y"}},
+            "mcpServers": {"server-a": {"command": "x", "_capacium_owner": "capacium:server-a:mcp-server"},
+                           "server-b": {"command": "y"}},
         }))
 
         assert adapter.remove_mcp_server("server-a") is True
@@ -623,7 +646,7 @@ class TestContinueDevAdapterMcp:
         adapter.config_dir.mkdir(parents=True, exist_ok=True)
         adapter.config_path.write_text(json.dumps({
             "contextProviders": [{"name": "skill-a"}],
-            "mcpServers": {"mcp-a": {"command": "x"}},
+            "mcpServers": {"mcp-a": {"command": "x", "_capacium_owner": "capacium:mcp-a:mcp-server"}},
         }))
 
         assert adapter.capability_exists("skill-a") is True
@@ -664,12 +687,12 @@ class TestOpenCodeAdapterMcp:
 
         data = json.loads(config_path.read_text())
         assert data["mcp"]["icm"]["command"] == ["/opt/homebrew/bin/icm", "serve"]
-        assert data["mcp"]["mempalace"] == {
-            "type": "local",
-            "command": ["uvx", "mempalace-mcp"],
-            "enabled": True,
-        }
-        assert "mempalace" not in data.get("mcpServers", {})
+        # After Fix A: mempalace entry uses cap exec + carries _capacium_owner
+        assert data["mcp"]["mempalace"]["type"] == "local"
+        assert data["mcp"]["mempalace"]["enabled"] is True
+        assert data["mcp"]["mempalace"]["_capacium_owner"] == "capacium:mempalace:mcp-server"
+        # Foreign entry in mcpServers is preserved (marker-based — never delete by key)
+        assert "mempalace" in data.get("mcpServers", {})
 
     def test_capability_exists_checks_opencode_mcp_sections(self, tmp_home):
         from capacium.adapters.opencode import OpenCodeAdapter
@@ -677,8 +700,10 @@ class TestOpenCodeAdapterMcp:
         config_path = tmp_home / ".config" / "opencode" / "opencode.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps({
-            "mcp": {"mcp-a": {"type": "local", "command": ["echo"]}},
-            "mcpServers": {"legacy-a": {"command": "echo"}},
+            "mcp": {"mcp-a": {"type": "local", "command": ["echo"],
+                              "_capacium_owner": "capacium:mcp-a:mcp-server"}},
+            "mcpServers": {"legacy-a": {"command": "echo",
+                                        "_capacium_owner": "capacium:legacy-a:mcp-server"}},
         }))
 
         adapter = OpenCodeAdapter()
