@@ -168,10 +168,10 @@ class _InstallJournal:
         from ..adapters import get_adapter
         from ..framework_detector import harness_link_roots
 
-        config_backed = set(frameworks) | {
-            "claude-desktop", "codex", "gemini-cli", "antigravity", "opencode",
-        }
-        for fw_name in config_backed:
+        # Only snapshot config files for frameworks this install actually
+        # targets.  Foreign harness configs (and their secrets) must never
+        # enter the transaction journal (CAP117-TRANSACT-004 criterion 6).
+        for fw_name in set(frameworks):
             try:
                 adapter = get_adapter(fw_name)
             except Exception:
@@ -877,11 +877,18 @@ def install_capability(
     try:
         from ..adapters.base import ensure_package_dir
 
+        # Pre-compute the package path so we can journal the intent
+        # BEFORE the copytree.  A SIGKILL mid-copytree then knows the
+        # orphaned directory must be removed during recovery.
+        # Use get_package_path (no mkdir) so the journal entry exists
+        # before any filesystem mutation.
+        package_path = storage.get_package_path(cap_name, version, owner=owner)
+        journal.record_new_path(package_path)
+        journal._flush()
+
         package_dir = ensure_package_dir(
             storage, cap_name, version, source_dir, owner=owner,
         )
-        journal.record_new_path(package_dir)
-        journal._flush()
 
         manifest = Manifest.detect_from_directory(package_dir)
         errors = manifest.validate()

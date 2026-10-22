@@ -28,9 +28,14 @@ def _get_journal_dir() -> Path:
 # ── low-level persistence ────────────────────────────────────────────
 
 def _make_journal_path(cap_id: str, version: str, operation: str) -> Path:
-    """Create a unique journal file path."""
+    """Create a unique journal file path.
+
+    The journal directory is created with mode 0o700 so secrets contained
+    in journal snapshots are not world-readable (CAP117-TRANSACT-004
+    criterion 6).
+    """
     jdir = _get_journal_dir()
-    jdir.mkdir(parents=True, exist_ok=True)
+    jdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     safe_id = cap_id.replace("/", "_").replace("@", "_")
     return jdir / f"{ts}-{safe_id}-{operation}.json"

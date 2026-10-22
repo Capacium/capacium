@@ -44,12 +44,19 @@ class _UpdateJournal:
         self._journal_path: Optional[Path] = None
 
     def snapshot_adapter_surfaces(self, cap, manifest) -> None:
-        """Record adapter config files that update may touch."""
+        """Record adapter config files and package-dir metadata that
+        update may touch.
+
+        Only snapshot config files for frameworks this capability actually
+        targets. Foreign harness configs (and their secrets) must never
+        enter the transaction journal (CAP117-TRANSACT-004 criterion 6).
+
+        Also snapshots .capacium-meta.json and .cap-meta.json inside the
+        install path — the adapter and StorageManager.write_meta may
+        create or rewrite these during update.
+        """
         frameworks = _reconcile_frameworks(cap, manifest)
-        config_backed = set(frameworks) | {
-            "claude-desktop", "codex", "gemini-cli", "antigravity", "opencode",
-        }
-        for fw_name in config_backed:
+        for fw_name in set(frameworks):
             try:
                 adapter = get_adapter(fw_name)
             except Exception:
@@ -60,9 +67,25 @@ class _UpdateJournal:
                 if path not in self._files:
                     self._files[path] = _encode_file_content(path)
 
+        # Snapshot metadata files inside the install path — the adapter
+        # writes .capacium-meta.json and StorageManager.write_meta writes
+        # .cap-meta.json during update.
+        if cap.install_path is not None and cap.install_path.exists():
+            for meta_name in (".capacium-meta.json", ".cap-meta.json"):
+                meta_path = cap.install_path / meta_name
+                if meta_path not in self._files:
+                    self._files[meta_path] = _encode_file_content(meta_path)
+
     def set_prior_cap(self, cap) -> None:
-        """Record the pre-update registry row so it can be restored."""
-        self._prior_cap = cap
+        """Record the pre-update registry row so it can be restored.
+
+        Deep-copies the capability so later mutations to the live object
+        (e.g. ``cap.fingerprint = new_fp``) do not alias into the journal
+        snapshot (CAP117-TRANSACT-004 criterion 2 — live-object aliasing
+        would restore the post-mutation fingerprint on rollback).
+        """
+        import copy
+        self._prior_cap = copy.deepcopy(cap)
 
     def persist(self) -> Path:
         """Write the journal to disk before the first mutation."""

@@ -36,6 +36,7 @@ class _RemovalSnapshot:
         self._moves: List[tuple] = [] # (original Path, parked Path)
         self._rows: List = []         # Capability objects removed from registry
         self._members: List[tuple] = []  # (bundle_id, [member_id, ...])
+        self._prior_cap = None        # Capability row being removed
         self._journal_path: Path = None  # durable journal path
 
     # ── recording ──────────────────────────────────────────────────────
@@ -58,6 +59,10 @@ class _RemovalSnapshot:
         else:
             self._links[path] = None
 
+    def set_prior_cap(self, cap) -> None:
+        """Record the pre-remove registry row so it can be restored."""
+        self._prior_cap = cap
+
     def record_registry_row(self, cap) -> None:
         self._rows.append(cap)
 
@@ -65,7 +70,13 @@ class _RemovalSnapshot:
         self._members.append((bundle_id, list(member_ids)))
 
     def park_tree(self, path: Path) -> None:
-        """Move a package tree aside instead of deleting it outright."""
+        """Move a package tree aside instead of deleting it outright.
+
+        Records the move intent in ``_moves`` and flushes the journal
+        BEFORE the rename so a SIGKILL mid-park leaves a durable record
+        that recovery can use to unpark the tree (CAP117-TRANSACT-004
+        criterion 2).
+        """
         path = Path(path)
         if not path.exists() and not path.is_symlink():
             return
@@ -74,13 +85,18 @@ class _RemovalSnapshot:
         while parked.exists() or parked.is_symlink():
             idx += 1
             parked = path.with_name(f"{path.name}.removing{idx}")
-        path.rename(parked)
         self._moves.append((path, parked))
+        # Flush the journal BEFORE the rename so the durable record
+        # exists even if the process dies mid-rename.
+        self._flush(self._cap_id, self._version)
+        path.rename(parked)
 
     # ── durable persistence ────────────────────────────────────────────
     def persist(self, cap_id: str, version: str) -> Path:
         """Write the journal to disk before the first mutation."""
         self._journal_path = _make_journal_path(cap_id, version, "remove")
+        self._cap_id = cap_id
+        self._version = version
         _write_journal(self._journal_path, self._to_disk_data(cap_id, version))
         return self._journal_path
 
@@ -93,6 +109,7 @@ class _RemovalSnapshot:
         return {
             "cap_id": cap_id,
             "version": version,
+            "prior_cap": _serialize_cap(self._prior_cap),
             "files": {
                 str(k): _encode_bytes(v) for k, v in self._files.items()
             },
@@ -159,10 +176,13 @@ class _RemovalSnapshot:
 
 def _snapshot_cap_surfaces(snapshot: _RemovalSnapshot, cap_name: str,
                            frameworks: List[str]) -> None:
-    """Record client config files and skills-dir links a remove may touch."""
-    config_backed = set(frameworks) | {"claude-desktop", "codex", "gemini-cli",
-                                       "antigravity", "opencode"}
-    for fw_name in config_backed:
+    """Record client config files and skills-dir links a remove may touch.
+
+    Only snapshot config files for frameworks this capability actually
+    targets. Foreign harness configs (and their secrets) must never
+    enter the transaction journal (CAP117-TRANSACT-004 criterion 6).
+    """
+    for fw_name in set(frameworks):
         try:
             adapter = get_adapter(fw_name)
         except Exception:
@@ -355,6 +375,7 @@ def remove_capability(
     # touch the registry. Any failure restores the full pre-remove state.
     snapshot = _RemovalSnapshot(registry)
     _snapshot_cap_surfaces(snapshot, cap_name, list(cap.frameworks or []))
+    snapshot.set_prior_cap(cap)
 
     # Persist the journal to disk before the first mutation (criterion 1).
     snapshot.persist(bare_id, version)
@@ -375,6 +396,8 @@ def remove_capability(
                 dep_owner, dep_name = Registry.parse_cap_id(dep_cap_id)
                 dep_snap = _RemovalSnapshot(registry)
                 _snapshot_cap_surfaces(dep_snap, dep_name, list(dep.frameworks or []))
+                dep_snap.set_prior_cap(dep)
+                dep_snap.persist(f"{dep_owner}/{dep_name}", dep_version)
                 try:
                     dep_kind = dep.kind.value if dep.kind else None
                     dep_frameworks = dep.frameworks if dep.frameworks else [dep.framework or "opencode"]
@@ -384,6 +407,7 @@ def remove_capability(
                         except ValueError:
                             continue
                         adapter.remove_capability(dep_name, owner=dep_owner, kind=dep_kind)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
                     dep_pkg = storage.get_package_dir(dep_name, dep_version, owner=dep_owner)
                     dep_snap.park_tree(dep_pkg)
                     dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
@@ -415,11 +439,18 @@ def remove_capability(
         snapshot._flush(bare_id, version)
 
         package_dir = storage.get_package_dir(cap_name, version, owner=owner)
+        # Flush before park_tree so the durable journal captures the
+        # adapter-removal step.  A SIGKILL mid-park then knows the adapter
+        # was already removed and can roll back both the adapter step AND
+        # the parked tree.
         snapshot.park_tree(package_dir)
         snapshot._flush(bare_id, version)
 
-        # Registry change only after all adapter + filesystem steps succeeded.
+        # Record the registry row BEFORE removing it, then flush.  If the
+        # process dies between record and remove, the journal knows what to
+        # restore.
         snapshot.record_registry_row(cap)
+        snapshot._flush(bare_id, version)
         removed = registry.remove_capability(bare_id, version)
         snapshot._flush(bare_id, version)
         if not removed:
