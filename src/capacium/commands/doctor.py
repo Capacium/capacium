@@ -269,13 +269,26 @@ def _probe_command_for(cap, manifest):
     """Return the (command, args, env) the client actually runs — the built
     binary / local package from the config builder, not the raw manifest
     command (which would hit PyPI/@latest and time out). Falls back to the
-    raw manifest if the entry cannot be built."""
+    raw manifest if the entry cannot be built.
+
+    When ``build_mcp_entry`` wraps the command in a cap exec shim but the
+    original manifest command is not on PATH, the raw command is returned
+    so doctor can diagnose "command not found" truthfully instead of
+    reporting an opaque cap exec error."""
     try:
         from ..adapters.mcp_config_patcher import McpConfigPatcher
+        import shutil as _shutil
+        raw_cmd = (manifest.mcp.get("command") or "").strip()
         entry = McpConfigPatcher.build_mcp_entry(
             cap.name, cap.install_path, manifest.get_mcp_metadata()
         )
         if entry and entry.get("command"):
+            # When the entry is a cap exec wrapper but the original command
+            # isn't on PATH, surface the raw command for diagnostics.
+            if raw_cmd and "exec" in entry.get("args", []):
+                if not _shutil.which(raw_cmd):
+                    env = manifest.mcp.get("env") if isinstance(manifest.mcp.get("env"), dict) else None
+                    return raw_cmd, list(manifest.mcp.get("args") or []), env
             env = entry.get("env") if isinstance(entry.get("env"), dict) else None
             return entry["command"], list(entry.get("args") or []), env
     except Exception:

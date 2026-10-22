@@ -74,7 +74,7 @@ class CodexAdapter(FrameworkAdapter):
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
         server_key_normalized = server_key.replace("/", "-")
 
-        # BUG-004: Remove only Capacium-owned entries for this capability
+        # Remove only Capacium-owned entries for this capability
         servers = config.setdefault("mcp_servers", {})
         for key in list(servers):
             existing = servers.get(key)
@@ -83,7 +83,16 @@ class CodexAdapter(FrameworkAdapter):
             marker = existing.get("_capacium_owner", "")
             if marker.startswith(f"capacium:{cap_name}:"):
                 del servers[key]
-        servers[server_key_normalized] = entry
+        # C4: If the target key is occupied by a foreign entry (no marker
+        # or a different owner), use a suffixed key to avoid clobbering.
+        actual_key = server_key_normalized
+        if server_key_normalized in servers:
+            existing = servers.get(server_key_normalized)
+            if isinstance(existing, dict):
+                existing_marker = existing.get("_capacium_owner", "")
+                if not existing_marker.startswith(f"capacium:{cap_name}:"):
+                    actual_key = f"{server_key_normalized}-capacium"
+        servers[actual_key] = entry
         try:
             McpConfigPatcher.write_toml(self.config_path, config)
             # Post-write validation: re-read and verify entry exists
@@ -117,7 +126,12 @@ class CodexAdapter(FrameworkAdapter):
         server_key = McpConfigPatcher.build_server_key(cap_name, owner)
         server_key_normalized = server_key.replace("/", "-")
         servers = config.get("mcp_servers", {})
-        return server_key in servers or server_key_normalized in servers
+        # Check exact, normalized and suffixed keys
+        for key in (server_key, server_key_normalized, f"{server_key_normalized}-capacium"):
+            entry = servers.get(key)
+            if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                return True
+        return False
 
     # ── Host registration (CAP117-HOST-012) ───────────────────────────
 
@@ -150,10 +164,25 @@ class CodexAdapter(FrameworkAdapter):
             server_key = McpConfigPatcher.build_server_key(capability_id, owner)
             server_key_normalized = server_key.replace("/", "-")
             servers = config.get("mcp_servers", {})
-            current = "present" if (server_key in servers or server_key_normalized in servers) else "missing"
+            # Check all possible keys where our managed entry could be:
+            # exact, normalized, and suffixed (when foreign occupies exact)
+            current = "missing"
+            for candidate in (server_key, server_key_normalized, f"{server_key_normalized}-capacium"):
+                entry_val = servers.get(candidate)
+                if isinstance(entry_val, dict) and entry_val.get("_capacium_owner", "").startswith("capacium:"):
+                    current = "present"
+                    break
             target = "present" if operation == "register" else "absent"
             if current != target:
                 will_modify = True
+            # Also flag will_modify when a foreign entry occupies the target key
+            # (register will use a suffixed key, which IS a modification)
+            if operation == "register" and current == "missing":
+                for candidate in (server_key, server_key_normalized):
+                    foreign = servers.get(candidate)
+                    if isinstance(foreign, dict) and not foreign.get("_capacium_owner", "").startswith("capacium:"):
+                        will_modify = True
+                        break
             entries.append(HostPlanEntry(
                 operation=operation,
                 capability_id=capability_id,
@@ -226,18 +255,22 @@ class CodexAdapter(FrameworkAdapter):
                 plan=plan,
             )
         elif kind == "mcp-server":
+            backup_path = McpConfigPatcher.backup(self.config_path)
             try:
                 success = self.install_mcp_server(capability_id, "", source_dir, owner)
                 return HostOperationResult(
                     framework="codex", operation="register",
                     success=success, plan=plan,
+                    backup_path=str(backup_path) if backup_path else None,
                 )
             except Exception as e:
-                # install_mcp_server handles backup/restore internally;
-                # surface the error truthfully.
+                if backup_path is not None:
+                    McpConfigPatcher.restore_backup(self.config_path, backup_path)
                 return HostOperationResult(
                     framework="codex", operation="register",
                     success=False, plan=plan, error=str(e),
+                    rollback_applied=(backup_path is not None),
+                    backup_path=str(backup_path) if backup_path else None,
                 )
         return HostOperationResult(
             framework="codex", operation="register",
@@ -343,7 +376,8 @@ class CodexAdapter(FrameworkAdapter):
 
 
 def _remove_matching_server_keys(servers: dict, cap_name: str) -> bool:
-    """Remove only entries carrying the Capacium ownership marker for cap_name."""
+    """Remove only entries carrying the Capacium ownership marker for cap_name.
+    Also removes suffixed variants (e.g. ``demo-capacium``)."""
     keys_to_remove = []
     for key in list(servers.keys()):
         existing = servers.get(key)

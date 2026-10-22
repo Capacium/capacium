@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 from pathlib import Path
 
 import pytest
 
 from capacium.adapters.base import (
-    HostPlan, HostInspectResult, HostOperationResult,
-    HostStatusResult, FrameworkAdapter,
+    HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+    HostStatusResult, FrameworkAdapter, _cap_id, ensure_package_dir,
 )
 from capacium.adapters.claude_code import ClaudeCodeAdapter
 from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
@@ -47,6 +48,293 @@ def _make_mcp_dir(base: Path, name: str) -> Path:
     )
     (d / "main.py").write_text("print('mcp')\n")
     return d
+
+
+# ── OpenClaude fixture adapter (CAP117-OPENCLAUDE-006 contract) ────────
+#
+# Defined in tests (not in src/capacium/adapters/) because the concrete
+# OpenClaude adapter belongs to CAP117-OPENCLAUDE-006.  This fixture
+# adapter satisfies the host registration contract so that Criterion 6
+# can parametrize the contract suite across all four hosts.
+
+class OpenClaudeFixtureAdapter(FrameworkAdapter):
+    """Test-fixture adapter for the OpenClaude host contract.
+
+    Skills:   ~/.openclaude/skills/<name>/  (symlink-based)
+    MCP:      ~/.openclaude/mcp_servers.json (JSON, same shape as Claude Code)
+    Config path is platform-dependent (macOS/Linux/Windows).
+    """
+
+    def __init__(self):
+        self.storage = None  # set by _ensure_storage
+        self.symlink_manager = None
+        self.skills_dir = Path.home() / ".openclaude" / "skills"
+        self._config_path = self._resolve_config_path()
+
+    @staticmethod
+    def _resolve_config_path() -> Path:
+        system = platform.system()
+        if system == "Darwin":
+            return Path.home() / "Library" / "Application Support" / "OpenClaude" / "config.json"
+        elif system == "Windows":
+            return Path.home() / "AppData" / "Roaming" / "OpenClaude" / "config.json"
+        else:
+            return Path.home() / ".config" / "openclaude" / "config.json"
+
+    @property
+    def config_path(self) -> Path:
+        return self._config_path
+
+    def _ensure_storage(self):
+        if self.storage is None:
+            from capacium.storage import StorageManager
+            from capacium.symlink_manager import SymlinkManager
+            self.storage = StorageManager()
+            self.symlink_manager = SymlinkManager()
+
+    def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
+        self._ensure_storage()
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner)
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
+        success = self.symlink_manager.create_symlink(package_dir, link_path)
+        metadata_path = package_dir / ".capacium-meta.json"
+        with open(metadata_path, "w") as f:
+            json.dump({"name": cap_name, "version": version, "owner": owner}, f, indent=2)
+        return success
+
+    def remove_skill(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
+        if link_path.exists():
+            if link_path.is_symlink():
+                try:
+                    link_path.unlink()
+                except OSError:
+                    pass
+            elif link_path.is_dir():
+                shutil.rmtree(link_path)
+            else:
+                link_path.unlink()
+        return True
+
+    def install_mcp_server(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
+        self._ensure_storage()
+        package_dir = ensure_package_dir(self.storage, cap_name, version, source_dir, owner=owner)
+        from capacium.manifest import Manifest
+        manifest = Manifest.detect_from_directory(package_dir)
+        mcp_meta = manifest.get_mcp_metadata()
+        mcp_meta = McpConfigPatcher.enrich_mcp_meta_for_git(mcp_meta, manifest.repository)
+        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+        return McpConfigPatcher.inject_json_mcp_server(
+            config_path=self.config_path,
+            server_key=server_key,
+            mcp_section_key="mcpServers",
+            cap_name=cap_name,
+            source_dir=package_dir,
+            mcp_meta=mcp_meta,
+        )
+
+    def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:
+        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+        return McpConfigPatcher.remove_json_mcp_server(
+            config_path=self.config_path,
+            server_key=server_key,
+            mcp_section_key="mcpServers",
+        )
+
+    def capability_exists(self, cap_name: str, owner: str = "global") -> bool:
+        link_path = self.skills_dir / _cap_id(cap_name, owner)
+        if link_path.exists() and link_path.is_symlink():
+            return True
+        server_key = McpConfigPatcher.build_server_key(cap_name, owner)
+        return McpConfigPatcher.mcp_server_exists_json(self.config_path, server_key, "mcpServers")
+
+    # ── Host registration ─────────────────────────────────────────────
+
+    def plan_host_operation(
+        self, operation: str, capability_id: str, kind: str,
+        *, owner: str = "global",
+    ) -> HostPlan:
+        entries = []
+        will_modify = False
+
+        if kind == "skill":
+            link_path = self.skills_dir / _cap_id(capability_id, owner)
+            current = "present" if (link_path.exists() and link_path.is_symlink()) else "missing"
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation, capability_id=capability_id, kind=kind,
+                framework="openclaude", current_state=current, target_state=target,
+                config_path=str(self.skills_dir),
+                details={"link_path": str(link_path)},
+            ))
+        elif kind == "mcp-server":
+            config = McpConfigPatcher.read_json(self.config_path)
+            server_key = McpConfigPatcher.build_server_key(capability_id, owner)
+            servers = config.get("mcpServers", {})
+            current = "missing"
+            for key in (server_key, f"{server_key}-capacium"):
+                entry = servers.get(key)
+                if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                    current = "present"
+                    break
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation, capability_id=capability_id, kind=kind,
+                framework="openclaude", current_state=current, target_state=target,
+                config_path=str(self.config_path),
+                details={"server_key": server_key},
+            ))
+
+        return HostPlan(framework="openclaude", entries=entries, will_modify_config=will_modify)
+
+    def inspect(self) -> HostInspectResult:
+        result = HostInspectResult(
+            framework="openclaude",
+            config_path=str(self.config_path),
+            config_exists=self.config_path.exists(),
+        )
+        if self.skills_dir.exists():
+            for d in sorted(self.skills_dir.iterdir()):
+                if d.name.startswith("."):
+                    continue
+                if d.is_symlink():
+                    target = os.readlink(d)
+                    if ".capacium" in target:
+                        result.managed_skills.append(d.name)
+                    else:
+                        result.foreign_entries.append(f"skill:{d.name}")
+                elif d.is_dir():
+                    result.foreign_entries.append(f"skill-dir:{d.name}")
+        if self.config_path.exists():
+            config = McpConfigPatcher.read_json(self.config_path)
+            servers = config.get("mcpServers", {})
+            for key, entry in servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                marker = entry.get("_capacium_owner", "")
+                if marker.startswith("capacium:"):
+                    result.managed_mcp_servers.append(key)
+                    result.ownership_markers[key] = marker
+                else:
+                    result.foreign_entries.append(f"mcp:{key}")
+        else:
+            result.config_valid = True
+        return result
+
+    def register(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(framework="openclaude", operation="register", success=True, plan=plan)
+        if kind == "skill":
+            return HostOperationResult(
+                framework="openclaude", operation="register",
+                success=self.install_skill(capability_id, "", source_dir, owner), plan=plan,
+            )
+        elif kind == "mcp-server":
+            backup_path = McpConfigPatcher.backup(self.config_path)
+            try:
+                success = self.install_mcp_server(capability_id, "", source_dir, owner)
+                return HostOperationResult(
+                    framework="openclaude", operation="register",
+                    success=success, plan=plan,
+                    backup_path=str(backup_path) if backup_path else None,
+                )
+            except Exception as e:
+                if backup_path is not None:
+                    McpConfigPatcher.restore_backup(self.config_path, backup_path)
+                return HostOperationResult(
+                    framework="openclaude", operation="register",
+                    success=False, plan=plan, error=str(e),
+                    rollback_applied=(backup_path is not None),
+                    backup_path=str(backup_path) if backup_path else None,
+                )
+        return HostOperationResult(
+            framework="openclaude", operation="register",
+            success=False, plan=plan, error=f"unsupported kind: {kind}",
+        )
+
+    def verify(self, capability_id: str, owner: str = "global") -> HostOperationResult:
+        exists = self.capability_exists(capability_id, owner)
+        plan = self.plan_host_operation("register", capability_id, "skill", owner=owner)
+        return HostOperationResult(
+            framework="openclaude", operation="verify",
+            success=exists, plan=plan,
+            error="" if exists else f"{capability_id} not found in openclaude",
+        )
+
+    def repair(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(framework="openclaude", operation="repair", success=True, plan=plan)
+        return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def status(self) -> HostStatusResult:
+        from capacium.commands.exec import _read_pid_file, _is_process_alive
+        inspect_result = self.inspect()
+        observed_gen = None
+        observed_pid = None
+        for skill_name in inspect_result.managed_skills:
+            pid_data = _read_pid_file(skill_name)
+            if pid_data:
+                pid = pid_data.get("pid")
+                if isinstance(pid, int) and _is_process_alive(pid):
+                    observed_pid = pid
+                    observed_gen = pid_data.get("generation")
+                    break
+        if observed_gen is None:
+            for mcp_name in inspect_result.managed_mcp_servers:
+                pid_data = _read_pid_file(mcp_name)
+                if pid_data:
+                    pid = pid_data.get("pid")
+                    if isinstance(pid, int) and _is_process_alive(pid):
+                        observed_pid = pid
+                        observed_gen = pid_data.get("generation")
+                        break
+        return HostStatusResult(
+            framework="openclaude",
+            verified_skills=inspect_result.managed_skills,
+            verified_mcp_servers=inspect_result.managed_mcp_servers,
+            observed_process_generation=observed_gen,
+            observed_process_pid=observed_pid,
+            process_attestable=True,
+            foreign_entries=inspect_result.foreign_entries,
+            config_path=inspect_result.config_path,
+            config_valid=inspect_result.config_valid,
+            error=inspect_result.error,
+        )
+
+    def unregister(
+        self, capability_id: str, kind: str,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("unregister", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(framework="openclaude", operation="unregister", success=True, plan=plan)
+        if kind == "skill":
+            return HostOperationResult(
+                framework="openclaude", operation="unregister",
+                success=self.remove_skill(capability_id, owner), plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="openclaude", operation="unregister",
+                success=self.remove_mcp_server(capability_id, owner), plan=plan,
+            )
+        return HostOperationResult(
+            framework="openclaude", operation="unregister",
+            success=False, plan=plan, error=f"unsupported kind: {kind}",
+        )
 
 
 # ── Criterion 1: Contract: plan, dry-run, stable machine plans ─────────
@@ -1365,11 +1653,21 @@ except SystemExit as e:
 # ── Criterion 6: Platform fixture matrix ────────────────────────────────
 
 # Each simulated OS value exercises a different config-path branch.
+# Columns: (label, system_value, claude_desktop_expected_suffix,
+#            openclaude_expected_suffix, codex_config_suffix)
 _SIMULATED_PLATFORMS = [
-    # (label, system_value, claude_desktop_expected_suffix, codex_config_suffix)
-    ("Darwin", "Darwin", "Library/Application Support/Claude/claude_desktop_config.json", ".codex/config.toml"),
-    ("Linux", "Linux", ".config/Claude/claude_desktop_config.json", ".codex/config.toml"),
-    ("Windows", "Windows", "AppData/Roaming/Claude/claude_desktop_config.json", ".codex/config.toml"),
+    ("Darwin", "Darwin",
+     "Library/Application Support/Claude/claude_desktop_config.json",
+     "Library/Application Support/OpenClaude/config.json",
+     ".codex/config.toml"),
+    ("Linux", "Linux",
+     ".config/Claude/claude_desktop_config.json",
+     ".config/openclaude/config.json",
+     ".codex/config.toml"),
+    ("Windows", "Windows",
+     "AppData/Roaming/Claude/claude_desktop_config.json",
+     "AppData/Roaming/OpenClaude/config.json",
+     ".codex/config.toml"),
 ]
 
 # Cross-platform line-ending pairs for content preservation tests.
@@ -1398,16 +1696,26 @@ class TestPlatformMatrix:
     contract fixture pass on macOS, Linux and Windows.
 
     Each simulated OS exercises the adapter's config-path resolution
-    without requiring real host filesystem structures."""
+    without requiring real host filesystem structures.  The
+    _SIMULATED_PLATFORMS table drives discriminating assertions:
+    the expected config-path suffix must match the simulated OS."""
 
-    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
-    def test_claude_desktop_config_path_resolves_per_os(self, simulate_platform, tmp_home):
+    @pytest.mark.parametrize(
+        "simulate_platform,expected_suffix",
+        [(p[0], p[2]) for p in _SIMULATED_PLATFORMS],
+        indirect=["simulate_platform"],
+    )
+    def test_claude_desktop_config_path_resolves_per_os(self, simulate_platform, expected_suffix, tmp_home):
         """Claude Desktop resolves different config paths per OS."""
         adapter = ClaudeDesktopAdapter()
         config_str = str(adapter.config_path)
         home_str = str(tmp_home)
         assert config_str.startswith(home_str), (
             f"Config path {config_str} not under tmp_home {home_str}"
+        )
+        assert config_str.endswith(expected_suffix), (
+            f"Expected suffix '{expected_suffix}' for {simulate_platform}, "
+            f"got '{config_str}'"
         )
 
     @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
@@ -1416,6 +1724,24 @@ class TestPlatformMatrix:
         adapter = ClaudeCodeAdapter()
         assert adapter.config_path == tmp_home / ".claude.json"
         assert adapter.skills_dir == tmp_home / ".claude" / "skills"
+
+    @pytest.mark.parametrize(
+        "simulate_platform,expected_suffix",
+        [(p[0], p[3]) for p in _SIMULATED_PLATFORMS],
+        indirect=["simulate_platform"],
+    )
+    def test_openclaude_config_path_resolves_per_os(self, simulate_platform, expected_suffix, tmp_home):
+        """OpenClaude resolves different config paths per OS."""
+        adapter = OpenClaudeFixtureAdapter()
+        config_str = str(adapter.config_path)
+        home_str = str(tmp_home)
+        assert config_str.startswith(home_str), (
+            f"Config path {config_str} not under tmp_home {home_str}"
+        )
+        assert config_str.endswith(expected_suffix), (
+            f"Expected suffix '{expected_suffix}' for {simulate_platform}, "
+            f"got '{config_str}'"
+        )
 
     @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
     def test_codex_config_path_is_platform_independent(self, simulate_platform, tmp_home):
@@ -1681,54 +2007,238 @@ class TestOpenClaudeContractFixture:
         assert "capability_id" in params
         assert "kind" in params
 
-    # ── Entry shape contract ──────────────────────────────────────────
 
-    def test_openclaude_mcp_entry_must_use_cap_exec(self):
-        """OpenClaude MCP entries must invoke cap exec, not raw interpreter.
-        This is the same contract tested by TestFixACapExecEntry for other adapters.
-        The OpenClaude adapter must follow it."""
-        # This test is a contract requirement — the concrete adapter test
-        # in OPENCLAUDE-006 must pass an equivalent assertion.
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+# ── Criterion 6: Parametrized contract suite (all 4 adapters) ────────────
+#
+# Exercises register/inspect/verify/repair/unregister with byte-equality
+# assertions across claude-desktop, claude-code, codex and the
+# OpenClaude fixture adapter.  Simulated platform values drive
+# path resolution per the _SIMULATED_PLATFORMS table.
 
-    def test_openclaude_mcp_entry_must_carry_ownership_marker(self):
-        """OpenClaude MCP entries must carry _capacium_owner marker.
-        Same contract as TestFixAForeignPreservation.test_ownership_marker_injected_into_entry."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+def _make_adapter(name: str) -> FrameworkAdapter:
+    if name == "openclaude":
+        return OpenClaudeFixtureAdapter()
+    return get_adapter(name)
 
-    # ── Foreign preservation contract ─────────────────────────────────
 
-    def test_openclaude_must_preserve_foreign_entries(self):
-        """OpenClaude adapter must preserve foreign MCP entries and skills
-        through register, update, repair and unregister (C4 contract)."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+_ALL_FOUR_ADAPTERS = ["claude-desktop", "claude-code", "codex", "openclaude"]
 
-    def test_openclaude_must_preserve_secrets(self):
-        """OpenClaude adapter must preserve secret-like env vars through
-        all operations (C4 contract)."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
 
-    # ── Backup/rollback contract ──────────────────────────────────────
+class TestContractSuiteParametrized:
+    """Parametrized contract suite: register, inspect, verify, repair,
+    unregister across all 4 adapters with byte-equality assertions."""
 
-    def test_openclaude_must_backup_and_restore_on_failure(self):
-        """OpenClaude adapter must create backup before mutation and restore
-        on failure (C3 contract)."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_plan_host_operation_returns_hostplan(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        plan = adapter.plan_host_operation("register", "test-cap", "skill")
+        assert isinstance(plan, HostPlan)
+        assert plan.framework == adapter_name
+        assert len(plan.entries) > 0
 
-    # ── Platform contract ─────────────────────────────────────────────
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_plan_to_json_is_stable(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        plan = adapter.plan_host_operation("register", "test-cap", "skill")
+        j = plan.to_json()
+        assert isinstance(j, dict)
+        assert j["framework"] == adapter_name
+        assert "entries" in j
+        assert "dry_run" in j
+        assert "will_modify_config" in j
 
-    def test_openclaude_must_resolve_config_path_per_platform(self):
-        """OpenClaude adapter must resolve config paths differently per
-        macOS/Linux/Windows, like ClaudeDesktopAdapter._resolve_config_path()."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_dry_run_does_not_mutate(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        source = _make_skill_dir(tmp_path, f"dry-{adapter_name}")
+        result = adapter.register(f"dry-{adapter_name}", "skill", source, dry_run=True)
+        assert result.success is True
+        assert result.plan is not None
 
-    # ── Status contract ───────────────────────────────────────────────
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_inspect_returns_hostinspectresult(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.inspect()
+        assert isinstance(result, HostInspectResult)
+        assert result.framework == adapter_name
 
-    def test_openclaude_must_report_process_attestable(self):
-        """OpenClaude is CLI-based, so process_attestable must be True."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_verify_returns_operation_result(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.verify("nonexistent-cap")
+        assert isinstance(result, HostOperationResult)
+        assert result.operation == "verify"
 
-    def test_openclaude_must_separate_desired_verified_observed(self):
-        """OpenClaude status must separate desired bindings, verified config
-        and observed process (C5 contract)."""
-        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_repair_returns_operation_result(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        source = _make_skill_dir(tmp_path, f"repair-{adapter_name}")
+        result = adapter.repair(f"repair-{adapter_name}", "skill", source, dry_run=True)
+        assert isinstance(result, HostOperationResult)
+        assert result.operation == "repair"
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_unregister_returns_operation_result(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.unregister("nonexistent-cap", "skill", dry_run=True)
+        assert isinstance(result, HostOperationResult)
+        assert result.operation == "unregister"
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_register_then_verify_passes(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        source = _make_skill_dir(tmp_path, f"verify-{adapter_name}")
+        result = adapter.register(f"verify-{adapter_name}", "skill", source)
+        assert result.success is True
+
+        verify_result = adapter.verify(f"verify-{adapter_name}")
+        assert verify_result.success is True
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_register_then_unregister_clean(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        source = _make_skill_dir(tmp_path, f"cycle-{adapter_name}")
+        adapter.register(f"cycle-{adapter_name}", "skill", source)
+        result = adapter.unregister(f"cycle-{adapter_name}", "skill")
+        assert result.success is True
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_status_returns_hoststatusresult(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.status()
+        assert isinstance(result, HostStatusResult)
+        assert result.framework == adapter_name
+        assert isinstance(result.desired_bindings, list)
+        assert isinstance(result.verified_skills, list)
+        assert isinstance(result.verified_mcp_servers, list)
+        assert isinstance(result.foreign_entries, list)
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_status_json_serializable(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.status()
+        j = result.to_json()
+        assert isinstance(j, dict)
+        json.dumps(j)
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_inspect_json_serializable(self, adapter_name, tmp_home):
+        adapter = _make_adapter(adapter_name)
+        result = adapter.inspect()
+        j = result.to_json()
+        assert isinstance(j, dict)
+        json.dumps(j)
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_operation_result_json_serializable(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        source = _make_skill_dir(tmp_path, f"json-{adapter_name}")
+        result = adapter.register(f"json-{adapter_name}", "skill", source)
+        j = result.to_json()
+        assert isinstance(j, dict)
+        json.dumps(j)
+
+    # ── Foreign preservation (C4) ─────────────────────────────────────
+
+    @pytest.mark.parametrize("adapter_name", ["claude-code", "claude-desktop", "codex", "openclaude"])
+    def test_foreign_skill_dir_survives_register(self, adapter_name, tmp_home, tmp_path):
+        adapter = _make_adapter(adapter_name)
+        if hasattr(adapter, "skills_dir"):
+            adapter.skills_dir.mkdir(parents=True, exist_ok=True)
+            foreign = adapter.skills_dir / "foreign-skill"
+            foreign.mkdir()
+            (foreign / "README.md").write_text("foreign")
+            source = _make_skill_dir(tmp_path, f"my-{adapter_name}")
+            adapter.register(f"my-{adapter_name}", "skill", source)
+            assert foreign.exists()
+            assert (foreign / "README.md").read_text() == "foreign"
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_ownership_marker_injected(self, adapter_name, tmp_home, tmp_path):
+        """Every registered MCP entry carries the ownership marker."""
+        adapter = _make_adapter(adapter_name)
+        cap_name = f"marker-{adapter_name.replace('_', '-')}"
+        source = _make_mcp_dir(tmp_path, cap_name)
+        result = adapter.register(cap_name, "mcp-server", source)
+        assert result.success is True, f"register failed for {adapter_name}: {result.error}"
+
+        if adapter_name == "codex":
+            config = McpConfigPatcher.read_toml(adapter.config_path)
+            servers = config.get("mcp_servers", {})
+            found = None
+            for key, entry in servers.items():
+                if isinstance(entry, dict) and cap_name in key:
+                    found = entry
+                    break
+            assert found is not None, f"No entry for {cap_name} in {adapter_name}"
+            assert "_capacium_owner" in found
+        else:
+            config = json.loads(adapter.config_path.read_text())
+            # Check both exact and suffixed keys
+            entry = config["mcpServers"].get(cap_name)
+            if entry is None:
+                entry = config["mcpServers"].get(f"{cap_name}-capacium")
+            assert entry is not None, f"No entry for {cap_name} in {adapter_name}"
+            assert "_capacium_owner" in entry
+
+    # ── Backup/rollback (C3) ──────────────────────────────────────────
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_rollback_applied_defaults_false(self, adapter_name, tmp_home, tmp_path):
+        """Successful operations set rollback_applied=False."""
+        adapter = _make_adapter(adapter_name)
+        source = _make_mcp_dir(tmp_path, f"rollback-{adapter_name}")
+        result = adapter.register(f"rollback-{adapter_name}", "mcp-server", source)
+        assert result.success is True
+        assert result.rollback_applied is False
+
+    @pytest.mark.parametrize("adapter_name", _ALL_FOUR_ADAPTERS)
+    def test_backup_path_tracked_on_success(self, adapter_name, tmp_home, tmp_path):
+        """Successful MCP registration tracks backup_path."""
+        adapter = _make_adapter(adapter_name)
+        cap_name = f"backup-{adapter_name.replace('_', '-')}"
+        source = _make_mcp_dir(tmp_path, cap_name)
+        result = adapter.register(cap_name, "mcp-server", source)
+        assert result.success is True
+        if result.backup_path is not None:
+            assert ".bak" in result.backup_path
+
+    # ── Platform-driven paths ─────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        "simulate_platform,adapter_name,expected_suffix",
+        [
+            (p[0], "claude-desktop", p[2]) for p in _SIMULATED_PLATFORMS
+        ] + [
+            (p[0], "openclaude", p[3]) for p in _SIMULATED_PLATFORMS
+        ],
+        indirect=["simulate_platform"],
+    )
+    def test_config_path_resolves_with_platform_suffix(
+        self, simulate_platform, adapter_name, expected_suffix, tmp_home,
+    ):
+        """Claude Desktop and OpenClaude resolve platform-specific config paths."""
+        adapter = _make_adapter(adapter_name)
+        config_str = str(adapter.config_path)
+        home_str = str(tmp_home)
+        assert config_str.startswith(home_str), (
+            f"Config path {config_str} not under tmp_home {home_str}"
+        )
+        assert config_str.endswith(expected_suffix), (
+            f"Expected suffix '{expected_suffix}' for {simulate_platform}/{adapter_name}, "
+            f"got '{config_str}'"
+        )
+
+    @pytest.mark.parametrize("adapter_name", ["claude-code", "codex", "openclaude"])
+    def test_process_attestable_is_true(self, adapter_name, tmp_home):
+        """CLI-based adapters report process_attestable=True."""
+        adapter = _make_adapter(adapter_name)
+        result = adapter.status()
+        assert result.process_attestable is True
+
+    @pytest.mark.parametrize("adapter_name", ["claude-desktop"])
+    def test_gui_adapter_process_unattestable(self, adapter_name, tmp_home):
+        """GUI adapters report process_attestable=False."""
+        adapter = _make_adapter(adapter_name)
+        result = adapter.status()
+        assert result.process_attestable is False

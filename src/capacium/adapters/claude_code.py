@@ -264,18 +264,23 @@ class ClaudeCodeAdapter(FrameworkAdapter):
                 plan=plan,
             )
         elif kind == "mcp-server":
-            # install_mcp_server → inject_json_mcp_server handles its own
-            # backup/restore.  Surface any error truthfully.
+            from .mcp_config_patcher import McpConfigPatcher
+            backup_path = McpConfigPatcher.backup(self.config_path)
             try:
                 success = self.install_mcp_server(capability_id, "", source_dir, owner)
                 return HostOperationResult(
                     framework="claude-code", operation="register",
                     success=success, plan=plan,
+                    backup_path=str(backup_path) if backup_path else None,
                 )
             except Exception as e:
+                if backup_path is not None:
+                    McpConfigPatcher.restore_backup(self.config_path, backup_path)
                 return HostOperationResult(
                     framework="claude-code", operation="register",
                     success=False, plan=plan, error=str(e),
+                    rollback_applied=(backup_path is not None),
+                    backup_path=str(backup_path) if backup_path else None,
                 )
         return HostOperationResult(
             framework="claude-code", operation="register",
