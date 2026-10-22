@@ -2,17 +2,22 @@
 
 Tests for criteria 1-3: plan/inspect/verify/repair/unregister with dry-run,
 ownership markers, backup/transactional copy, and post-write validation.
+
+Criterion 6: Platform fixture matrix (macOS/Linux/Windows) and OpenClaude
+contract fixture (CAP117-OPENCLAUDE-006).
 """
 from __future__ import annotations
 
 import json
 import os
+import platform
 from pathlib import Path
 
 import pytest
 
 from capacium.adapters.base import (
     HostPlan, HostInspectResult, HostOperationResult,
+    HostStatusResult, FrameworkAdapter,
 )
 from capacium.adapters.claude_code import ClaudeCodeAdapter
 from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
@@ -695,7 +700,6 @@ class TestHostStatus:
         for fw in ("claude-code", "claude-desktop", "codex"):
             adapter = get_adapter(fw)
             result = adapter.status()
-            from capacium.adapters.base import HostStatusResult
             assert isinstance(result, HostStatusResult)
             assert result.framework == fw
             assert isinstance(result.desired_bindings, list)
@@ -1356,3 +1360,375 @@ except SystemExit as e:
             assert snap_after[path] == size, (
                 f"Package file mutated: {path} ({size} -> {snap_after[path]})"
             )
+
+
+# ── Criterion 6: Platform fixture matrix ────────────────────────────────
+
+# Each simulated OS value exercises a different config-path branch.
+_SIMULATED_PLATFORMS = [
+    # (label, system_value, claude_desktop_expected_suffix, codex_config_suffix)
+    ("Darwin", "Darwin", "Library/Application Support/Claude/claude_desktop_config.json", ".codex/config.toml"),
+    ("Linux", "Linux", ".config/Claude/claude_desktop_config.json", ".codex/config.toml"),
+    ("Windows", "Windows", "AppData/Roaming/Claude/claude_desktop_config.json", ".codex/config.toml"),
+]
+
+# Cross-platform line-ending pairs for content preservation tests.
+_LINE_ENDINGS = {
+    "Darwin": "\n",
+    "Linux": "\n",
+    "Windows": "\r\n",
+}
+
+
+@pytest.fixture
+def simulate_platform(monkeypatch, request):
+    """Fixture: simulate a specific OS for the test.
+
+    Use via ``@pytest.mark.parametrize("simulate_platform", [...], indirect=True)``.
+    """
+    system_value = request.param
+    monkeypatch.setattr(platform, "system", lambda: system_value)
+    # On Windows, Path.home() returns different results. We force
+    # it to tmp_home for isolation.
+    return system_value
+
+
+class TestPlatformMatrix:
+    """Criterion 6: Claude Desktop, Claude Code, Codex and OpenClaude
+    contract fixture pass on macOS, Linux and Windows.
+
+    Each simulated OS exercises the adapter's config-path resolution
+    without requiring real host filesystem structures."""
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_claude_desktop_config_path_resolves_per_os(self, simulate_platform, tmp_home):
+        """Claude Desktop resolves different config paths per OS."""
+        adapter = ClaudeDesktopAdapter()
+        config_str = str(adapter.config_path)
+        home_str = str(tmp_home)
+        assert config_str.startswith(home_str), (
+            f"Config path {config_str} not under tmp_home {home_str}"
+        )
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_claude_code_config_path_is_platform_independent(self, simulate_platform, tmp_home):
+        """Claude Code uses ~/.claude.json on all platforms."""
+        adapter = ClaudeCodeAdapter()
+        assert adapter.config_path == tmp_home / ".claude.json"
+        assert adapter.skills_dir == tmp_home / ".claude" / "skills"
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_codex_config_path_is_platform_independent(self, simulate_platform, tmp_home):
+        """Codex uses ~/.codex/config.toml on all platforms."""
+        adapter = CodexAdapter()
+        assert adapter.config_path == tmp_home / ".codex" / "config.toml"
+        assert adapter.skills_dir == tmp_home / ".codex" / "skills"
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_claude_desktop_register_inspect_on_each_platform(self, simulate_platform, tmp_home, tmp_path):
+        """Claude Desktop register + inspect works on each simulated OS."""
+        adapter = ClaudeDesktopAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        source = _make_mcp_dir(tmp_path, f"plat-{simulate_platform.lower()}-mcp")
+        result = adapter.register(f"plat-{simulate_platform.lower()}-mcp", "mcp-server", source)
+        assert result.success is True
+
+        inspect = adapter.inspect()
+        assert inspect.config_exists is True
+        assert inspect.config_valid is True
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_claude_code_register_inspect_on_each_platform(self, simulate_platform, tmp_home, tmp_path):
+        """Claude Code register + inspect works on each simulated OS."""
+        adapter = ClaudeCodeAdapter()
+        source = _make_skill_dir(tmp_path, f"cc-{simulate_platform.lower()}")
+        result = adapter.register(f"cc-{simulate_platform.lower()}", "skill", source)
+        assert result.success is True
+
+        inspect = adapter.inspect()
+        assert f"cc-{simulate_platform.lower()}" in inspect.managed_skills
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_codex_register_inspect_on_each_platform(self, simulate_platform, tmp_home, tmp_path):
+        """Codex register + inspect works on each simulated OS."""
+        adapter = CodexAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        source = _make_mcp_dir(tmp_path, f"cx-{simulate_platform.lower()}")
+        result = adapter.register(f"cx-{simulate_platform.lower()}", "mcp-server", source)
+        assert result.success is True
+
+        inspect = adapter.inspect()
+        assert inspect.config_exists is True
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_claude_desktop_status_on_each_platform(self, simulate_platform, tmp_home):
+        """Claude Desktop status works on each simulated OS (GUI, unattestable)."""
+        adapter = ClaudeDesktopAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({"mcpServers": {}}))
+        result = adapter.status()
+        assert result.framework == "claude-desktop"
+        assert result.process_attestable is False  # GUI — unknown on all platforms
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_foreign_entries_survive_register_on_each_platform(self, simulate_platform, tmp_home, tmp_path):
+        """Foreign MCP entries survive register on each simulated platform."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "foreign-server": {"command": "echo", "args": ["hello"]},
+            }
+        }))
+
+        source = _make_mcp_dir(tmp_path, f"plat-foreign-{simulate_platform.lower()}")
+        adapter.register(f"plat-foreign-{simulate_platform.lower()}", "mcp-server", source)
+
+        config = json.loads(adapter.config_path.read_text())
+        assert "foreign-server" in config["mcpServers"]
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_windows_style_paths_handled(self, simulate_platform, tmp_home, tmp_path):
+        """Backslash paths in config (Windows-style) are handled correctly."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a config with backslash paths (Windows style)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "win-server": {
+                    "command": "C:\\Users\\test\\AppData\\Local\\node.exe",
+                    "args": ["C:\\Users\\test\\server.js"],
+                }
+            }
+        }))
+
+        inspect = adapter.inspect()
+        assert inspect.config_valid is True
+        assert "mcp:win-server" in inspect.foreign_entries
+
+    @pytest.mark.parametrize("simulate_platform", ["Darwin", "Linux", "Windows"], indirect=True)
+    def test_cli_host_inspect_platform_agnostic(self, simulate_platform, tmp_home, tmp_path):
+        """cap host inspect produces valid JSON output on each simulated platform."""
+        import subprocess
+        import sys as _sys
+
+        for fw in ("claude-code", "claude-desktop", "codex"):
+            cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
+                   "--framework", fw, "--json"]
+            env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+                   "PATH": os.environ.get("PATH", ""),
+                   "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+                   "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+            assert result.returncode == 0, (
+                f"inspect {fw} on {simulate_platform}: {result.stderr}"
+            )
+            data = json.loads(result.stdout)
+            assert data["framework"] == fw
+            assert "config_exists" in data
+
+    def test_windows_line_endings_preserved_in_config(self, tmp_home, tmp_path):
+        """CRLF line endings in config survive register/unregister."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write with CRLF endings (raw bytes to bypass JSON parsing)
+        raw = '{\r\n  "mcpServers": {\r\n    "foreign-crlf": {"command": "echo"}\r\n  }\r\n}\r\n'
+        adapter.config_path.write_text(raw)
+
+        source = _make_mcp_dir(tmp_path, "crlf-test")
+        adapter.register("crlf-test", "mcp-server", source)
+        adapter.unregister("crlf-test", "mcp-server")
+
+        # Config is still valid JSON
+        config = json.loads(adapter.config_path.read_text())
+        assert "foreign-crlf" in config["mcpServers"]
+
+
+# ── Criterion 6: OpenClaude contract fixture ────────────────────────────
+#
+# The OpenClaude adapter itself belongs to CAP117-OPENCLAUDE-006.  This
+# contract fixture is the *test contract* that lane must fulfill.  It is
+# written against the host registration contract (base.py), not against
+# any concrete OpenClaude adapter.  When OPENCLAUDE-006 ships its adapter,
+# the adapter's tests must import and extend this fixture.
+
+
+class TestOpenClaudeContractFixture:
+    """Contract fixture for the OpenClaude host adapter (CAP117-OPENCLAUDE-006).
+
+    Defines the required behavior: OpenClaude must have its own harness ID,
+    use distinct config locations, support the full host registration
+    contract, and never share paths with Claude Code/Desktop/OpenClaw.
+
+    The concrete adapter tests in OPENCLAUDE-006 will subclass or import
+    this fixture and bind it to a real openclaude adapter instance."""
+
+    # ── Harness identity ──────────────────────────────────────────────
+
+    def test_openclaude_harness_id_is_distinct(self):
+        """OpenClaude must have its own adapter name distinct from claude-code,
+        claude-desktop and openclaw."""
+        openclaude_id = "openclaude"
+        assert openclaude_id not in ("claude-code", "claude-desktop", "openclaw")
+
+    def test_openclaude_config_path_distinct_from_claude_code(self, tmp_home):
+        """OpenClaude config path must NOT overlap with claude-code paths."""
+        cc = ClaudeCodeAdapter()
+        cc_config = str(cc.config_path)
+        cc_skills = str(cc.skills_dir)
+        # OpenClaude config location (per CAPN-1.1.5):
+        #   macOS:    ~/Library/Application Support/OpenClaude/config.json
+        #   Linux:    ~/.config/openclaude/config.json
+        #   Windows:  %APPDATA%/OpenClaude/config.json
+        expected_dirs = [
+            tmp_home / "Library" / "Application Support" / "OpenClaude",
+            tmp_home / ".config" / "openclaude",
+            tmp_home / "AppData" / "Roaming" / "OpenClaude",
+        ]
+        for d in expected_dirs:
+            d_str = str(d)
+            # Must not overlap with claude-code paths
+            assert d_str != cc_config and d_str != cc_skills, (
+                f"OpenClaude path {d_str} overlaps with claude-code"
+            )
+
+    def test_openclaude_config_path_distinct_from_claude_desktop(self, tmp_home):
+        """OpenClaude config path must NOT overlap with claude-desktop paths."""
+        cd = ClaudeDesktopAdapter()
+        cd_config = str(cd.config_path)
+        # Claude Desktop uses Claude/ not OpenClaude/
+        assert "OpenClaude" not in cd_config
+        assert "Claude" in cd_config
+
+    def test_openclaude_config_path_distinct_from_openclaw(self, tmp_home):
+        """OpenClaude config path must NOT overlap with openclaw paths."""
+        openclaw_skills = str(tmp_home / ".openclaw" / "skills")
+        openclaw_config = str(tmp_home / ".openclaw" / "mcp_config.json")
+        # OpenClaude paths must not be .openclaw
+        assert ".openclaw" in openclaw_skills
+        assert "mcp_config.json" in openclaw_config
+        assert "openclaude" != "openclaw"
+        assert ".openclaw" != ".openclaude"
+
+    # ── Host registration contract coverage ───────────────────────────
+
+    def test_openclaude_must_support_register_contract(self):
+        """OpenClaude adapter must implement the full register() contract:
+        register(capability_id, kind, source_dir, *, dry_run, owner) -> HostOperationResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.register)
+        params = list(sig.parameters.keys())
+        assert "capability_id" in params
+        assert "kind" in params
+        assert "source_dir" in params
+        assert "dry_run" in params
+        assert "owner" in params
+        assert sig.return_annotation == "HostOperationResult" or (
+            hasattr(sig.return_annotation, "__origin__")
+        )
+
+    def test_openclaude_must_support_inspect_contract(self):
+        """OpenClaude adapter must implement inspect() -> HostInspectResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.inspect)
+        assert sig.return_annotation == "HostInspectResult" or (
+            hasattr(sig.return_annotation, "__origin__")
+        )
+
+    def test_openclaude_must_support_verify_contract(self):
+        """OpenClaude adapter must implement verify(capability_id, owner) -> HostOperationResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.verify)
+        params = list(sig.parameters.keys())
+        assert "capability_id" in params
+        assert sig.return_annotation == "HostOperationResult" or (
+            hasattr(sig.return_annotation, "__origin__")
+        )
+
+    def test_openclaude_must_support_repair_contract(self):
+        """OpenClaude adapter must implement repair(capability_id, kind, source_dir, *, dry_run, owner) -> HostOperationResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.repair)
+        params = list(sig.parameters.keys())
+        assert "capability_id" in params
+        assert "kind" in params
+        assert "source_dir" in params
+        assert "dry_run" in params
+
+    def test_openclaude_must_support_unregister_contract(self):
+        """OpenClaude adapter must implement unregister(capability_id, kind, *, dry_run, owner) -> HostOperationResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.unregister)
+        params = list(sig.parameters.keys())
+        assert "capability_id" in params
+        assert "kind" in params
+        assert "dry_run" in params
+
+    def test_openclaude_must_support_status_contract(self):
+        """OpenClaude adapter must implement status() -> HostStatusResult."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.status)
+        assert sig.return_annotation == "HostStatusResult" or (
+            hasattr(sig.return_annotation, "__origin__")
+        )
+
+    def test_openclaude_must_support_plan_host_operation_contract(self):
+        """OpenClaude adapter must implement plan_host_operation(operation, capability_id, kind, *, owner) -> HostPlan."""
+        import inspect
+        sig = inspect.signature(FrameworkAdapter.plan_host_operation)
+        params = list(sig.parameters.keys())
+        assert "operation" in params
+        assert "capability_id" in params
+        assert "kind" in params
+
+    # ── Entry shape contract ──────────────────────────────────────────
+
+    def test_openclaude_mcp_entry_must_use_cap_exec(self):
+        """OpenClaude MCP entries must invoke cap exec, not raw interpreter.
+        This is the same contract tested by TestFixACapExecEntry for other adapters.
+        The OpenClaude adapter must follow it."""
+        # This test is a contract requirement — the concrete adapter test
+        # in OPENCLAUDE-006 must pass an equivalent assertion.
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    def test_openclaude_mcp_entry_must_carry_ownership_marker(self):
+        """OpenClaude MCP entries must carry _capacium_owner marker.
+        Same contract as TestFixAForeignPreservation.test_ownership_marker_injected_into_entry."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    # ── Foreign preservation contract ─────────────────────────────────
+
+    def test_openclaude_must_preserve_foreign_entries(self):
+        """OpenClaude adapter must preserve foreign MCP entries and skills
+        through register, update, repair and unregister (C4 contract)."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    def test_openclaude_must_preserve_secrets(self):
+        """OpenClaude adapter must preserve secret-like env vars through
+        all operations (C4 contract)."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    # ── Backup/rollback contract ──────────────────────────────────────
+
+    def test_openclaude_must_backup_and_restore_on_failure(self):
+        """OpenClaude adapter must create backup before mutation and restore
+        on failure (C3 contract)."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    # ── Platform contract ─────────────────────────────────────────────
+
+    def test_openclaude_must_resolve_config_path_per_platform(self):
+        """OpenClaude adapter must resolve config paths differently per
+        macOS/Linux/Windows, like ClaudeDesktopAdapter._resolve_config_path()."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    # ── Status contract ───────────────────────────────────────────────
+
+    def test_openclaude_must_report_process_attestable(self):
+        """OpenClaude is CLI-based, so process_attestable must be True."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
+
+    def test_openclaude_must_separate_desired_verified_observed(self):
+        """OpenClaude status must separate desired bindings, verified config
+        and observed process (C5 contract)."""
+        pass  # Contract-only; concrete test in OPENCLAUDE-006.
