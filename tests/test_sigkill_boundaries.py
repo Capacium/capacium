@@ -265,7 +265,7 @@ class TestSigkillInstallBoundaries:
         # Recover orphaned journals
         from capacium.commands._journal import recover_orphaned_journals
         os.environ["HOME"] = str(home)
-        recovered = recover_orphaned_journals()
+        recover_orphaned_journals()
 
         # Clean up marker so it doesn't affect digest comparison
         marker.unlink(missing_ok=True)
@@ -528,8 +528,6 @@ class TestSecretsExclusion:
             assert "sk-" not in content, (
                 f"Secret-like pattern found in journal {jf.name}"
             )
-            # Base64 of the secret should also not appear
-            import base64
             # Check for the base64 of the config content
             for key, val in json.loads(content).get("files", {}).items():
                 if val is not None and "claude_desktop" in key.lower():
