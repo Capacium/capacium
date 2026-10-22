@@ -1144,11 +1144,10 @@ def test_install_json_single_document_on_failure(tmp_home, capsys, monkeypatch):
     _fetch_from_registry would have printed a human line."""
     from capacium.registry_client import RegistryClient
 
-    class _FailingClient:
-        def get_detail(self, *a, **kw):
-            raise RuntimeError("simulated registry 404")
+    def _failing_get_detail(self, *a, **kw):
+        raise RuntimeError("simulated registry 404")
 
-    monkeypatch.setattr(RegistryClient, "__new__", lambda cls: _FailingClient())
+    monkeypatch.setattr(RegistryClient, "get_detail", _failing_get_detail)
 
     result = install_capability(
         "acme/nonexistent-cap",
