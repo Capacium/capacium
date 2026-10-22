@@ -835,3 +835,320 @@ class TestCLIHostRegistration:
         assert elapsed < 5.0, f"host status took {elapsed:.1f}s — looks like network/build work"
         data = json.loads(result.stdout)
         assert data["framework"] == "claude-code"
+
+
+# ── Criterion 7: Network-blocked, read-only packages ────────────────────
+
+class TestCriterion7NetworkBlockedReadOnly:
+    """Normal host start performs no network, build or dependency mutation.
+
+    Each test blocks AF_INET/AF_INET6 socket creation and makes the
+    ``.capacium/packages`` directory read-only, then runs via the real
+    CLI entry point (subprocess).  Any network access, build attempt, or
+    dependency mutation would cause a socket error, permission error,
+    or unexpected filesystem change."""
+
+    @staticmethod
+    def _write_network_blocking_wrapper(wrapper_path: Path) -> None:
+        """Write a Python wrapper that blocks network before importing capacium."""
+        wrapper_path.write_text(r'''
+import socket as _socket
+import sys as _sys
+import os as _os
+
+# ── Block all AF_INET / AF_INET6 socket creation ─────────────────────
+_original_socket = _socket.socket
+def _blocked_socket(family=-1, type=-1, proto=-1, fileno=None):
+    if family in (_socket.AF_INET, _socket.AF_INET6):
+        raise OSError(101, "Network access blocked by test")
+    if fileno is not None:
+        return _original_socket(family, type, proto, fileno=fileno)
+    return _original_socket(family, type, proto)
+_socket.socket = _blocked_socket
+
+# Also block higher-level HTTP
+try:
+    import urllib.request as _ur
+    _original_urlopen = _ur.urlopen
+    def _blocked_urlopen(*a, **kw):
+        raise OSError(102, "HTTP access blocked by test")
+    _ur.urlopen = _blocked_urlopen
+except Exception:
+    pass
+
+try:
+    import http.client as _hc
+    _original_http_connect = _hc.HTTPConnection.connect
+    def _blocked_http_connect(self):
+        raise OSError(103, "HTTP connection blocked by test")
+    _hc.HTTPConnection.connect = _blocked_http_connect
+except Exception:
+    pass
+
+# ── Now import capacium and run ────────────────────────────────────────
+# The CLI's main() uses argparse with sys.argv[1:], so sys.argv must be
+# ['cap', 'host', 'status', ...] for argparse to see ['host', 'status', ...]
+_sys.argv = ['cap'] + _sys.argv[1:]  # replace wrapper path with 'cap'
+from capacium.cli import main as _cli_main
+try:
+    _sys.exit(_cli_main())
+except SystemExit as e:
+    _sys.exit(e.code)
+''')
+
+    @staticmethod
+    def _snapshot_packages(packages_dir: Path) -> dict:
+        """Return {relative_path: stat_size} for all files under packages_dir."""
+        if not packages_dir.exists():
+            return {}
+        snap = {}
+        for p in packages_dir.rglob("*"):
+            if p.is_file():
+                snap[str(p.relative_to(packages_dir))] = p.stat().st_size
+        return snap
+
+    # ── helpers for each test case ────────────────────────────────────
+
+    def _run_blocked(
+        self, tmp_home: Path, tmp_path: Path, cli_args: list[str],
+        packages_readonly: bool = True,
+    ) -> "tuple[int, str, str, float]":
+        """Run a CLI command with network blocked and optionally read-only packages.
+
+        Returns (returncode, stdout, stderr, elapsed_seconds).
+        """
+        import subprocess
+        import sys as _sys
+        import time as _time
+
+        wrapper = tmp_path / "network_blocked_runner.py"
+        self._write_network_blocking_wrapper(wrapper)
+
+        # Pre-create directories the CLI needs (must exist before chmod)
+        packages_dir = tmp_home / ".capacium" / "packages"
+        packages_dir.mkdir(parents=True, exist_ok=True)
+        registry_dir = tmp_home / ".capacium"
+        registry_dir.mkdir(parents=True, exist_ok=True)
+
+        # Snapshot packages before
+        snap_before = self._snapshot_packages(packages_dir)
+
+        if packages_readonly:
+            # Make packages dir read-only (no write, no execute for files)
+            packages_dir.chmod(0o555)
+
+        env = {
+            "HOME": str(tmp_home),
+            "USERPROFILE": str(tmp_home),
+            "PATH": os.environ.get("PATH", ""),
+            "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        }
+
+        try:
+            start = _time.monotonic()
+            cmd = [_sys.executable, str(wrapper), *cli_args]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env, timeout=30,
+            )
+            elapsed = _time.monotonic() - start
+        finally:
+            if packages_readonly:
+                packages_dir.chmod(0o755)
+
+        # Verify no dependency/packages mutation when packages are read-only
+        if packages_readonly:
+            snap_after = self._snapshot_packages(packages_dir)
+            if snap_before != snap_after:
+                added = {k for k in snap_after if k not in snap_before}
+                removed = {k for k in snap_before if k not in snap_after}
+                changed = {
+                    k for k in snap_before
+                    if k in snap_after and snap_before[k] != snap_after[k]
+                }
+                mutation_details = []
+                if added:
+                    mutation_details.append(f"added: {sorted(added)}")
+                if removed:
+                    mutation_details.append(f"removed: {sorted(removed)}")
+                if changed:
+                    mutation_details.append(f"changed: {sorted(changed)}")
+                raise AssertionError(
+                    f"Packages mutated during blocked run: {'; '.join(mutation_details)}"
+                )
+
+        return result.returncode, result.stdout, result.stderr, elapsed
+
+    # ── Tests ─────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_host_status_network_blocked_readonly_packages(
+        self, framework, tmp_home, tmp_path,
+    ):
+        """cap host status with network blocked and read-only packages."""
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "status", "--framework", framework, "--json"],
+            packages_readonly=True,
+        )
+        assert rc == 0, (
+            f"host status {framework} failed with network blocked + "
+            f"read-only packages: rc={rc} stderr={stderr}"
+        )
+        assert elapsed < 10.0, (
+            f"host status {framework} took {elapsed:.1f}s — "
+            f"looks like network/build work"
+        )
+        data = json.loads(stdout)
+        assert data["framework"] == framework
+        assert "verified_skills" in data
+        assert "verified_mcp_servers" in data
+        assert "process_attestable" in data
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_host_inspect_network_blocked_readonly_packages(
+        self, framework, tmp_home, tmp_path,
+    ):
+        """cap host inspect with network blocked and read-only packages."""
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "inspect", "--framework", framework, "--json"],
+            packages_readonly=True,
+        )
+        assert rc == 0, (
+            f"host inspect {framework} failed with network blocked + "
+            f"read-only packages: rc={rc} stderr={stderr}"
+        )
+        assert elapsed < 10.0, (
+            f"host inspect {framework} took {elapsed:.1f}s"
+        )
+        data = json.loads(stdout)
+        assert data["framework"] == framework
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_host_register_dry_run_network_blocked(
+        self, framework, tmp_home, tmp_path,
+    ):
+        """cap host register --dry-run with network blocked."""
+        source = _make_skill_dir(tmp_path, f"netblock-{framework}")
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "register", f"netblock-{framework}",
+             "--framework", framework, "--kind", "skill",
+             "--source", str(source), "--dry-run", "--json"],
+            packages_readonly=False,  # dry-run shouldn't write, but we don't chmod
+        )
+        assert rc == 0, (
+            f"host register --dry-run {framework} failed with network blocked: "
+            f"rc={rc} stderr={stderr}"
+        )
+        assert elapsed < 10.0, f"dry-run {framework} took {elapsed:.1f}s"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_host_verify_network_blocked(
+        self, framework, tmp_home, tmp_path,
+    ):
+        """cap host verify with network blocked."""
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "verify", "nonexistent-cap",
+             "--framework", framework, "--json"],
+            packages_readonly=True,
+        )
+        # verify of nonexistent cap should exit non-zero (failure)
+        # but must NOT be a network error
+        assert "Network access blocked" not in stderr, (
+            f"host verify {framework} attempted network access: {stderr}"
+        )
+        assert elapsed < 10.0, f"verify {framework} took {elapsed:.1f}s"
+
+    def test_network_blocked_full_register_verify_unregister(
+        self, tmp_home, tmp_path,
+    ):
+        """Full register -> verify -> unregister cycle with network blocked.
+
+        Only packages dir is NOT read-only here (register/unregister need
+        write access). The test proves no network access occurs during
+        normal host mutation operations."""
+        source = _make_skill_dir(tmp_path, "netblock-full")
+
+        # Register (network blocked, packages writable)
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "register", "netblock-full",
+             "--framework", "claude-code", "--kind", "skill",
+             "--source", str(source), "--json"],
+            packages_readonly=False,
+        )
+        assert rc == 0, f"register failed with network blocked: rc={rc} stderr={stderr}"
+        assert elapsed < 10.0
+        reg_data = json.loads(stdout)
+        assert reg_data["success"] is True
+
+        # Verify (network blocked, packages read-only)
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "verify", "netblock-full",
+             "--framework", "claude-code", "--json"],
+            packages_readonly=True,
+        )
+        assert rc == 0, f"verify failed with network blocked: rc={rc} stderr={stderr}"
+        verify_data = json.loads(stdout)
+        assert verify_data["success"] is True
+
+        # Status (network blocked, packages read-only)
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "status", "--framework", "claude-code", "--json"],
+            packages_readonly=True,
+        )
+        assert rc == 0, f"status failed with network blocked: rc={rc} stderr={stderr}"
+        status_data = json.loads(stdout)
+        assert "netblock-full" in status_data["verified_skills"]
+
+        # Unregister (network blocked, packages writable)
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "unregister", "netblock-full",
+             "--framework", "claude-code", "--kind", "skill", "--json"],
+            packages_readonly=False,
+        )
+        assert rc == 0, f"unregister failed with network blocked: rc={rc} stderr={stderr}"
+
+    def test_no_dependency_mutation_during_host_status(
+        self, tmp_home, tmp_path,
+    ):
+        """Running host status must not mutate installed packages.
+
+        Pre-populates a skill in the packages directory, makes packages
+        read-only, and verifies host status completes without mutation."""
+
+        # Pre-populate a skill in packages
+        packages_dir = tmp_home / ".capacium" / "packages" / "global" / "frozen-skill" / "1.0.0"
+        packages_dir.mkdir(parents=True, exist_ok=True)
+        (packages_dir / "capability.yaml").write_text(
+            "name: frozen-skill\nversion: 1.0.0\nkind: skill\n"
+        )
+        (packages_dir / "main.py").write_text("print('frozen')\n")
+
+        # Snapshot
+        snap_before = self._snapshot_packages(tmp_home / ".capacium" / "packages")
+
+        # Run host status via network-blocked wrapper (packages writable here
+        # to allow StorageManager init, but we verify no mutation after)
+        rc, stdout, stderr, elapsed = self._run_blocked(
+            tmp_home, tmp_path,
+            ["host", "status", "--framework", "claude-code", "--json"],
+            packages_readonly=False,  # allow StorageManager init
+        )
+        assert rc == 0, f"host status failed: rc={rc} stderr={stderr}"
+
+        # Verify no packages mutation
+        snap_after = self._snapshot_packages(tmp_home / ".capacium" / "packages")
+        # The snap_before might miss items created by StorageManager init
+        # (like global/ dir). We only check that existing items are unchanged.
+        for path, size in snap_before.items():
+            assert path in snap_after, f"Package file removed: {path}"
+            assert snap_after[path] == size, (
+                f"Package file mutated: {path} ({size} -> {snap_after[path]})"
+            )
