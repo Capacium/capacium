@@ -26,6 +26,16 @@ def _claude_desktop_path() -> Path:
         return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
 
+def _openclaude_config_path() -> Path:
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "OpenClaude" / "config.json"
+    elif system == "Windows":
+        return Path.home() / "AppData" / "Roaming" / "OpenClaude" / "config.json"
+    else:
+        return Path.home() / ".config" / "openclaude" / "config.json"
+
+
 SectionKeys = Union[str, List[str]]
 
 
@@ -52,6 +62,7 @@ FRAMEWORK_MCP_CONFIGS: List[Tuple[str, Any, SectionKeys]] = [
     ("librechat", lambda: Path.home() / ".librechat" / "mcp_servers.json", "mcpServers"),
     ("chainlit", lambda: Path.home() / ".chainlit" / "mcp_config.json", "mcpServers"),
     ("cherry-studio", lambda: Path.home() / ".cherry-studio" / "mcp_servers.json", "mcpServers"),
+    ("openclaude", _openclaude_config_path, "mcpServers"),
 ]
 
 # TOML-based configs need their own parser/writer (codex was previously not
