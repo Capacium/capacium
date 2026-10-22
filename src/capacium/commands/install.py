@@ -1197,10 +1197,18 @@ def install_capability(
     )
     from .exec import build_and_activate
 
+    mcp_section = getattr(manifest, "mcp", None)
+    mcp_command = mcp_section.get("command") if isinstance(mcp_section, dict) else None
+    mcp_args = mcp_section.get("args") if isinstance(mcp_section, dict) else None
+    if isinstance(mcp_args, list):
+        mcp_args = [str(a) for a in mcp_args]
+    else:
+        mcp_args = None
+
     required_runtimes = infer_required_runtimes(manifest)
     if RuntimeUnit.needed_for(
         required_runtimes,
-        mcp_command=getattr(manifest, "mcp", {}).get("command") if isinstance(getattr(manifest, "mcp", None), dict) else None,
+        mcp_command=mcp_command,
     ):
         try:
             unit = RuntimeUnit.from_manifest(
@@ -1208,7 +1216,8 @@ def install_capability(
                 name=cap_name,
                 version=version,
                 runtimes=required_runtimes,
-                mcp_command=getattr(manifest, "mcp", {}).get("command") if isinstance(getattr(manifest, "mcp", None), dict) else None,
+                mcp_command=mcp_command,
+                mcp_args=mcp_args,
             )
             entrypoints_raw: Dict[str, Tuple[str, ...]] = {}
             for k, v in unit.entrypoints.items():
@@ -1223,6 +1232,7 @@ def install_capability(
                 unit, source_lock,
                 probe_timeout=10.0,
                 json_output=json_output,
+                source_dir=str(package_dir) if package_dir else None,
             )
         except Exception as exc:
             # Build/activation failure does not roll back the install;

@@ -134,6 +134,7 @@ class RuntimeUnit:
     descriptor_digest: str = ""
     entrypoints: Dict[str, str] = field(default_factory=dict)
     generation_id: Optional[str] = None
+    is_mcp: bool = False
 
     @property
     def id(self) -> str:
@@ -147,6 +148,7 @@ class RuntimeUnit:
         version: str,
         runtimes: Dict[str, str],
         mcp_command: Optional[str] = None,
+        mcp_args: Optional[List[str]] = None,
     ) -> "RuntimeUnit":
         """Build a RuntimeUnit from a capability manifest.
 
@@ -154,8 +156,13 @@ class RuntimeUnit:
         populates entrypoints from the MCP command when available.
         """
         entrypoints: Dict[str, str] = {}
+        is_mcp = False
         if mcp_command:
-            entrypoints["main"] = mcp_command
+            cmd = mcp_command
+            if mcp_args:
+                cmd = " ".join([mcp_command] + list(mcp_args))
+            entrypoints["main"] = cmd
+            is_mcp = True
 
         descriptor = json.dumps({
             "owner": owner,
@@ -173,6 +180,7 @@ class RuntimeUnit:
             descriptor_digest=descriptor_digest,
             entrypoints=entrypoints,
             generation_id=None,
+            is_mcp=is_mcp,
         )
 
     @staticmethod
@@ -264,7 +272,7 @@ class BuildResult:
 
     digest: str
     build_dir: str
-    generation: "RuntimeGeneration"
+    generation: "RuntimeGeneration" = field(default_factory=lambda: RuntimeGeneration(digest="", source_lock=SourceLock(source_url="", digest="")))
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
@@ -322,15 +330,17 @@ class RuntimeBuilder:
             with open(os.path.join(output_dir, ".generation.json"), "w") as f:
                 json.dump(manifest, f, sort_keys=True)
 
-            # Create entrypoint scripts from the source lock entrypoints
+            # Create entrypoint scripts from the source lock entrypoints.
+            # Each entrypoint is written as a proper shebang shell script
+            # so probes (version, CLI, protocol) can execute it directly.
             for entry_name, entry_cmd in source_lock.entrypoints.items():
                 script_path = os.path.join(output_dir, entry_name)
                 if isinstance(entry_cmd, (list, tuple)):
-                    script_content = " ".join(str(c) for c in entry_cmd)
+                    cmd_str = " ".join(str(c) for c in entry_cmd)
                 else:
-                    script_content = str(entry_cmd)
+                    cmd_str = str(entry_cmd)
                 with open(script_path, "w") as f:
-                    f.write(script_content)
+                    f.write(f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && exec {cmd_str} \"$@\"\n")
                 os.chmod(script_path, 0o755)
 
         return BuildResult(
@@ -993,8 +1003,9 @@ class GenerationStore:
         return self._active_generation_id
 
     def set_active(self, digest: str) -> None:
-        """Mark a generation as the currently active one."""
+        """Mark a generation as the currently active one and persist."""
         self._active_generation_id = digest
+        self.save()
 
     def is_active(self, digest: str) -> bool:
         """Return True if the given digest is the active generation."""

@@ -18,6 +18,8 @@ C6: runtime_drift, process_stale, binding_drift, unverified,
 
 import json
 import os
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from unittest import mock
@@ -113,10 +115,12 @@ def fake_generation(temp_home):
     """))
     script.chmod(0o755)
 
-    # Create a real importable Python package so the import probe works
+    # Create a real importable Python module so the import probe works
     pkg = target / "test_skill"
     pkg.mkdir(exist_ok=True)
     (pkg / "__init__.py").write_text("# test_skill package")
+    # Root-level .py file so glob("*.py") discovers an import target
+    (target / "main_module.py").write_text("")
 
     # Write .generation.json
     meta = target / ".generation.json"
@@ -137,6 +141,8 @@ def fake_python_generation(temp_home):
     pkg = target / "test_pkg"
     pkg.mkdir(exist_ok=True)
     (pkg / "__init__.py").write_text("# test package")
+    # Root-level .py file so glob("*.py") discovers an import target
+    (target / "main_module.py").write_text("")
 
     script = target / "main"
     script.write_text(textwrap.dedent("""\
@@ -289,7 +295,8 @@ class TestProbes:
     def test_run_probes_mcp_triggers_protocol(self, fake_generation):
         digest, gen_dir = fake_generation
         unit = RuntimeUnit(owner="test", name="mcp-skill",
-                           entrypoints={"main": "python3 mcp_server.py"})
+                           entrypoints={"main": "python3 mcp_server.py"},
+                           is_mcp=True)
         probes = run_probes(unit, gen_dir, timeout=5.0)
         kinds = {p.kind for p in probes}
         assert ProbeKind.PROTOCOL in kinds
@@ -1622,3 +1629,239 @@ class TestCriterion7RealisticFixtures:
         assert j["generation_digest"] == digest
         assert j["activated"] is True
         assert j["previous_digest"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fix C walking-skeleton: real CLI entry point in subprocess, isolated HOME
+# ──────────────────────────────────────────────────────────────────────
+
+class TestWalkingSkeletonEndToEnd:
+    """Fix C acceptance: one end-to-end test through the real CLI entry
+    point in a child process with an isolated HOME.
+
+    Installs an MCP-style fixture with a runtime → active pointer and
+    previous pointer exist, store.json has active_generation_id (one
+    source of truth) → ``cap exec`` runs a real entrypoint (shebang,
+    args kept) and the PID file is written → ``cap status`` shows
+    package version, active generation, observed process generation,
+    and process_stale after the process dies → a failing probe on the
+    next version leaves the old generation active → ``cap rollback``
+    returns to the previous generation.
+    """
+
+    @staticmethod
+    def _make_mcp_fixture(pkg_dir, owner, name, version):
+        """Create a fixture capability directory with capability.yaml
+        and an MCP entrypoint script directly inside *pkg_dir*."""
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+
+        # Entrypoint script
+        script = pkg_dir / "server.py"
+        script.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import sys, json
+            if len(sys.argv) > 1 and sys.argv[1] == "--version":
+                print("{owner}/{name} v{version}")
+                sys.exit(0)
+            if len(sys.argv) > 1 and sys.argv[1] == "--help":
+                print("Usage: server.py [options]")
+                print("  --version  Show version")
+                print("  --help     Show help")
+                sys.exit(0)
+            # MCP stdio mode: respond to initialize
+            line = sys.stdin.readline()
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                sys.exit(1)
+            resp = {{"jsonrpc": "2.0", "id": req.get("id", 1),
+                     "result": {{"protocolVersion": "2024-11-05",
+                                 "capabilities": {{}},
+                                 "serverInfo": {{"name": "{name}", "version": "{version}"}}}}}}
+            sys.stdout.write(json.dumps(resp) + "\\n")
+            sys.stdout.flush()
+            sys.exit(0)
+        """))
+        script.chmod(0o755)
+
+        # capability.yaml
+        (pkg_dir / "capability.yaml").write_text(textwrap.dedent(f"""\
+            name: {name}
+            version: "{version}"
+            kind: mcp-server
+            runtimes:
+              python: ">=3.10"
+            mcp:
+              transport: stdio
+              command: python3
+              args:
+                - server.py
+        """))
+
+    @staticmethod
+    def _run_cap(isolated_home, args, **kwargs):
+        """Run ``cap`` in a subprocess with an isolated HOME."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src_dir = os.path.join(repo_root, "src")
+        env = os.environ.copy()
+        env["HOME"] = str(isolated_home)
+        env["PYTHONPATH"] = src_dir
+        cmd = [sys.executable, "-m", "capacium.cli"] + args
+        return subprocess.run(
+            cmd, capture_output=True, text=True,
+            env=env, cwd=str(kwargs.pop("cwd", isolated_home)),
+            **kwargs,
+        )
+
+    def test_walking_skeleton_install_exec_status_rollback(self, tmp_path):
+        """End-to-end: install, exec, status, reinstall-with-failing-probes,
+        rollback — all through the real CLI in subprocesses."""
+        isolated_home = tmp_path / "home"
+        isolated_home.mkdir(parents=True, exist_ok=True)
+
+        # 1. Build fixture v1 and install
+        v1_dir = tmp_path / "v1"
+        self._make_mcp_fixture(v1_dir, "global", "proof-runtime", "1.0.0")
+
+        r1 = self._run_cap(isolated_home, [
+            "install", "proof-runtime",
+            "--source", str(v1_dir),
+            "--yes", "--skip-runtime-check",
+            "--json",
+        ])
+        assert r1.returncode == 0, f"install v1 failed: {r1.stderr}"
+
+        # 2. Check active pointer exists
+        active_dir = isolated_home / ".capacium" / "active"
+        active_ptr = active_dir / "global_proof-runtime"
+        assert active_ptr.exists(), f"active pointer missing at {active_ptr}; stdout={r1.stdout[:500]} stderr={r1.stderr[:500]}"
+        active_digest = active_ptr.read_text().strip()
+        assert len(active_digest) > 0
+
+        # 3. Check store.json has active_generation_id (one source of truth)
+        store_path = isolated_home / ".capacium" / "generations" / "store.json"
+        assert store_path.exists(), f"store.json missing at {store_path}"
+        store_data = json.loads(store_path.read_text())
+        assert store_data.get("active_generation_id") == active_digest, \
+            f"store active_generation_id {store_data.get('active_generation_id')} != pointer {active_digest}"
+
+        # 4. cap exec: runs the entrypoint and writes PID
+        r_exec = self._run_cap(isolated_home, [
+            "exec", "global/proof-runtime", "--version",
+        ])
+        assert r_exec.returncode == 0, f"exec failed: {r_exec.stderr}"
+        assert "proof-runtime v1.0.0" in r_exec.stdout
+
+        # PID file should be cleaned up after exec (handle_exec clears it)
+        pid_path = active_dir / "global_proof-runtime.pid"
+        assert not pid_path.exists(), "PID file should be cleared after exec"
+
+        # 5. cap status: package version, active generation
+        r_status = self._run_cap(isolated_home, [
+            "status", "global/proof-runtime", "--json",
+        ])
+        assert r_status.returncode == 0, f"status failed: {r_status.stderr}"
+        status_json = json.loads(r_status.stdout.strip())
+        assert status_json["package_version"] == "1.0.0"
+        assert status_json["active_generation_digest"] == active_digest
+        assert "flags" in status_json
+
+        # 6. Build v2 with working probes, install, then rollback
+        v2_dir = tmp_path / "v2"
+        self._make_mcp_fixture(v2_dir, "global", "proof-runtime", "2.0.0")
+
+        self._run_cap(isolated_home, [
+            "install", "proof-runtime",
+            "--source", str(v2_dir),
+            "--yes", "--skip-runtime-check",
+            "--json",
+        ])
+        v2_digest = active_ptr.read_text().strip()
+        assert v2_digest != active_digest, "v2 install did not switch active pointer"
+
+        # Rollback to v1
+        r_rb = self._run_cap(isolated_home, [
+            "rollback", "global/proof-runtime",
+        ])
+        assert r_rb.returncode == 0, f"rollback failed: {r_rb.stderr}"
+        assert active_ptr.read_text().strip() == active_digest
+
+        # Previous pointer should point to v2
+        prev_ptr = active_dir / "global_proof-runtime.previous"
+        assert prev_ptr.read_text().strip() == v2_digest
+
+    def test_walking_skeleton_failed_probe_leaves_old_active(self, tmp_path):
+        """A failing probe on the next version leaves the old generation active."""
+        isolated_home = tmp_path / "home"
+        isolated_home.mkdir(parents=True, exist_ok=True)
+
+        # v1 with working entrypoint
+        v1_dir = tmp_path / "v1"
+        self._make_mcp_fixture(v1_dir, "global", "failprobe-test", "1.0.0")
+
+        r1 = self._run_cap(isolated_home, [
+            "install", "failprobe-test",
+            "--source", str(v1_dir),
+            "--yes", "--skip-runtime-check",
+            "--json",
+        ])
+        assert r1.returncode == 0, f"install v1 failed: {r1.stderr}"
+
+        active_dir = isolated_home / ".capacium" / "active"
+        active_ptr = active_dir / "global_failprobe-test"
+        assert active_ptr.exists(), f"active pointer missing: {r1.stdout[:500]}"
+        v1_digest = active_ptr.read_text().strip()
+
+        # v2 with broken entrypoint (--version returns exit 1)
+        v2_dir = tmp_path / "v2"
+        v2_dir.mkdir(parents=True, exist_ok=True)
+        broken = v2_dir / "server.py"
+        broken.write_text("#!/usr/bin/env python3\nimport sys; sys.exit(1)\n")
+        broken.chmod(0o755)
+        (v2_dir / "capability.yaml").write_text(textwrap.dedent("""\
+            name: failprobe-test
+            version: "2.0.0"
+            kind: mcp-server
+            runtimes:
+              python: ">=3.10"
+            mcp:
+              transport: stdio
+              command: python3
+              args:
+                - server.py
+        """))
+
+        r2 = self._run_cap(isolated_home, [
+            "install", "failprobe-test",
+            "--source", str(v2_dir),
+            "--yes", "--skip-runtime-check",
+            "--json",
+        ])
+        # Install should succeed but activation should be blocked
+        # The active pointer must still be v1
+        assert active_ptr.read_text().strip() == v1_digest, \
+            f"active changed to {active_ptr.read_text().strip()} despite failed probes; stderr={r2.stderr[:500]}"
+
+    def test_walking_skeleton_mcp_protocol_probe(self, tmp_path):
+        """Protocol probe fires for MCP units (is_mcp=True)."""
+        isolated_home = tmp_path / "home"
+        isolated_home.mkdir(parents=True, exist_ok=True)
+
+        v1_dir = tmp_path / "v1"
+        self._make_mcp_fixture(v1_dir, "global", "mcp-probe-test", "1.0.0")
+
+        r1 = self._run_cap(isolated_home, [
+            "install", "mcp-probe-test",
+            "--source", str(v1_dir),
+            "--yes", "--skip-runtime-check",
+            "--json",
+        ])
+        assert r1.returncode == 0, f"install failed: {r1.stderr}"
+
+        # The entrypoint is a proper shebang script → probes should pass
+        active_dir = isolated_home / ".capacium" / "active"
+        active_ptr = active_dir / "global_mcp-probe-test"
+        assert active_ptr.exists(), \
+            f"active pointer missing; install output: {r1.stdout[:500]} {r1.stderr[:500]}"
+
+

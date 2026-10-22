@@ -210,8 +210,23 @@ def _probe_import(
     if not _is_python_unit(unit):
         return ProbeResult(kind=ProbeKind.IMPORT, passed=True,
                            detail="not applicable (non-Python)")
+    if getattr(unit, "is_mcp", False):
+        return ProbeResult(kind=ProbeKind.IMPORT, passed=True,
+                           detail="not applicable (MCP — protocol probe validates)")
 
-    mod = unit.name.replace("-", "_")
+    # Discover actual Python modules in the generation directory
+    # rather than guessing from the unit name.
+    py_modules = sorted(
+        p.stem for p in Path(str(generation_dir)).glob("*.py")
+        if p.stem != "__init__"
+    )
+    if not py_modules:
+        return ProbeResult(
+            kind=ProbeKind.IMPORT, passed=False,
+            detail="no importable Python modules found in generation directory",
+            duration_ms=(time.monotonic() - t0) * 1000,
+        )
+    mod = py_modules[0]
     interpreter = _resolve_interpreter(unit)
     try:
         proc = subprocess.run(
@@ -374,10 +389,8 @@ def run_probes(
     results.append(_probe_cli(exe, timeout))
 
     # Protocol probe only for MCP entrypoints
-    for cmd in unit.entrypoints.values():
-        if "mcp" in cmd.lower():
-            results.append(_probe_protocol(exe, timeout))
-            break
+    if getattr(unit, "is_mcp", False):
+        results.append(_probe_protocol(exe, timeout))
 
     return results
 
@@ -894,6 +907,7 @@ def build_and_activate(
     *,
     probe_timeout: float = 10.0,
     json_output: bool = False,
+    source_dir: Optional[str] = None,
 ) -> ActivationResult:
     """Build a generation and atomically activate it.
 
@@ -902,11 +916,25 @@ def build_and_activate(
     in the persistent store, runs pre-activation probes and switches the
     active pointer atomically.
 
+    If *source_dir* is given, its files are copied into the generation
+    directory before the entrypoint wrappers are created.
+
     A failed probe leaves the previous generation active.  The generation
     directory is placed under ``~/.capacium/generations/<digest>``.
     """
     builder = RuntimeBuilder(str(_generations_dir()))
     build_result = builder.build(source_lock)
+
+    gen_dir = Path(build_result.build_dir)
+
+    # Copy source files into the generation directory
+    if source_dir and os.path.isdir(source_dir):
+        import shutil
+        for item in os.listdir(source_dir):
+            src = os.path.join(source_dir, item)
+            dst = gen_dir / item
+            if os.path.isfile(src) and not dst.exists():
+                shutil.copy2(src, dst)
 
     # Register the generation in the persistent store so cap exec
     # and cap status can resolve it across process invocations.
@@ -914,8 +942,6 @@ def build_and_activate(
     manager = GenerationManager()
     manager.store.add(generation)
     manager.store.set_active(generation.digest)
-
-    gen_dir = Path(build_result.build_dir)
 
     result = activate(
         unit, generation.digest, gen_dir,
@@ -940,38 +966,42 @@ def handle_exec(args) -> int:
     extra_args = getattr(args, "args", []) or []
     mcp_mode = getattr(args, "mcp", False)
 
-    if mcp_mode:
-        # Resolve the active generation, then run in MCP stdio mode.
-        # Diagnostics go to stderr; stdout stays protocol-clean.
-        active_digest = get_active_digest(unit_id)
-        if not active_digest:
-            print(f"Error: no active generation for {unit_id}", file=sys.stderr)
-            return 1
+    active_digest = get_active_digest(unit_id)
+    if not active_digest:
+        print(f"Error: no active generation for {unit_id}", file=sys.stderr)
+        return 1
 
-        manager = GenerationManager()
-        generation = manager.store.get(active_digest)
-        if generation is None:
-            print(f"Error: generation {active_digest} not found in store", file=sys.stderr)
-            return 1
+    manager = GenerationManager()
+    generation = manager.store.get(active_digest)
+    if generation is None:
+        print(f"Error: generation {active_digest} not found in store", file=sys.stderr)
+        return 1
 
-        gen_dir = _generations_dir() / active_digest
+    gen_dir = _generations_dir() / active_digest
 
-        entrypoints: Dict[str, str] = {}
-        for k, v in generation.source_lock.entrypoints.items():
-            entrypoints[k] = " ".join(v) if isinstance(v, (list, tuple)) else str(v)
+    entrypoints: Dict[str, str] = {}
+    for k, v in generation.source_lock.entrypoints.items():
+        entrypoints[k] = " ".join(v) if isinstance(v, (list, tuple)) else str(v)
 
-        exe = _find_executable(gen_dir, entrypoints)
-        if exe is None:
-            print("Error: no executable in active generation", file=sys.stderr)
-            return 1
+    exe = _find_executable(gen_dir, entrypoints)
+    if exe is None:
+        print("Error: no executable in active generation", file=sys.stderr)
+        return 1
 
-        result = exec_mcp_stdio(exe, extra_args)
-    else:
-        result = exec_active(unit_id, extra_args)
+    # Record the PID and generation so cap status can observe the process
+    _write_pid_file(unit_id, active_digest)
 
-    if result.error:
-        print(f"Error: {result.error}", file=sys.stderr)
-    return result.exit_code
+    try:
+        if mcp_mode:
+            result = exec_mcp_stdio(exe, extra_args)
+        else:
+            result = exec_entrypoint(exe, extra_args)
+
+        if result.error:
+            print(f"Error: {result.error}", file=sys.stderr)
+        return result.exit_code
+    finally:
+        _clear_pid_file(unit_id)
 
 
 def handle_status(args) -> int:
