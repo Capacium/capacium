@@ -4,12 +4,17 @@ Skills: ~/.codex/skills/<name>/
 MCP:   ~/.codex/config.toml
 """
 import json
+import os
 import shutil
 from pathlib import Path
+from typing import List
 
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter, _cap_id, ensure_package_dir
+from .base import (
+    FrameworkAdapter, _cap_id, ensure_package_dir,
+    HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+)
 from .mcp_config_patcher import McpConfigPatcher
 
 
@@ -95,6 +100,174 @@ class CodexAdapter(FrameworkAdapter):
         server_key_normalized = server_key.replace("/", "-")
         servers = config.get("mcp_servers", {})
         return server_key in servers or server_key_normalized in servers
+
+    # ── Host registration (CAP117-HOST-012) ───────────────────────────
+
+    def plan_host_operation(
+        self, operation: str, capability_id: str, kind: str,
+        *, owner: str = "global",
+    ) -> HostPlan:
+        entries: List[HostPlanEntry] = []
+        will_modify = False
+
+        if kind == "skill":
+            link_path = self.skills_dir / _cap_id(capability_id, owner)
+            current = "present" if (link_path.exists() and link_path.is_symlink()) else "missing"
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="codex",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.skills_dir),
+                details={"link_path": str(link_path)},
+            ))
+
+        elif kind == "mcp-server":
+            config = McpConfigPatcher.read_toml(self.config_path)
+            server_key = McpConfigPatcher.build_server_key(capability_id, owner)
+            server_key_normalized = server_key.replace("/", "-")
+            servers = config.get("mcp_servers", {})
+            current = "present" if (server_key in servers or server_key_normalized in servers) else "missing"
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="codex",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.config_path),
+                details={"server_key": server_key, "server_key_normalized": server_key_normalized},
+            ))
+
+        return HostPlan(
+            framework="codex",
+            entries=entries,
+            will_modify_config=will_modify,
+        )
+
+    def inspect(self) -> HostInspectResult:
+        result = HostInspectResult(
+            framework="codex",
+            config_path=str(self.config_path),
+            config_exists=self.config_path.exists(),
+        )
+
+        if self.skills_dir.exists():
+            for d in sorted(self.skills_dir.iterdir()):
+                if d.name.startswith("."):
+                    continue
+                if d.is_symlink():
+                    target = os.readlink(d)
+                    if ".capacium" in target:
+                        result.managed_skills.append(d.name)
+                    else:
+                        result.foreign_entries.append(f"skill:{d.name}")
+                elif d.is_dir():
+                    result.foreign_entries.append(f"skill-dir:{d.name}")
+
+        if self.config_path.exists():
+            config = McpConfigPatcher.read_toml(self.config_path)
+            servers = config.get("mcp_servers", {})
+            for key, entry in servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                marker = entry.get("_capacium_owner", "")
+                if marker.startswith("capacium:"):
+                    result.managed_mcp_servers.append(key)
+                    result.ownership_markers[key] = marker
+                else:
+                    result.foreign_entries.append(f"mcp:{key}")
+        else:
+            result.config_valid = True
+
+        return result
+
+    def register(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="codex", operation="register",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            return HostOperationResult(
+                framework="codex", operation="register",
+                success=self.install_skill(capability_id, "", source_dir, owner),
+                plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="codex", operation="register",
+                success=self.install_mcp_server(capability_id, "", source_dir, owner),
+                plan=plan,
+            )
+        return HostOperationResult(
+            framework="codex", operation="register",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
+        )
+
+    def verify(self, capability_id: str, owner: str = "global") -> HostOperationResult:
+        exists = self.capability_exists(capability_id, owner)
+        plan = self.plan_host_operation("register", capability_id, "skill", owner=owner)
+        return HostOperationResult(
+            framework="codex", operation="verify",
+            success=exists, plan=plan,
+            error="" if exists else f"{capability_id} not found in codex",
+        )
+
+    def repair(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="codex", operation="repair",
+                success=True, plan=plan,
+            )
+        return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def unregister(
+        self, capability_id: str, kind: str,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("unregister", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="codex", operation="unregister",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            return HostOperationResult(
+                framework="codex", operation="unregister",
+                success=self.remove_skill(capability_id, owner),
+                plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="codex", operation="unregister",
+                success=self.remove_mcp_server(capability_id, owner),
+                plan=plan,
+            )
+        return HostOperationResult(
+            framework="codex", operation="unregister",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
+        )
 
 
 def _remove_matching_server_keys(servers: dict, cap_name: str) -> bool:

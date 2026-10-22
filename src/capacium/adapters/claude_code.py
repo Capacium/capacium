@@ -1,10 +1,14 @@
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter, _cap_id, ensure_package_dir
+from .base import (
+    FrameworkAdapter, _cap_id, ensure_package_dir,
+    HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+)
 
 
 class ClaudeCodeAdapter(FrameworkAdapter):
@@ -13,6 +17,7 @@ class ClaudeCodeAdapter(FrameworkAdapter):
         self.storage = StorageManager()
         self.symlink_manager = SymlinkManager()
         self.skills_dir = Path.home() / ".claude" / "skills"
+        self.config_path = Path.home() / ".claude.json"
 
     def install_skill(self, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> bool:
         self.skills_dir.mkdir(parents=True, exist_ok=True)
@@ -110,3 +115,205 @@ class ClaudeCodeAdapter(FrameworkAdapter):
                 metadata["files"].append(str(rel_path))
 
         return metadata
+
+    # ── Host registration (CAP117-HOST-012) ───────────────────────────
+
+    def _ownership_marker(self, capability_id: str, kind: str) -> str:
+        """Namespaced ownership marker: ``capacium:<cap_id>:<kind>``."""
+        return f"capacium:{capability_id}:{kind}"
+
+    def _is_managed_entry(self, entry_key: str, config: dict, section: str) -> bool:
+        """Check if a config entry has a Capacium ownership marker."""
+        servers = config.get(section, {})
+        entry = servers.get(entry_key, {})
+        if not isinstance(entry, dict):
+            return False
+        marker = entry.get("_capacium_owner", "")
+        return marker.startswith("capacium:")
+
+    def plan_host_operation(
+        self, operation: str, capability_id: str, kind: str,
+        *, owner: str = "global",
+    ) -> HostPlan:
+        entries: List[HostPlanEntry] = []
+        will_modify = False
+
+        if kind == "skill":
+            link_path = self.skills_dir / _cap_id(capability_id, owner)
+            current = "present" if (link_path.exists() and link_path.is_symlink()) else "missing"
+            if operation == "register":
+                target = "present"
+                if current != target:
+                    will_modify = True
+            elif operation == "unregister":
+                target = "absent"
+                if current == "present":
+                    will_modify = True
+            else:
+                target = current
+
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="claude-code",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.skills_dir),
+                details={"link_path": str(link_path)},
+            ))
+
+        elif kind == "mcp-server":
+            from .mcp_config_patcher import McpConfigPatcher
+            config = McpConfigPatcher.read_json(self.config_path)
+            server_key = McpConfigPatcher.build_server_key(capability_id, owner)
+            servers = config.get("mcpServers", {})
+            current = "present" if server_key in servers else "missing"
+            if operation == "register":
+                target = "present"
+                if current != target:
+                    will_modify = True
+            elif operation == "unregister":
+                target = "absent"
+                if current == "present":
+                    will_modify = True
+            else:
+                target = current
+
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="claude-code",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.config_path),
+                details={"server_key": server_key},
+            ))
+
+        return HostPlan(
+            framework="claude-code",
+            entries=entries,
+            will_modify_config=will_modify,
+        )
+
+    def inspect(self) -> HostInspectResult:
+        from .mcp_config_patcher import McpConfigPatcher
+
+        result = HostInspectResult(
+            framework="claude-code",
+            config_path=str(self.config_path),
+            config_exists=self.config_path.exists(),
+        )
+
+        # Inspect skills directory
+        if self.skills_dir.exists():
+            for d in sorted(self.skills_dir.iterdir()):
+                if d.name.startswith("."):
+                    continue
+                if d.is_symlink():
+                    target = os.readlink(d)
+                    if ".capacium" in target:
+                        result.managed_skills.append(d.name)
+                    else:
+                        result.foreign_entries.append(f"skill:{d.name}")
+                elif d.is_dir():
+                    result.foreign_entries.append(f"skill-dir:{d.name}")
+
+        # Inspect MCP config
+        if self.config_path.exists():
+            config = McpConfigPatcher.read_json(self.config_path)
+            servers = config.get("mcpServers", {})
+            for key, entry in servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                marker = entry.get("_capacium_owner", "")
+                if marker.startswith("capacium:"):
+                    result.managed_mcp_servers.append(key)
+                    result.ownership_markers[key] = marker
+                else:
+                    result.foreign_entries.append(f"mcp:{key}")
+        else:
+            result.config_valid = True  # no config is valid
+
+        return result
+
+    def register(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-code", operation="register",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            return HostOperationResult(
+                framework="claude-code", operation="register",
+                success=self.install_skill(capability_id, "", source_dir, owner),
+                plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="claude-code", operation="register",
+                success=self.install_mcp_server(capability_id, "", source_dir, owner),
+                plan=plan,
+            )
+        return HostOperationResult(
+            framework="claude-code", operation="register",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
+        )
+
+    def verify(self, capability_id: str, owner: str = "global") -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, "skill", owner=owner)
+        exists = self.capability_exists(capability_id, owner)
+        return HostOperationResult(
+            framework="claude-code", operation="verify",
+            success=exists, plan=plan,
+            error="" if exists else f"{capability_id} not found in claude-code",
+        )
+
+    def repair(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-code", operation="repair",
+                success=True, plan=plan,
+            )
+        # Repair by re-registering
+        return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def unregister(
+        self, capability_id: str, kind: str,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("unregister", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-code", operation="unregister",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            return HostOperationResult(
+                framework="claude-code", operation="unregister",
+                success=self.remove_skill(capability_id, owner),
+                plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="claude-code", operation="unregister",
+                success=self.remove_mcp_server(capability_id, owner),
+                plan=plan,
+            )
+        return HostOperationResult(
+            framework="claude-code", operation="unregister",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
+        )
