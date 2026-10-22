@@ -1137,3 +1137,32 @@ class TestDurableJournal:
         )
         # recovered list should be empty (nothing was successfully recovered)
         assert "global/ghost-skill" not in recovered
+
+
+def test_install_json_single_document_on_failure(tmp_home, capsys, monkeypatch):
+    """cap install --json prints a single JSON document on stdout even when
+    _fetch_from_registry would have printed a human line."""
+    from capacium.registry_client import RegistryClient
+
+    class _FailingClient:
+        def get_detail(self, *a, **kw):
+            raise RuntimeError("simulated registry 404")
+
+    monkeypatch.setattr(RegistryClient, "__new__", lambda cls: _FailingClient())
+
+    result = install_capability(
+        "acme/nonexistent-cap",
+        source_dir=None,
+        skip_runtime_check=True,
+        yes=True,
+        json_output=True,
+    )
+    assert result is False
+    out = capsys.readouterr().out.strip()
+    assert out, "stdout must not be empty"
+
+    # Must parse as exactly one JSON document — no interleaved human lines.
+    doc = json.loads(out)
+    assert doc["operation"] == "install"
+    assert doc["status"] == "error"
+    assert "not found" in doc.get("error", "").lower()

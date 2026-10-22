@@ -116,7 +116,7 @@ _KIND_COLORS_16 = {k.value: v for k, v in _KIND_COLOR_16.items()}
 
 class TrustBadge:
     _symbols = _TRUST_BADGE_SYMBOLS
-    _colors = _TRUST_COLORS_256 if _COLOR_DEPTH >= 256 else _TRUST_COLORS_16
+    _colors = _TRUST_COLORS_256 if _COLOR_DEPTH >= 256 else (_TRUST_COLORS_16 if _COLOR_DEPTH > 0 else {})
 
     @classmethod
     def render(cls, trust: str) -> str:
@@ -135,7 +135,7 @@ class TrustBadge:
 
 
 class KindPill:
-    _colors = _KIND_COLORS_256 if _COLOR_DEPTH >= 256 else _KIND_COLORS_16
+    _colors = _KIND_COLORS_256 if _COLOR_DEPTH >= 256 else (_KIND_COLORS_16 if _COLOR_DEPTH > 0 else {})
 
     @classmethod
     def render(cls, kind: str) -> str:
