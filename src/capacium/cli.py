@@ -379,6 +379,12 @@ def main():
         help="Output status as stable JSON",
     )
 
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Roll back a runtime generation to the previous verified generation",
+    )
+    rollback_parser.add_argument("capability", help="Capability specification (owner/name)")
+
     runtimes_sub.add_parser("list", help="List known runtimes and their detection state")
     runtimes_install_parser = runtimes_sub.add_parser(
         "install",
@@ -1078,6 +1084,10 @@ def main():
         elif args.command == "status":
             from .commands.exec import handle_status
             sys.exit(handle_status(args))
+
+        elif args.command == "rollback":
+            from .commands.exec import handle_rollback
+            sys.exit(handle_rollback(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management

@@ -31,7 +31,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..runtimes import (
     GenerationManager,
+    RuntimeBuilder,
     RuntimeUnit,
+    SourceLock,
 )
 
 
@@ -144,19 +146,38 @@ def _probe_version(exe: Path, timeout: float) -> ProbeResult:
         )
 
 
+def _resolve_interpreter(unit: RuntimeUnit) -> str:
+    """Return the Python interpreter to use for import probes.
+
+    Inspects the unit's entrypoints to find the interpreter command
+    (python3, python, uv, uvx). Falls back to ``sys.executable``.
+    """
+    for cmd in unit.entrypoints.values():
+        base = cmd.strip().split()[0] if cmd else ""
+        if base in ("python3", "python", "uv", "uvx"):
+            return base
+    return sys.executable
+
+
 def _probe_import(
     exe: Path, generation_dir: Path, unit: RuntimeUnit, timeout: float
 ) -> ProbeResult:
-    """Import probe — only for Python-based runtimes."""
+    """Import probe — only for Python-based runtimes.
+
+    Runs the actual interpreter (python3/uv) with ``-c "import <mod>"``,
+    not the generation script. The script may ignore argv and return
+    success for a nonexistent module.
+    """
     t0 = time.monotonic()
     if not _is_python_unit(unit):
         return ProbeResult(kind=ProbeKind.IMPORT, passed=True,
                            detail="not applicable (non-Python)")
 
     mod = unit.name.replace("-", "_")
+    interpreter = _resolve_interpreter(unit)
     try:
         proc = subprocess.run(
-            [str(exe), "-c", f"import {mod}"],
+            [interpreter, "-c", f"import {mod}"],
             capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "PYTHONPATH": str(generation_dir)},
         )
@@ -792,6 +813,52 @@ def get_status(
     )
 
 
+# ── Production build + activate (post-install) ──────────────────────────
+
+def build_and_activate(
+    unit: RuntimeUnit,
+    source_lock: SourceLock,
+    *,
+    probe_timeout: float = 10.0,
+    json_output: bool = False,
+) -> ActivationResult:
+    """Build a generation and atomically activate it.
+
+    Called by ``cap install`` after a committed install.  Performs an
+    isolated build (via :class:`RuntimeBuilder`), registers the generation
+    in the persistent store, runs pre-activation probes and switches the
+    active pointer atomically.
+
+    A failed probe leaves the previous generation active.  The generation
+    directory is placed under ``~/.capacium/generations/<digest>``.
+    """
+    builder = RuntimeBuilder(str(_generations_dir()))
+    build_result = builder.build(source_lock)
+
+    # Register the generation in the persistent store so cap exec
+    # and cap status can resolve it across process invocations.
+    generation = build_result.generation
+    manager = GenerationManager()
+    manager.store.add(generation)
+    manager.store.set_active(generation.digest)
+
+    gen_dir = Path(build_result.build_dir)
+
+    result = activate(
+        unit, generation.digest, gen_dir,
+        skip_probes=False, probe_timeout=probe_timeout,
+    )
+
+    if json_output:
+        print(json.dumps(activation_to_json(result), sort_keys=True))
+    elif not result.activated:
+        print(f"Activation blocked for {unit.id}: {result.error}", file=sys.stderr)
+    else:
+        print(f"Activated {unit.id} generation {generation.digest[:12]}...")
+
+    return result
+
+
 # ── CLI handlers ───────────────────────────────────────────────────────
 
 def handle_exec(args) -> int:
@@ -841,8 +908,9 @@ def handle_status(args) -> int:
     capability_id = args.capability
     json_output = getattr(args, "json", False)
     registry = Registry()
+    manager = GenerationManager()
 
-    result = get_status(capability_id, registry=registry)
+    result = get_status(capability_id, registry=registry, manager=manager)
 
     if json_output:
         print(json.dumps(result.to_json(), sort_keys=True))
@@ -850,6 +918,18 @@ def handle_status(args) -> int:
         _print_status_human(result)
 
     return 0 if not result.error else 1
+
+
+def handle_rollback(args) -> int:
+    """``cap rollback <capability>`` — roll back to previous generation."""
+    capability_id = args.capability
+
+    if rollback(capability_id):
+        print(f"Rolled back {capability_id} to previous generation")
+        return 0
+    else:
+        print(f"Error: no previous generation for {capability_id}", file=sys.stderr)
+        return 1
 
 
 def _print_status_human(result: StatusResult) -> None:

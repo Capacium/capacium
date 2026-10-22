@@ -1187,6 +1187,57 @@ def install_capability(
     else:
         print(f"Installed {cap_id}@{version} (fingerprint: {fingerprint[:8]}...)")
 
+    # ── Build + activate runtime generation (CAP117-ACTIVATE-011) ──
+    # If the capability requires a RuntimeUnit, build an isolated
+    # generation and atomically activate it after the committed install.
+    from ..runtimes import (
+        RuntimeUnit,
+        SourceLock,
+        SourceType,
+    )
+    from .exec import build_and_activate
+
+    required_runtimes = infer_required_runtimes(manifest)
+    if RuntimeUnit.needed_for(
+        required_runtimes,
+        mcp_command=getattr(manifest, "mcp", {}).get("command") if isinstance(getattr(manifest, "mcp", None), dict) else None,
+    ):
+        try:
+            unit = RuntimeUnit.from_manifest(
+                owner=owner,
+                name=cap_name,
+                version=version,
+                runtimes=required_runtimes,
+                mcp_command=getattr(manifest, "mcp", {}).get("command") if isinstance(getattr(manifest, "mcp", None), dict) else None,
+            )
+            entrypoints_raw: Dict[str, Tuple[str, ...]] = {}
+            for k, v in unit.entrypoints.items():
+                entrypoints_raw[k] = tuple(v.split())
+            source_lock = SourceLock(
+                source_url=f"capacium://{cap_id}@{version}",
+                digest=fingerprint,
+                source_type=SourceType.VERIFIED_LOCAL_CACHE,
+                entrypoints=entrypoints_raw,
+            )
+            build_and_activate(
+                unit, source_lock,
+                probe_timeout=10.0,
+                json_output=json_output,
+            )
+        except Exception as exc:
+            # Build/activation failure does not roll back the install;
+            # the capability is installed but not activated.
+            if json_output:
+                print(_json.dumps({
+                    "operation": "activate",
+                    "cap_id": cap_id,
+                    "version": version,
+                    "status": "activation_skipped",
+                    "error": str(exc),
+                }))
+            else:
+                print(f"  Note: runtime activation skipped — {exc}")
+
     # Install consent binds the exact manifest, source revision and artifact
     # digests the user just accepted, on top of the record the source already
     # carries. Only the install_consent axis changes; a capability whose

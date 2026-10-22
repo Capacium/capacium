@@ -109,6 +109,11 @@ def fake_generation(temp_home):
     """))
     script.chmod(0o755)
 
+    # Create a real importable Python package so the import probe works
+    pkg = target / "test_skill"
+    pkg.mkdir(exist_ok=True)
+    (pkg / "__init__.py").write_text("# test_skill package")
+
     # Write .generation.json
     meta = target / ".generation.json"
     meta.write_text(json.dumps({"digest": digest}))
@@ -1010,6 +1015,11 @@ def _make_warm_gen(tmp_path, owner, name, version, entrypoint="run.py"):
             print("running {owner}/{name} v{version}")
     """))
     script.chmod(0o755)
+
+    # Create a real importable Python package matching the owner name
+    pkg = gen_dir / owner
+    pkg.mkdir(exist_ok=True)
+    (pkg / "__init__.py").write_text(f"# {owner} package")
 
     (gen_dir / ".generation.json").write_text(json.dumps({"digest": digest}))
     return digest, gen_dir

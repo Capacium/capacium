@@ -36,7 +36,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -257,12 +257,14 @@ class BuildResult:
 
     ``digest`` is the content hash of the build output.
     ``build_dir`` is the isolated directory where the output lives.
+    ``generation`` is the ``RuntimeGeneration`` that was built.
     ``metadata`` carries optional diagnostic information (builder version,
     elapsed time, etc.).
     """
 
     digest: str
     build_dir: str
+    generation: "RuntimeGeneration"
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
@@ -294,12 +296,18 @@ class RuntimeBuilder:
 
         output_dir = os.path.join(self.generations_dir, output_digest)
 
+        generation = RuntimeGeneration(
+            digest=output_digest,
+            source_lock=source_lock,
+        )
+
         with self._lock:
             if os.path.isdir(output_dir):
                 # Converge: another thread already built this digest
                 return BuildResult(
                     digest=output_digest,
                     build_dir=output_dir,
+                    generation=generation,
                     metadata={"converged": True},
                 )
 
@@ -328,6 +336,7 @@ class RuntimeBuilder:
         return BuildResult(
             digest=output_digest,
             build_dir=output_dir,
+            generation=generation,
             metadata={"converged": False},
         )
 
@@ -877,13 +886,20 @@ class GenerationLease:
     generation_id: str
 
 
+def _store_path() -> str:
+    return os.path.join(os.path.expanduser("~"), ".capacium", "generations", "store.json")
+
+
 class GenerationStore:
-    """In-memory store for runtime generations with active/reference/lease tracking.
+    """Persistent store for runtime generations with active/reference/lease tracking.
 
     Holds RuntimeGeneration objects and tracks:
     - Which generation is currently active
     - References between generations (e.g. parent -> child)
     - Active leases that prevent GC
+
+    Persisted to ``~/.capacium/generations/store.json`` so generations
+    survive across CLI process invocations.
     """
 
     def __init__(self) -> None:
@@ -894,16 +910,83 @@ class GenerationStore:
         self._lease_counter: int = 0
 
     def add(self, gen: RuntimeGeneration) -> None:
-        """Add a generation to the store."""
+        """Add a generation to the store and persist."""
         self._generations[gen.digest] = gen
+        self.save()
 
     def get(self, digest: str) -> Optional[RuntimeGeneration]:
         """Retrieve a generation by digest."""
         return self._generations.get(digest)
 
     def remove(self, digest: str) -> Optional[RuntimeGeneration]:
-        """Remove a generation from the store. Returns the removed gen or None."""
-        return self._generations.pop(digest, None)
+        """Remove a generation from the store and persist. Returns the removed gen or None."""
+        removed = self._generations.pop(digest, None)
+        if removed is not None:
+            self.save()
+        return removed
+
+    def save(self) -> None:
+        """Persist the store to disk."""
+        sp = _store_path()
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        data: Dict[str, Any] = {
+            "active_generation_id": self._active_generation_id,
+            "generations": {
+                digest: {
+                    "digest": gen.digest,
+                    "source_lock": {
+                        "source_url": gen.source_lock.source_url,
+                        "digest": gen.source_lock.digest,
+                        "source_type": gen.source_lock.source_type.value,
+                        "interpreter": gen.source_lock.interpreter,
+                        "platforms": gen.source_lock.platforms,
+                        "dependency_lock_digest": gen.source_lock.dependency_lock_digest,
+                        "build_inputs": gen.source_lock.build_inputs,
+                        "probes": gen.source_lock.probes,
+                        "entrypoints": {
+                            k: list(v) for k, v in gen.source_lock.entrypoints.items()
+                        },
+                    },
+                }
+                for digest, gen in self._generations.items()
+            },
+        }
+        with open(sp, "w") as f:
+            json.dump(data, f, sort_keys=True, indent=2)
+
+    def load(self) -> bool:
+        """Load the store from disk. Returns True if a file existed and was loaded."""
+        sp = _store_path()
+        if not os.path.isfile(sp):
+            return False
+        try:
+            with open(sp, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return False
+        self._active_generation_id = data.get("active_generation_id")
+        for digest, gen_data in data.get("generations", {}).items():
+            sl = gen_data.get("source_lock", {})
+            entrypoints_raw = sl.get("entrypoints", {})
+            source_lock = SourceLock(
+                source_url=sl.get("source_url", ""),
+                digest=sl.get("digest", ""),
+                source_type=SourceType(sl.get("source_type", "verified_local_cache")),
+                interpreter=sl.get("interpreter", ""),
+                platforms=sl.get("platforms", []),
+                dependency_lock_digest=sl.get("dependency_lock_digest", ""),
+                build_inputs=sl.get("build_inputs", {}),
+                probes=sl.get("probes", {}),
+                entrypoints={
+                    k: tuple(v) for k, v in entrypoints_raw.items()
+                },
+            )
+            gen = RuntimeGeneration(
+                digest=gen_data.get("digest", digest),
+                source_lock=source_lock,
+            )
+            self._generations[digest] = gen
+        return True
 
     @property
     def active_generation_id(self) -> Optional[str]:
@@ -1002,10 +1085,16 @@ class RuntimeGarbageCollector:
 
 
 class GenerationManager:
-    """Orchestrates the generation lifecycle: store, dry-run and GC collect."""
+    """Orchestrates the generation lifecycle: store, dry-run and GC collect.
+
+    On construction, loads the persistent store from
+    ``~/.capacium/generations/store.json`` so generations survive across
+    CLI process invocations.
+    """
 
     def __init__(self) -> None:
         self.store = GenerationStore()
+        self.store.load()
         self._gc = RuntimeGarbageCollector(self.store)
 
     def dry_run_gc(self) -> Dict[str, bool]:
