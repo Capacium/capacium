@@ -299,6 +299,43 @@ def main():
         help="Output as JSON (for programmatic use)",
     )
 
+    # CAP117-HOST-012: cap host — host registration management
+    host_parser = subparsers.add_parser(
+        "host",
+        help="Manage host configuration registrations",
+    )
+    host_sub = host_parser.add_subparsers(dest="host_command", help="Host sub-commands")
+    host_register = host_sub.add_parser("register", help="Register a capability into a host")
+    host_register.add_argument("capability", help="Capability specification (owner/name)")
+    host_register.add_argument("--framework", help="Target framework (claude-code, claude-desktop, codex)", default="claude-code")
+    host_register.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_register.add_argument("--source", help="Source directory path", default=".")
+    host_register.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_register.add_argument("--json", action="store_true", help="Output as JSON")
+    host_inspect = host_sub.add_parser("inspect", help="Inspect host configuration")
+    host_inspect.add_argument("--framework", help="Target framework", default="claude-code")
+    host_inspect.add_argument("--json", action="store_true", help="Output as JSON")
+    host_verify = host_sub.add_parser("verify", help="Verify a capability registration")
+    host_verify.add_argument("capability", help="Capability specification (owner/name)")
+    host_verify.add_argument("--framework", help="Target framework", default="claude-code")
+    host_verify.add_argument("--json", action="store_true", help="Output as JSON")
+    host_repair = host_sub.add_parser("repair", help="Repair a broken host registration")
+    host_repair.add_argument("capability", help="Capability specification (owner/name)")
+    host_repair.add_argument("--framework", help="Target framework", default="claude-code")
+    host_repair.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_repair.add_argument("--source", help="Source directory path", default=".")
+    host_repair.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_repair.add_argument("--json", action="store_true", help="Output as JSON")
+    host_unregister = host_sub.add_parser("unregister", help="Remove a capability from host config")
+    host_unregister.add_argument("capability", help="Capability specification (owner/name)")
+    host_unregister.add_argument("--framework", help="Target framework", default="claude-code")
+    host_unregister.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_unregister.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_unregister.add_argument("--json", action="store_true", help="Output as JSON")
+    host_status = host_sub.add_parser("status", help="Show host status (desired, verified, observed)")
+    host_status.add_argument("--framework", help="Target framework", default="claude-code")
+    host_status.add_argument("--json", action="store_true", help="Output as JSON")
+
     gc_parser = subparsers.add_parser(
         "gc",
         help="Prune superseded package versions and clean up drift "
@@ -1088,6 +1125,10 @@ def main():
         elif args.command == "rollback":
             from .commands.exec import handle_rollback
             sys.exit(handle_rollback(args))
+
+        elif args.command == "host":
+            from .commands.host_register import handle_host
+            sys.exit(handle_host(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management

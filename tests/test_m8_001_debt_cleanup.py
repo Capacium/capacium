@@ -5,11 +5,8 @@
 - BUG-009: Remove .git directories and metadata from installed packages
 """
 
-import os
 import stat
-import shutil
 from pathlib import Path
-import pytest
 
 from capacium.utils.copytree import (
     safe_copytree,
@@ -20,7 +17,6 @@ from capacium.adapters.base import ensure_package_dir
 from capacium.storage import StorageManager
 from capacium.registry import Registry
 from capacium.commands.install import install_capability
-from capacium.commands.update import update_capability
 
 
 class TestGitMetadataRemoval:

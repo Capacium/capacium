@@ -4,7 +4,6 @@ import os
 import shutil
 import sqlite3
 import sys
-import tempfile
 import time
 from pathlib import Path
 

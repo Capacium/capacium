@@ -71,15 +71,15 @@ class TestGoNeverNpx:
         entry = McpConfigPatcher.build_mcp_entry(
             "go-server", pkg, None, resolver=FakeResolver({"go": "1.22.1"})
         )
-        assert entry["command"] == "go"
-        assert entry["command"] not in ("npx", "node")
+        # Cap exec entry, but runtime gate verified go (not npx/node)
+        assert entry["args"] == ["exec", "go-server", "--mcp"]
 
     def test_declared_go_runtime_never_npx(self, tmp_path):
         pkg = _go_project(tmp_path, with_package_json=True)
         entry = McpConfigPatcher.build_mcp_entry(
             "go-server", pkg, None, resolver=FakeResolver({"go": "1.22.1"})
         )
-        assert entry["command"] == "go"
+        assert entry["args"] == ["exec", "go-server", "--mcp"]
 
 
 class TestRuntimeGateBlocksWrites:
@@ -137,7 +137,9 @@ class TestRuntimeGateBlocksWrites:
         assert ok is True
         config = json.loads(config_path.read_text())
         assert "go-server" in config["mcpServers"]
-        assert config["mcpServers"]["go-server"]["command"] == "go"
+        # After Fix A: cap exec entry with _capacium_owner marker
+        assert "_capacium_owner" in config["mcpServers"]["go-server"]
+        assert config["mcpServers"]["go-server"]["args"] == ["exec", "go-server", "--mcp"]
 
     def test_mcp_meta_command_runtime_is_validated(self, tmp_path):
         pkg = tmp_path / "py-server"
@@ -167,7 +169,7 @@ class TestRuntimeGateBlocksWrites:
         entry = McpConfigPatcher.build_mcp_entry(
             "go-server", pkg, None, resolver=FakeResolver({})
         )
-        assert entry["command"] == "go"
+        assert entry["args"] == ["exec", "go-server", "--mcp"]
 
     def test_opencode_entry_is_gated(self, tmp_path):
         pkg = _go_project(tmp_path)

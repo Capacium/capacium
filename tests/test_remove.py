@@ -165,7 +165,8 @@ class TestVersionPreciseMCP:
         config_path = ClaudeDesktopAdapter._resolve_config_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(
-            {"mcpServers": {"tool": {"command": "python3", "args": ["srv.py"]}}}
+            {"mcpServers": {"tool": {"command": "python3", "args": ["srv.py"],
+                                     "_capacium_owner": "capacium:tool:mcp-server"}}}
         ))
 
         registry = Registry()

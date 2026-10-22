@@ -63,7 +63,8 @@ def installed_mcp(tmp_home):
     config_path = ClaudeDesktopAdapter._resolve_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(
-        {"mcpServers": {"tx-mcp": {"command": "python3", "args": ["srv.py"]},
+        {"mcpServers": {"tx-mcp": {"command": "python3", "args": ["srv.py"],
+                                   "_capacium_owner": "capacium:tx-mcp:mcp-server"},
                         "other-server": {"command": "x"}}}
     ))
 

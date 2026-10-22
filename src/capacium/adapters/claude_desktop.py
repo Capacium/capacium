@@ -13,10 +13,15 @@ import platform
 import shutil
 import sys
 from pathlib import Path
+from typing import List
 
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
-from .base import FrameworkAdapter, ensure_package_dir
+from .base import (
+    FrameworkAdapter, ensure_package_dir,
+    HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+    HostStatusResult,
+)
 from .mcp_config_patcher import McpConfigPatcher
 
 
@@ -140,8 +145,235 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
         )
 
     def capability_exists(self, cap_name: str) -> bool:
+        # Skills are stored in the package cache, not as direct MCP entries
+        cap_home = Path.home() / ".capacium" / "packages"
+        for owner_dir in (cap_home / "global",):
+            if (owner_dir / cap_name).exists():
+                return True
         return McpConfigPatcher.mcp_server_exists_json(
             config_path=self.config_path,
             server_key=McpConfigPatcher.build_server_key(cap_name),
             mcp_section_key="mcpServers",
+        )
+
+    # ── Host registration (CAP117-HOST-012) ───────────────────────────
+
+    def plan_host_operation(
+        self, operation: str, capability_id: str, kind: str,
+        *, owner: str = "global",
+    ) -> HostPlan:
+        entries: List[HostPlanEntry] = []
+        will_modify = False
+
+        if kind == "skill":
+            # Claude Desktop exposes skills via the capacium-skills MCP wrapper
+            cap_home = Path.home() / ".capacium" / "packages"
+            skill_dir = cap_home / owner / capability_id
+            current = "present" if skill_dir.exists() else "missing"
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="claude-desktop",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.config_path),
+                details={"skill_dir": str(skill_dir)},
+            ))
+
+        elif kind == "mcp-server":
+            config = McpConfigPatcher.read_json(self.config_path)
+            server_key = McpConfigPatcher.build_server_key(capability_id, owner)
+            servers = config.get("mcpServers", {})
+            current = "missing"
+            for key in (server_key, f"{server_key}-capacium"):
+                entry = servers.get(key)
+                if isinstance(entry, dict) and entry.get("_capacium_owner", "").startswith("capacium:"):
+                    current = "present"
+                    break
+            target = "present" if operation == "register" else "absent"
+            if current != target:
+                will_modify = True
+            entries.append(HostPlanEntry(
+                operation=operation,
+                capability_id=capability_id,
+                kind=kind,
+                framework="claude-desktop",
+                current_state=current,
+                target_state=target,
+                config_path=str(self.config_path),
+                details={"server_key": server_key},
+            ))
+
+        return HostPlan(
+            framework="claude-desktop",
+            entries=entries,
+            will_modify_config=will_modify,
+        )
+
+    def inspect(self) -> HostInspectResult:
+        result = HostInspectResult(
+            framework="claude-desktop",
+            config_path=str(self.config_path),
+            config_exists=self.config_path.exists(),
+        )
+
+        # Inspect MCP config
+        if self.config_path.exists():
+            config = McpConfigPatcher.read_json(self.config_path)
+            servers = config.get("mcpServers", {})
+            for key, entry in servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                marker = entry.get("_capacium_owner", "")
+                if marker.startswith("capacium:"):
+                    result.managed_mcp_servers.append(key)
+                    result.ownership_markers[key] = marker
+                else:
+                    result.foreign_entries.append(f"mcp:{key}")
+        else:
+            result.config_valid = True
+
+        # Check capacium-skills wrapper
+        if result.config_exists:
+            config = McpConfigPatcher.read_json(self.config_path)
+            servers = config.get("mcpServers", {})
+            if "capacium-skills" in servers:
+                cap_home = Path.home() / ".capacium" / "packages"
+                if cap_home.exists():
+                    for owner_dir in cap_home.iterdir():
+                        if owner_dir.is_dir() and not owner_dir.name.startswith("."):
+                            for skill_dir in owner_dir.iterdir():
+                                if skill_dir.is_dir() and not skill_dir.name.startswith("."):
+                                    result.managed_skills.append(f"{owner_dir.name}/{skill_dir.name}")
+
+        return result
+
+    def register(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-desktop", operation="register",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            from .mcp_config_patcher import McpConfigPatcher
+            backup_path = McpConfigPatcher.backup(self.config_path)
+            try:
+                success = self.install_skill(capability_id, "", source_dir, owner)
+                # Post-write validation: verify config is still valid JSON
+                if self.config_path.exists():
+                    json.loads(self.config_path.read_text())
+                return HostOperationResult(
+                    framework="claude-desktop", operation="register",
+                    success=success, plan=plan,
+                    backup_path=str(backup_path) if backup_path else None,
+                )
+            except Exception as e:
+                if backup_path is not None:
+                    McpConfigPatcher.restore_backup(self.config_path, backup_path)
+                return HostOperationResult(
+                    framework="claude-desktop", operation="register",
+                    success=False, plan=plan, error=str(e),
+                    rollback_applied=(backup_path is not None),
+                    backup_path=str(backup_path) if backup_path else None,
+                )
+        elif kind == "mcp-server":
+            # install_mcp_server → inject_json_mcp_server handles its own
+            # backup/restore.  Surface any error truthfully.
+            try:
+                success = self.install_mcp_server(capability_id, "", source_dir, owner)
+                if self.config_path.exists():
+                    json.loads(self.config_path.read_text())
+                return HostOperationResult(
+                    framework="claude-desktop", operation="register",
+                    success=success, plan=plan,
+                )
+            except Exception as e:
+                return HostOperationResult(
+                    framework="claude-desktop", operation="register",
+                    success=False, plan=plan, error=str(e),
+                )
+        return HostOperationResult(
+            framework="claude-desktop", operation="register",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
+        )
+
+    def verify(self, capability_id: str, owner: str = "global") -> HostOperationResult:
+        exists = self.capability_exists(capability_id)
+        plan = self.plan_host_operation("register", capability_id, "mcp-server", owner=owner)
+        return HostOperationResult(
+            framework="claude-desktop", operation="verify",
+            success=exists, plan=plan,
+            error="" if exists else f"{capability_id} not found in claude-desktop",
+        )
+
+    def repair(
+        self, capability_id: str, kind: str, source_dir: Path,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("register", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-desktop", operation="repair",
+                success=True, plan=plan,
+            )
+        return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def status(self) -> HostStatusResult:
+        """Report desired, verified and observed layers separately.
+
+        Claude Desktop is a GUI app — process observation is not
+        attestable, so observed_process_generation reports unknown.
+        """
+        inspect_result = self.inspect()
+        return HostStatusResult(
+            framework="claude-desktop",
+            desired_bindings=[],
+            verified_skills=inspect_result.managed_skills,
+            verified_mcp_servers=inspect_result.managed_mcp_servers,
+            observed_process_generation=None,
+            observed_process_pid=None,
+            process_attestable=False,  # GUI — unknown
+            foreign_entries=inspect_result.foreign_entries,
+            config_path=inspect_result.config_path,
+            config_valid=inspect_result.config_valid,
+            error=inspect_result.error,
+        )
+
+    def unregister(
+        self, capability_id: str, kind: str,
+        *, dry_run: bool = False, owner: str = "global",
+    ) -> HostOperationResult:
+        plan = self.plan_host_operation("unregister", capability_id, kind, owner=owner)
+        if dry_run:
+            return HostOperationResult(
+                framework="claude-desktop", operation="unregister",
+                success=True, plan=plan,
+            )
+
+        if kind == "skill":
+            return HostOperationResult(
+                framework="claude-desktop", operation="unregister",
+                success=self.remove_skill(capability_id, owner),
+                plan=plan,
+            )
+        elif kind == "mcp-server":
+            return HostOperationResult(
+                framework="claude-desktop", operation="unregister",
+                success=self.remove_mcp_server(capability_id, owner),
+                plan=plan,
+            )
+        return HostOperationResult(
+            framework="claude-desktop", operation="unregister",
+            success=False, plan=plan,
+            error=f"unsupported kind: {kind}",
         )

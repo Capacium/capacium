@@ -100,8 +100,8 @@ class TestEntryUsesBinary:
         binary.chmod(0o755)
 
         entry = McpConfigPatcher.build_mcp_entry("slack-mcp", pkg, None)
-        assert entry["command"] == str(binary.resolve())
-        assert "args" not in entry or entry["args"] == []
+        # After Fix A: cap exec entry — the stable activation surface
+        assert entry["args"] == ["exec", "slack-mcp", "--mcp"]
 
     def test_go_run_latest_rewritten_to_binary(self, tmp_path):
         pkg = _go_package(tmp_path, layout="cmd")
@@ -113,7 +113,8 @@ class TestEntryUsesBinary:
         meta = {"command": "go",
                 "args": ["run", "github.com/korotovsky/slack-mcp-server@latest"]}
         entry = McpConfigPatcher.build_mcp_entry("slack-mcp", pkg, meta)
-        assert entry["command"] == str(binary.resolve())
+        # After Fix A: cap exec entry — @latest is never passed to cap exec
+        assert entry["args"] == ["exec", "slack-mcp", "--mcp"]
         assert all("@latest" not in str(a) for a in entry.get("args", []))
 
     def test_go_run_latest_without_binary_runs_local_package(self, tmp_path):
@@ -121,7 +122,8 @@ class TestEntryUsesBinary:
         meta = {"command": "go",
                 "args": ["run", "github.com/korotovsky/slack-mcp-server@latest"]}
         entry = McpConfigPatcher.build_mcp_entry("slack-mcp", pkg, meta)
-        assert entry["command"] == "go"
+        # After Fix A: cap exec entry — the host invokes cap exec, not raw go
+        assert entry["args"] == ["exec", "slack-mcp", "--mcp"]
         assert all("@latest" not in str(a) for a in entry.get("args", []))
 
 
@@ -133,4 +135,5 @@ class TestRealGoBuild:
         binary = pkg / "bin" / "slack-mcp"
         assert binary.exists()
         entry = McpConfigPatcher.build_mcp_entry("slack-mcp", pkg, None)
-        assert entry["command"] == str(binary.resolve())
+        # After Fix A: cap exec entry — the binary is invoked via cap exec, not raw
+        assert entry["args"] == ["exec", "slack-mcp", "--mcp"]
