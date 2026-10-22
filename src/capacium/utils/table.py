@@ -1,18 +1,37 @@
 """ANSI-colored tabular output for cap search results."""
 
+import os
 import re
+import sys
 from typing import Any, Dict, List
 
 from ..kinds import CapaciumKind
 
-_RESET = "\033[0m"
-_BOLD = "\033[1m"
-_DIM = "\033[2m"
-_YELLOW = "\033[33m"
-_GREEN = "\033[32m"
-_PURPLE = "\033[35m"
-_BLUE = "\033[34m"
-_CYAN = "\033[36m"
+
+def _color_support() -> int:
+    if os.environ.get("NO_COLOR", "") != "":
+        return 0
+    if not sys.stdout.isatty():
+        return 0
+    term = os.environ.get("TERM", "")
+    colorterm = os.environ.get("COLORTERM", "")
+    if "256color" in term or "truecolor" in colorterm.lower():
+        return 256
+    if term and "color" in term.lower():
+        return 16
+    return 0
+
+
+_COLOR_DEPTH = _color_support()
+
+_RESET = "\033[0m" if _COLOR_DEPTH > 0 else ""
+_BOLD = "\033[1m" if _COLOR_DEPTH > 0 else ""
+_DIM = "\033[2m" if _COLOR_DEPTH > 0 else ""
+_YELLOW = "\033[33m" if _COLOR_DEPTH > 0 else ""
+_GREEN = "\033[32m" if _COLOR_DEPTH > 0 else ""
+_PURPLE = "\033[35m" if _COLOR_DEPTH > 0 else ""
+_BLUE = "\033[34m" if _COLOR_DEPTH > 0 else ""
+_CYAN = "\033[36m" if _COLOR_DEPTH > 0 else ""
 
 _KIND_COLORS = {
     k.value: v

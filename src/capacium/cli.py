@@ -26,6 +26,7 @@ _CMD_GROUPS: "dict[str, str]" = {
     "gc": "Manage",
     "clean": "Manage",
     "host": "Connect",
+    "harness": "Connect",
     "exec": "Connect",
     "status": "Connect",
     "rollback": "Connect",
@@ -418,6 +419,26 @@ def main():
     host_status = host_sub.add_parser("status", help="Show host status (desired, verified, observed)")
     host_status.add_argument("--framework", help="Target framework", default="claude-code")
     host_status.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # Criterion 4: cap harness — desired-binding management.
+    harness_parser = subparsers.add_parser(
+        "harness",
+        help="Manage desired harness bindings (add, remove, replace)",
+    )
+    harness_sub = harness_parser.add_subparsers(dest="harness_command", help="Harness sub-commands")
+    harness_add = harness_sub.add_parser("add", help="Add a desired harness binding")
+    harness_add.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_add.add_argument("--framework", help="Target framework (e.g. claude-code, opencode)", default="claude-code")
+    harness_add.add_argument("--json", action="store_true", help="Output as JSON")
+    harness_remove = harness_sub.add_parser("remove", help="Remove a desired harness binding")
+    harness_remove.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_remove.add_argument("--framework", help="Target framework to remove", default="claude-code")
+    harness_remove.add_argument("--json", action="store_true", help="Output as JSON")
+    harness_replace = harness_sub.add_parser("replace", help="Replace a desired harness binding")
+    harness_replace.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_replace.add_argument("--old-framework", required=True, help="Framework to replace")
+    harness_replace.add_argument("--new-framework", required=True, help="Framework to add instead")
+    harness_replace.add_argument("--json", action="store_true", help="Output as JSON")
 
     gc_parser = subparsers.add_parser(
         "gc",
@@ -1212,6 +1233,10 @@ def main():
         elif args.command == "host":
             from .commands.host_register import handle_host
             sys.exit(handle_host(args))
+
+        elif args.command == "harness":
+            from .commands.harness import handle_harness
+            sys.exit(handle_harness(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management
