@@ -93,3 +93,75 @@ class TestRegistryFileLocation:
         # REGISTRIES_FILE is a module constant computed at import; re-import is
         # not possible, so assert the _auth_dir/token_path compute at call time.
         assert reg_mod._auth_dir() == tmp_path / ".capacium" / "auth"
+
+
+class TestGroupedHelpC1:
+    """Criterion 1: Top-level help presents six approved workflow groups
+    with one-line purpose, common next action and example."""
+
+    _GROUPS = ["Discover", "Manage", "Connect", "Diagnose", "Publish", "Advanced"]
+    _PURPOSES = {
+        "Discover": "Find and inspect",
+        "Manage": "Install, update",
+        "Connect": "Connect capabilities",
+        "Diagnose": "Verify and repair",
+        "Publish": "Create and share",
+        "Advanced": "Advanced operations",
+    }
+
+    def test_help_shows_all_six_groups(self):
+        """Top-level help lists all six workflow groups."""
+        result = _cap("--help")
+        out = result.stdout
+        for grp in self._GROUPS:
+            assert grp in out, f"Missing group header: {grp}"
+
+    def test_help_groups_show_purpose_line(self):
+        """Each group header is followed by its one-line purpose."""
+        result = _cap("--help")
+        out = result.stdout
+        for grp, purpose in self._PURPOSES.items():
+            assert purpose in out, f"Missing purpose for group '{grp}': {purpose}"
+
+    def test_help_groups_show_try_example(self):
+        """Each group shows a 'Try:' example line."""
+        result = _cap("--help")
+        out = result.stdout
+        # Every group line starts with "  → Try:" in the output
+        assert out.count("→ Try:") == 6, f"Expected 6 Try lines, got {out.count('→ Try:')}"
+
+    def test_help_commands_under_correct_groups(self):
+        """Key commands appear under the correct workflow groups."""
+        result = _cap("--help")
+        out = result.stdout
+
+        # Find which group each command appears under
+        def group_of(cmd, text):
+            idx = text.find(f"  {cmd}")
+            if idx == -1:
+                return None
+            # Search backwards for the nearest group header
+            before = text[:idx]
+            lines = before.split("\n")
+            for line in reversed(lines):
+                for grp in self._GROUPS:
+                    if line.startswith(grp):
+                        return grp
+            return None
+
+        assert group_of("search", out) == "Discover"
+        assert group_of("info", out) == "Discover"
+        assert group_of("install", out) == "Manage"
+        assert group_of("list", out) == "Manage"
+        assert group_of("remove", out) == "Manage"
+        assert group_of("host", out) == "Connect"
+        assert group_of("verify", out) == "Diagnose"
+        assert group_of("doctor", out) == "Diagnose"
+        assert group_of("publish", out) == "Publish"
+        assert group_of("package", out) == "Publish"
+
+    def test_help_no_color_suppresses_ansi(self, monkeypatch):
+        """NO_COLOR env suppresses ANSI escape sequences in cap --help."""
+        result = _cap("--help", env={"NO_COLOR": "1"})
+        assert "\033[" not in result.stdout
+        assert "\033[" not in result.stderr

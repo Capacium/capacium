@@ -132,3 +132,64 @@ def test_info_json_does_not_derive_installed_from_recommendations(
     assert detail["verified"] == []
     assert detail["desired"] == ["opencode"]
     assert "opencode" in detail["drifted"]
+
+
+# ---------------------------------------------------------------------------
+# Criterion 3: separated info sections
+# ---------------------------------------------------------------------------
+
+def test_info_separates_sections(tmp_home, capsys, monkeypatch):
+    """Human-readable cap info separates recommendations, bindings,
+    dependencies, provenance and runtime status."""
+    _installed_registry(tmp_home, ["opencode"])
+    _no_harness_dirs(monkeypatch)
+
+    cap_info("acme/state-cap@1.0.0", json_output=False)
+    out = capsys.readouterr().out
+
+    assert "Publisher recommendations" in out
+    assert "Bindings" in out
+    assert "Dependencies" in out
+    assert "Provenance" in out
+    assert "Runtime status" in out
+
+
+def test_info_bindings_shows_desired_verified(tmp_home, capsys, monkeypatch):
+    """Human cap info shows desired and verified bindings separately."""
+    _installed_registry(tmp_home, ["opencode"])
+    _no_harness_dirs(monkeypatch)
+
+    cap_info("acme/state-cap@1.0.0", json_output=False)
+    out = capsys.readouterr().out
+
+    assert "Desired:" in out
+    assert "Verified:" in out
+
+
+def test_info_no_color_suppresses_ansi(tmp_home, capsys, monkeypatch):
+    """NO_COLOR env suppresses ANSI escape sequences in human output."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    # Module constants are computed at import time.  Patch the imported
+    # references in info.py where they are actually used.
+    monkeypatch.setattr("capacium.commands.info._RESET", "")
+    monkeypatch.setattr("capacium.commands.info._BOLD", "")
+    monkeypatch.setattr("capacium.commands.info._DIM", "")
+    monkeypatch.setattr("capacium.commands.info.TrustBadge", type(
+        "NoColorBadge", (),
+        {
+            "render": staticmethod(lambda trust: "✓" if trust == "verified" else "○"),
+            "label": staticmethod(lambda trust: f"✓ {trust}" if trust else "○ discovered"),
+        },
+    ))
+    monkeypatch.setattr(
+        "capacium.commands.info.KindPill.render",
+        lambda kind: f" {kind or 'unknown'} ",
+    )
+    _installed_registry(tmp_home, ["opencode"])
+    _no_harness_dirs(monkeypatch)
+
+    cap_info("acme/state-cap@1.0.0", json_output=False)
+    out = capsys.readouterr().out
+
+    # ANSI escape codes should be absent
+    assert "\033[" not in out

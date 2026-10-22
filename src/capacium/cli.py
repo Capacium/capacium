@@ -9,12 +9,95 @@ from .commands.registry import add_registry_parser
 from .commands.init import VALID_TEMPLATES
 from .utils.errors import CapaciumError
 
+# ---------------------------------------------------------------------------
+# Criterion 1: top-level help grouped into six approved workflow groups.
+# Each group has a one-line purpose, a common next action and an example.
+# ---------------------------------------------------------------------------
+
+_CMD_GROUPS: "dict[str, str]" = {
+    "search": "Discover",
+    "browse": "Discover",
+    "info": "Discover",
+    "compare": "Discover",
+    "install": "Manage",
+    "update": "Manage",
+    "remove": "Manage",
+    "list": "Manage",
+    "gc": "Manage",
+    "clean": "Manage",
+    "host": "Connect",
+    "exec": "Connect",
+    "status": "Connect",
+    "rollback": "Connect",
+    "verify": "Diagnose",
+    "doctor": "Diagnose",
+    "repair": "Diagnose",
+    "reconcile": "Diagnose",
+    "lock": "Diagnose",
+    "init": "Publish",
+    "package": "Publish",
+    "publish": "Publish",
+    "sign": "Publish",
+    "key": "Publish",
+    "adapt": "Publish",
+    "submit": "Publish",
+    "submit-tarball": "Publish",
+}
+
+_GROUP_META: "dict[str, tuple[str, str]]" = {
+    "Discover": ("Find and inspect capabilities", "cap search pdf"),
+    "Manage": ("Install, update and remove capabilities", "cap list"),
+    "Connect": ("Connect capabilities to host frameworks", "cap host register owner/name"),
+    "Diagnose": ("Verify and repair installed capabilities", "cap doctor"),
+    "Publish": ("Create and share capabilities", "cap init --template skill"),
+    "Advanced": ("Advanced operations and utilities", "cap help"),
+}
+
+_GROUP_ORDER = ["Discover", "Manage", "Connect", "Diagnose", "Publish", "Advanced"]
+
+
+class _GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that renders subcommands in the six workflow groups."""
+
+    def _format_action(self, action):
+        if isinstance(action, argparse._SubParsersAction):
+            return self._format_grouped_subcommands(action)
+        return super()._format_action(action)
+
+    def _format_grouped_subcommands(self, action):
+        # action.choices is an OrderedDict of command_name -> ArgumentParser.
+        # The human-readable help text for each subcommand is stored in the
+        # _choices_actions pseudo-actions, not on the parser objects.
+        choices = getattr(action, "choices", {}) or {}
+        help_map: "dict[str, str]" = {}
+        for ca in getattr(action, "_choices_actions", []) or []:
+            help_map[ca.dest] = getattr(ca, "help", "") or ""
+        grouped: "dict[str, list[tuple[str, str]]]" = {}
+        for cmd_name in choices:
+            grp = _CMD_GROUPS.get(cmd_name, "Advanced")
+            help_text = help_map.get(cmd_name, "")
+            grouped.setdefault(grp, []).append((cmd_name, help_text))
+
+        lines: "list[str]" = []
+        for grp_name in _GROUP_ORDER:
+            cmds = grouped.get(grp_name, [])
+            if not cmds:
+                continue
+            purpose, example = _GROUP_META.get(grp_name, ("", ""))
+            lines.append(f"\n{grp_name} — {purpose}")
+            for cmd_name, help_text in sorted(cmds):
+                lines.append(f"  {cmd_name:<18} {help_text}")
+            lines.append(f"  \u2192 Try: {example}")
+        lines.append("")
+        return "\n".join(lines)
+
 
 def main():
     parser = argparse.ArgumentParser(
         prog="cap",
-        description="Capacium - Capability Packaging System for AI agent capabilities",
-        epilog="For more information, visit https://github.com/Capacium/capacium"
+        description="Capacium — Capability Packaging System for AI agent capabilities",
+        epilog="For more information, visit https://github.com/Capacium/capacium",
+        formatter_class=_GroupedHelpFormatter,
     )
     parser.add_argument(
         "-v", "--version",
@@ -22,7 +105,7 @@ def main():
         version=f"%(prog)s {__version__}"
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", title="Workflow groups")
 
     install_parser = subparsers.add_parser("install", help="Install a capability")
     install_parser.add_argument("capability", nargs="?", help="Capability specification (owner/name[@version] or name[@version]). Optional when --from-tarball is used.")
