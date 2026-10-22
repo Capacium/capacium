@@ -35,6 +35,7 @@ from capacium.commands.exec import (
     activate,
     activation_to_json,
     all_probes_passed,
+    build_and_activate,
     exec_active,
     exec_entrypoint,
     exec_mcp_stdio,
@@ -66,6 +67,7 @@ from capacium.runtimes import (
     RuntimeGeneration,
     RuntimeUnit,
     SourceLock,
+    SourceType,
 )
 
 
@@ -1366,197 +1368,269 @@ _register_raw_insert()
 
 # ── Criterion 7: SkillWeave, MemPalace, Understand activation/rollback ──────
 # from warm and offline caches ──────────────────────────────────────────────
+#
+# Every test exercises the production lifecycle through build_and_activate(),
+# which builds an isolated generation, copies source files, registers in the
+# persistent GenerationStore, runs pre-activation probes, and atomically
+# activates.  The pointer file is the single source of truth; the store's
+# active_generation_id is only set after a successful activate so it never
+# diverges from the pointer.  rollback() keeps both sources consistent.
 
-def _make_warm_gen(tmp_path, owner, name, version, entrypoint="run.py"):
-    """Create a warm-cache generation directory inside the test's
-    generations dir and return (digest, gen_dir)."""
-    gen_root = _generations_dir()
-    import uuid
-    gen_id = str(uuid.uuid4())[:8]
-    digest = f"{gen_id}_{version}"
-    gen_dir = gen_root / digest
-    gen_dir.mkdir(parents=True, exist_ok=True)
 
-    script = gen_dir / entrypoint
-    script.write_text(textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import sys
-        if len(sys.argv) > 1 and sys.argv[1] == "--version":
-            print("{owner}/{name} v{version}")
-        elif len(sys.argv) > 1 and sys.argv[1] == "--help":
-            print("Usage: {entrypoint} [options]")
-            print("  --version  Show version")
-            print("  --help     Show help")
-        else:
-            print("running {owner}/{name} v{version}")
-    """))
+def _make_source_fixture(tmp_path, owner, name, version, *, broken=False):
+    """Create a source directory with capability.yaml and MCP entrypoint.
+
+    Returns (unit, source_lock, source_dir) suitable for
+    ``build_and_activate()``.  The fixture goes through the full
+    production lifecycle: build, copy source, register in store,
+    probe, activate, set_active.
+    """
+    pkg_dir = tmp_path / f"{name}-{version}"
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+
+    script = pkg_dir / "server.py"
+    if broken:
+        script.write_text("#!/usr/bin/env python3\nimport sys; sys.exit(1)\n")
+    else:
+        script.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import sys, json
+            if len(sys.argv) > 1 and sys.argv[1] == "--version":
+                print("{owner}/{name} v{version}")
+                sys.exit(0)
+            if len(sys.argv) > 1 and sys.argv[1] == "--help":
+                print("Usage: server.py [options]")
+                print("  --version  Show version")
+                print("  --help     Show help")
+                sys.exit(0)
+            line = sys.stdin.readline()
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                sys.exit(1)
+            resp = {{"jsonrpc": "2.0", "id": req.get("id", 1),
+                     "result": {{"protocolVersion": "2024-11-05",
+                                 "capabilities": {{}},
+                                 "serverInfo": {{"name": "{name}", "version": "{version}"}}}}}}
+            sys.stdout.write(json.dumps(resp) + "\\n")
+            sys.stdout.flush()
+            sys.exit(0)
+        """))
     script.chmod(0o755)
 
-    # Create a real importable Python package matching the owner name
-    pkg = gen_dir / owner
-    pkg.mkdir(exist_ok=True)
-    (pkg / "__init__.py").write_text(f"# {owner} package")
+    (pkg_dir / "capability.yaml").write_text(textwrap.dedent(f"""\
+        name: {name}
+        version: "{version}"
+        kind: mcp-server
+        runtimes:
+          python: ">=3.10"
+        mcp:
+          transport: stdio
+          command: python3
+          args:
+            - server.py
+    """))
 
-    (gen_dir / ".generation.json").write_text(json.dumps({"digest": digest}))
-    return digest, gen_dir
-
-
-def _make_runtime_unit(owner, name, entrypoint="run.py"):
-    """Build a RuntimeUnit matching the existing test pattern."""
-    return RuntimeUnit(
-        owner=owner,
-        name=name,
-        entrypoints={entrypoint: f"python3 {entrypoint}"},
+    unit = RuntimeUnit.from_manifest(
+        owner=owner, name=name, version=version,
+        runtimes={"python": ">=3.10"},
+        mcp_command="python3", mcp_args=["server.py"],
     )
+
+    entrypoints_raw = {}
+    for k, v in unit.entrypoints.items():
+        entrypoints_raw[k] = tuple(v.split())
+
+    source_lock = SourceLock(
+        source_url=f"capacium://{owner}/{name}@{version}",
+        digest=f"test-fixture-{owner}-{name}-{version}",
+        source_type=SourceType.VERIFIED_LOCAL_CACHE,
+        entrypoints=entrypoints_raw,
+    )
+
+    return unit, source_lock, str(pkg_dir)
 
 
 class TestCriterion7RealisticFixtures:
     """C7: SkillWeave, MemPalace, Understand activation/rollback from
-    warm and offline caches."""
+    warm and offline caches through the production lifecycle."""
 
     # ── SkillWeave ──────────────────────────────────────────────────
 
-    def test_skillweave_activate_warm_skip_probes(self, temp_home):
-        owner, name = "skillweave", "skillweave"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
-
-        result = activate(unit, digest, gen_dir, skip_probes=True)
-        assert result.activated
-        assert result.generation_digest == digest
-        assert get_active_digest(f"{owner}/{name}") == digest
-
     def test_skillweave_activate_warm_with_probes(self, temp_home):
+        """SkillWeave activation through build_and_activate with probes."""
         owner, name = "skillweave", "skillweave"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
-
-        result = activate(unit, digest, gen_dir)
-        assert result.activated
-        assert result.generation_digest == digest
-        assert len(result.probes) >= 3
-        assert all(p.passed for p in result.probes)
-
-    def test_skillweave_rollback_warm(self, temp_home):
-        owner, name = "skillweave", "skillweave"
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
         unit_id = f"{owner}/{name}"
 
-        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
-        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
+        assert result.activated
+        assert result.generation_digest
+        # MCP units: version + import(skipped) + CLI + protocol = 4 probes
+        assert len(result.probes) == 4
+        assert all(p.passed for p in result.probes)
 
-        activate(unit, d2, g2, skip_probes=True)
-        activate(unit, d1, g1, skip_probes=True)
+        # Pointer and store agree (single source of truth)
+        active_digest = get_active_digest(unit_id)
+        assert active_digest == result.generation_digest
+        manager = GenerationManager()
+        assert manager.store.get(active_digest) is not None
+
+        # runtime_drift is false after a clean install
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+        assert status.active_generation_digest == active_digest
+
+    def test_skillweave_rollback_warm(self, temp_home):
+        """SkillWeave rollback through the lifecycle."""
+        owner, name = "skillweave", "skillweave"
+        unit_id = f"{owner}/{name}"
+
+        unit2, sl2, sd2 = _make_source_fixture(temp_home, owner, name, "2.0.0")
+        r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+        assert r2.activated
+        d2 = get_active_digest(unit_id)
+
+        unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+        r1 = build_and_activate(unit1, sl1, source_dir=sd1)
+        assert r1.activated
+        d1 = get_active_digest(unit_id)
 
         assert rollback(unit_id)
         assert get_active_digest(unit_id) == d2
         assert get_previous_digest(unit_id) == d1
 
+        # runtime_drift is false after rollback (pointer and store agree)
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_skillweave_status_warm(self, temp_home):
+        """SkillWeave status after lifecycle activation."""
         owner, name = "skillweave", "skillweave"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
         unit_id = f"{owner}/{name}"
 
-        activate(unit, digest, gen_dir, skip_probes=True)
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
+        assert result.activated
 
         status = get_status(unit_id)
-        assert status.active_generation_digest == digest
+        assert status.active_generation_digest == result.generation_digest
         assert status.flags.rollback_available is False
+        assert status.flags.runtime_drift is False
 
     # ── MemPalace ───────────────────────────────────────────────────
 
-    def test_mempalace_activate_warm_skip_probes(self, temp_home):
-        owner, name = "mempalace", "mempalace"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
-
-        result = activate(unit, digest, gen_dir, skip_probes=True)
-        assert result.activated
-        assert result.generation_digest == digest
-
     def test_mempalace_activate_warm_with_probes(self, temp_home):
+        """MemPalace activation through build_and_activate with probes."""
         owner, name = "mempalace", "mempalace"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
+        unit_id = f"{owner}/{name}"
 
-        result = activate(unit, digest, gen_dir)
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
         assert result.activated
         assert all(p.passed for p in result.probes)
 
+        # Pointer and store agree
+        active_digest = get_active_digest(unit_id)
+        manager = GenerationManager()
+        assert manager.store.get(active_digest) is not None
+
+        # runtime_drift is false after clean install
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_mempalace_rollback_warm(self, temp_home):
+        """MemPalace rollback through the lifecycle."""
         owner, name = "mempalace", "mempalace"
-        unit = _make_runtime_unit(owner, name)
         unit_id = f"{owner}/{name}"
 
-        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
-        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit2, sl2, sd2 = _make_source_fixture(temp_home, owner, name, "2.0.0")
+        r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+        assert r2.activated
+        d2 = get_active_digest(unit_id)
 
-        activate(unit, d2, g2, skip_probes=True)
-        activate(unit, d1, g1, skip_probes=True)
+        unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+        r1 = build_and_activate(unit1, sl1, source_dir=sd1)
+        assert r1.activated
 
         assert rollback(unit_id)
         assert get_active_digest(unit_id) == d2
 
+        # runtime_drift is false after rollback
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_mempalace_status_warm(self, temp_home):
+        """MemPalace status after lifecycle activation."""
         owner, name = "mempalace", "mempalace"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
         unit_id = f"{owner}/{name}"
 
-        activate(unit, digest, gen_dir, skip_probes=True)
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
+        assert result.activated
 
         status = get_status(unit_id)
-        assert status.active_generation_digest == digest
+        assert status.active_generation_digest == result.generation_digest
+        assert status.flags.runtime_drift is False
 
     # ── Understand ──────────────────────────────────────────────────
 
-    def test_understand_activate_warm_skip_probes(self, temp_home):
-        owner, name = "understand", "understand"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
-
-        result = activate(unit, digest, gen_dir, skip_probes=True)
-        assert result.activated
-        assert result.generation_digest == digest
-
     def test_understand_activate_warm_with_probes(self, temp_home):
+        """Understand activation through build_and_activate with probes."""
         owner, name = "understand", "understand"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
+        unit_id = f"{owner}/{name}"
 
-        result = activate(unit, digest, gen_dir)
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
         assert result.activated
         assert all(p.passed for p in result.probes)
 
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_understand_rollback_warm(self, temp_home):
+        """Understand rollback through the lifecycle."""
         owner, name = "understand", "understand"
-        unit = _make_runtime_unit(owner, name)
         unit_id = f"{owner}/{name}"
 
-        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
-        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit2, sl2, sd2 = _make_source_fixture(temp_home, owner, name, "2.0.0")
+        r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+        assert r2.activated
+        d2 = get_active_digest(unit_id)
 
-        activate(unit, d2, g2, skip_probes=True)
-        activate(unit, d1, g1, skip_probes=True)
+        unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+        r1 = build_and_activate(unit1, sl1, source_dir=sd1)
+        assert r1.activated
 
         assert rollback(unit_id)
         assert get_active_digest(unit_id) == d2
 
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_understand_status_warm(self, temp_home):
+        """Understand status after lifecycle activation."""
         owner, name = "understand", "understand"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
         unit_id = f"{owner}/{name}"
 
-        activate(unit, digest, gen_dir, skip_probes=True)
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
+        assert result.activated
 
         status = get_status(unit_id)
-        assert status.active_generation_digest == digest
+        assert status.active_generation_digest == result.generation_digest
+        assert status.flags.runtime_drift is False
 
     # ── Cross-package offline cycle ─────────────────────────────────
 
     def test_all_three_offline_activate_rollback_cycle(self, temp_home):
+        """All three packages activate and rollback through the lifecycle."""
         packages = [
             ("skillweave", "skillweave"),
             ("mempalace", "mempalace"),
@@ -1564,69 +1638,88 @@ class TestCriterion7RealisticFixtures:
         ]
 
         for owner, name in packages:
-            unit = _make_runtime_unit(owner, name)
             unit_id = f"{owner}/{name}"
 
-            d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
-            d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+            unit2, sl2, sd2 = _make_source_fixture(temp_home, owner, name, "2.0.0")
+            r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+            assert r2.activated
+            d2 = get_active_digest(unit_id)
 
-            r = activate(unit, d2, g2, skip_probes=True)
-            assert r.activated
-            r = activate(unit, d1, g1, skip_probes=True)
-            assert r.activated
+            unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+            r1 = build_and_activate(unit1, sl1, source_dir=sd1)
+            assert r1.activated
 
             assert rollback(unit_id)
             assert get_active_digest(unit_id) == d2
 
+            # runtime_drift is false after rollback for every package
+            status = get_status(unit_id)
+            assert status.flags.runtime_drift is False
+
     def test_offline_failed_probe_leaves_previous(self, temp_home):
+        """A failed probe leaves the previous generation active and
+        runtime_drift is false (no fabricated drift)."""
         owner, name = "skillweave", "skillweave"
-        unit = _make_runtime_unit(owner, name)
         unit_id = f"{owner}/{name}"
 
-        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        r1 = activate(unit, d1, g1, skip_probes=True)
+        # v1 installs cleanly
+        unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+        r1 = build_and_activate(unit1, sl1, source_dir=sd1)
         assert r1.activated
+        d1 = get_active_digest(unit_id)
 
-        # v2 has a broken executable that fails --version
-        gen_root = _generations_dir()
-        d2 = "broken_v2.0.0"
-        g2 = gen_root / d2
-        g2.mkdir(parents=True)
-        broken = g2 / "run.py"
-        broken.write_text("#!/usr/bin/env python3\nimport sys; sys.exit(1)\n")
-        broken.chmod(0o755)
-        (g2 / ".generation.json").write_text(json.dumps({"digest": d2}))
+        # v2 has a broken entrypoint
+        unit2, sl2, sd2 = _make_source_fixture(
+            temp_home, owner, name, "2.0.0", broken=True)
+        r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+        assert not r2.activated
 
-        result = activate(unit, d2, g2)
-        assert not result.activated
         # v1 still active
         assert get_active_digest(unit_id) == d1
 
+        # runtime_drift is false after failed probe: the store was NOT
+        # updated (set_active only called after successful activate),
+        # pointer stayed on v1 — no divergence
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
+
     def test_offline_rollback_preserves_both_generations(self, temp_home):
+        """Rollback preserves both generation directories on disk."""
         owner, name = "understand", "understand"
-        unit = _make_runtime_unit(owner, name)
         unit_id = f"{owner}/{name}"
 
-        d2, g2 = _make_warm_gen(temp_home, owner, name, "2.0.0")
-        d1, g1 = _make_warm_gen(temp_home, owner, name, "1.0.0")
+        unit2, sl2, sd2 = _make_source_fixture(temp_home, owner, name, "2.0.0")
+        r2 = build_and_activate(unit2, sl2, source_dir=sd2)
+        assert r2.activated
+        d2 = get_active_digest(unit_id)
+        g2 = _generations_dir() / d2
 
-        activate(unit, d2, g2, skip_probes=True)
-        activate(unit, d1, g1, skip_probes=True)
-        rollback(unit_id)
+        unit1, sl1, sd1 = _make_source_fixture(temp_home, owner, name, "1.0.0")
+        r1 = build_and_activate(unit1, sl1, source_dir=sd1)
+        assert r1.activated
+        d1 = get_active_digest(unit_id)
+        g1 = _generations_dir() / d1
+
+        assert rollback(unit_id)
 
         assert g2.exists()
         assert g1.exists()
 
-    def test_offline_activation_json_output(self, temp_home):
-        owner, name = "mempalace", "mempalace"
-        digest, gen_dir = _make_warm_gen(temp_home, owner, name, "1.0.0")
-        unit = _make_runtime_unit(owner, name)
+        # runtime_drift is false after rollback
+        status = get_status(unit_id)
+        assert status.flags.runtime_drift is False
 
-        result = activate(unit, digest, gen_dir, skip_probes=True)
+    def test_offline_activation_json_output(self, temp_home):
+        """Activation JSON output from the lifecycle."""
+        owner, name = "mempalace", "mempalace"
+        unit, source_lock, source_dir = _make_source_fixture(
+            temp_home, owner, name, "1.0.0")
+
+        result = build_and_activate(unit, source_lock, source_dir=source_dir)
         j = activation_to_json(result)
 
         assert j["unit_id"] == f"{owner}/{name}"
-        assert j["generation_digest"] == digest
+        assert j["generation_digest"] == result.generation_digest
         assert j["activated"] is True
         assert j["previous_digest"] is None
 
@@ -1756,7 +1849,8 @@ class TestWalkingSkeletonEndToEnd:
         pid_path = active_dir / "global_proof-runtime.pid"
         assert not pid_path.exists(), "PID file should be cleared after exec"
 
-        # 5. cap status: package version, active generation
+        # 5. cap status: package version, active generation,
+        # runtime_drift is false after clean install (oracle 1)
         r_status = self._run_cap(isolated_home, [
             "status", "global/proof-runtime", "--json",
         ])
@@ -1765,6 +1859,8 @@ class TestWalkingSkeletonEndToEnd:
         assert status_json["package_version"] == "1.0.0"
         assert status_json["active_generation_digest"] == active_digest
         assert "flags" in status_json
+        assert status_json["flags"]["runtime_drift"] is False, \
+            "runtime_drift must be false after clean install"
 
         # 6. Build v2 with working probes, install, then rollback
         v2_dir = tmp_path / "v2"
@@ -1789,6 +1885,15 @@ class TestWalkingSkeletonEndToEnd:
         # Previous pointer should point to v2
         prev_ptr = active_dir / "global_proof-runtime.previous"
         assert prev_ptr.read_text().strip() == v2_digest
+
+        # runtime_drift is false after rollback (oracle 2)
+        r_status2 = self._run_cap(isolated_home, [
+            "status", "global/proof-runtime", "--json",
+        ])
+        assert r_status2.returncode == 0, f"status after rollback failed: {r_status2.stderr}"
+        status2 = json.loads(r_status2.stdout.strip())
+        assert status2["flags"]["runtime_drift"] is False, \
+            "runtime_drift must be false after rollback"
 
     def test_walking_skeleton_failed_probe_leaves_old_active(self, tmp_path):
         """A failing probe on the next version leaves the old generation active."""
@@ -1841,6 +1946,16 @@ class TestWalkingSkeletonEndToEnd:
         # The active pointer must still be v1
         assert active_ptr.read_text().strip() == v1_digest, \
             f"active changed to {active_ptr.read_text().strip()} despite failed probes; stderr={r2.stderr[:500]}"
+
+        # runtime_drift is false after failed probe (oracle 3): the store
+        # was NOT updated (set_active only after successful activate)
+        r_status = self._run_cap(isolated_home, [
+            "status", "global/failprobe-test", "--json",
+        ])
+        assert r_status.returncode == 0, f"status after failed probe failed: {r_status.stderr}"
+        status_json = json.loads(r_status.stdout.strip())
+        assert status_json["flags"]["runtime_drift"] is False, \
+            "runtime_drift must be false after failed probe"
 
     def test_walking_skeleton_mcp_protocol_probe(self, tmp_path):
         """Protocol probe fires for MCP units (is_mcp=True)."""

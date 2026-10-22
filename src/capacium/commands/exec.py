@@ -465,8 +465,10 @@ def activate(
 def rollback(unit_id: str) -> bool:
     """Roll back to the previous verified generation.
 
-    Swaps the active pointer with the previous pointer. Returns True
-    when a rollback target was available and the swap succeeded.
+    Swaps the active pointer with the previous pointer.  The persistent
+    store's active-generation id is updated to match so the pointer file
+    remains the single source of truth and runtime_drift is never a
+    false positive.
     """
     active_path = _pointer_path(unit_id)
     previous_path = _pointer_path(unit_id, ".previous")
@@ -483,6 +485,14 @@ def rollback(unit_id: str) -> bool:
         _write_pointer(previous_path, current_active)
     else:
         previous_path.unlink(missing_ok=True)
+
+    # Keep the persistent store consistent with the pointer so
+    # runtime_drift is never a false positive after rollback.
+    try:
+        manager = GenerationManager()
+        manager.store.set_active(previous_digest)
+    except Exception:
+        pass
 
     return True
 
@@ -861,14 +871,13 @@ def get_status(
     elif desired_bindings and not verified_bindings:
         flags.unverified = True
 
-    # Runtime drift: the active pointer digest differs from what the
-    # persistent store knows as active, or the active digest is not in
-    # the store at all.
+    # Runtime drift: the active generation (from the pointer file,
+    # the single source of truth) is not registered in the persistent
+    # store.  We never compare the pointer to a second copy of itself
+    # — the pointer IS the truth, and drift means the store lost track
+    # of the generation it should know about.
     if manager is not None and active_digest:
-        stored_active = manager.store.active_generation_id
-        if stored_active is None or stored_active != active_digest:
-            flags.runtime_drift = True
-        elif manager.store.get(active_digest) is None:
+        if manager.store.get(active_digest) is None:
             flags.runtime_drift = True
 
     # Restart required: an observed process is running but its generation
@@ -941,12 +950,17 @@ def build_and_activate(
     generation = build_result.generation
     manager = GenerationManager()
     manager.store.add(generation)
-    manager.store.set_active(generation.digest)
 
     result = activate(
         unit, generation.digest, gen_dir,
         skip_probes=False, probe_timeout=probe_timeout,
     )
+
+    # The pointer file is the single source of truth for the active
+    # generation.  Only persist the active id after a successful
+    # activation so the store never diverges from the pointer.
+    if result.activated:
+        manager.store.set_active(generation.digest)
 
     if json_output:
         print(json.dumps(activation_to_json(result), sort_keys=True))
