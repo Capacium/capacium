@@ -362,6 +362,22 @@ def main():
     exec_parser.add_argument("capability", help="Capability specification (owner/name)")
     exec_parser.add_argument("args", nargs=argparse.REMAINDER,
                              help="Arguments forwarded to the entrypoint")
+    exec_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="MCP stdio mode: protocol bytes on stdout only, diagnostics on stderr",
+    )
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show separated package, runtime, binding and process status",
+    )
+    status_parser.add_argument("capability", help="Capability specification (owner/name)")
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output status as stable JSON",
+    )
 
     runtimes_sub.add_parser("list", help="List known runtimes and their detection state")
     runtimes_install_parser = runtimes_sub.add_parser(
@@ -1058,6 +1074,10 @@ def main():
         elif args.command == "exec":
             from .commands.exec import handle_exec
             sys.exit(handle_exec(args))
+
+        elif args.command == "status":
+            from .commands.exec import handle_status
+            sys.exit(handle_status(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management

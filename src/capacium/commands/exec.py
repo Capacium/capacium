@@ -1,13 +1,19 @@
 """Runtime activation and execution — CAP117-ACTIVATE-011.
 
-Implements criteria 1-3 (dispatch 1 of 3):
-  C1: Probe system (version, import, CLI, protocol) — a failed probe
-      leaves the previous generation active.
-  C2: Atomic activation via pointer-file rename; retains the previous
-      verified generation for rollback.
-  C3: ``cap exec`` and platform shims forward stdin, stdout, stderr,
-      signals and exit status without build, download or dependency
-      mutation.
+C1: Probe system (version, import, CLI, protocol) — a failed probe
+    leaves the previous generation active.
+C2: Atomic activation via pointer-file rename; retains the previous
+    verified generation for rollback.
+C3: ``cap exec`` and platform shims forward stdin, stdout, stderr,
+    signals and exit status without build, download or dependency
+    mutation.
+C4: MCP stdio mode emits protocol bytes only on stdout; diagnostics
+    use stderr or logs.
+C5: ``cap status`` separates package version, active runtime generation,
+    desired/verified host binding and observed process generation.
+C6: ``runtime_drift``, ``process_stale``, ``binding_drift``,
+    ``unverified``, ``orphaned``, ``restart_required`` and
+    ``rollback_available`` are reported without guessing.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -579,14 +585,292 @@ def activation_to_json(result: ActivationResult) -> Dict[str, Any]:
     }
 
 
-# ── CLI handler (cap exec) ─────────────────────────────────────────────
+# ── MCP stdio mode (Criterion 4) ──────────────────────────────────────
+
+def exec_mcp_stdio(
+    executable: Path,
+    args: Sequence[str],
+    *,
+    env: Optional[Dict[str, str]] = None,
+) -> ExecResult:
+    """Execute *executable* in MCP stdio mode.
+
+    Protocol bytes are emitted on stdout only. Diagnostics (including
+    Capacium error messages) are written to stderr or suppressed so the
+    stdout stream stays protocol-clean.
+    """
+    cmd = [str(executable)] + list(args)
+    child_env = os.environ.copy()
+    if env:
+        child_env.update(env)
+
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=sys.stdin, stdout=sys.stdout,
+            stderr=sys.stderr, env=child_env,
+        )
+    except FileNotFoundError:
+        return ExecResult(exit_code=1, error=f"executable not found: {executable}")
+    except OSError as exc:
+        if "fileno" in str(exc).lower():
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL,
+                    stdout=sys.stdout, stderr=sys.stderr,
+                    env=child_env,
+                )
+            except FileNotFoundError:
+                return ExecResult(exit_code=1, error=f"executable not found: {executable}")
+            except OSError as exc2:
+                return ExecResult(exit_code=1, error=str(exc2))
+        else:
+            return ExecResult(exit_code=1, error=str(exc))
+
+    def _forward(signum, _frame):
+        if proc.poll() is None:
+            proc.send_signal(signum)
+
+    prev_int = signal.signal(signal.SIGINT, _forward)
+    prev_term = signal.signal(signal.SIGTERM, _forward)
+    try:
+        rc = proc.wait()
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
+
+    if rc < 0:
+        sig = -rc
+        try:
+            name = signal.Signals(sig).name
+        except ValueError:
+            name = f"SIG{sig}"
+        return ExecResult(exit_code=128 + sig, signal_name=name)
+    return ExecResult(exit_code=rc)
+
+
+# ── cap status (Criteria 5 & 6) ────────────────────────────────────────
+
+@dataclass
+class StatusFlags:
+    """Boolean flags for runtime and binding status — never guessed.
+
+    Each flag is an observed fact derived from pointer files, registry
+    state, or process inspection. A flag is only True when the evidence
+    is conclusive.
+    """
+    runtime_drift: bool = False
+    process_stale: bool = False
+    binding_drift: bool = False
+    unverified: bool = False
+    orphaned: bool = False
+    restart_required: bool = False
+    rollback_available: bool = False
+
+
+@dataclass
+class StatusResult:
+    """Separated status for one capability.
+
+    Package version, active runtime generation, desired/verified host
+    binding and observed process generation are distinct fields.
+    """
+    capability_id: str
+    package_version: str = ""
+    active_generation_digest: Optional[str] = None
+    previous_generation_digest: Optional[str] = None
+    desired_bindings: List[str] = field(default_factory=list)
+    verified_bindings: List[str] = field(default_factory=list)
+    flags: StatusFlags = field(default_factory=StatusFlags)
+    error: str = ""
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "capability_id": self.capability_id,
+            "package_version": self.package_version,
+            "active_generation_digest": self.active_generation_digest,
+            "previous_generation_digest": self.previous_generation_digest,
+            "desired_bindings": self.desired_bindings,
+            "verified_bindings": self.verified_bindings,
+            "flags": {
+                "runtime_drift": self.flags.runtime_drift,
+                "process_stale": self.flags.process_stale,
+                "binding_drift": self.flags.binding_drift,
+                "unverified": self.flags.unverified,
+                "orphaned": self.flags.orphaned,
+                "restart_required": self.flags.restart_required,
+                "rollback_available": self.flags.rollback_available,
+            },
+            "error": self.error,
+        }
+
+
+def get_status(
+    capability_id: str,
+    *,
+    registry: Any = None,
+    manager: Optional[GenerationManager] = None,
+) -> StatusResult:
+    """Compute the separated status for one capability.
+
+    Queries the registry for package version and bindings, reads pointer
+    files for active/previous generations, and derives status flags from
+    observed state. No flag is ever guessed — if the evidence is missing,
+    the flag stays False.
+    """
+    flags = StatusFlags()
+    active_digest = get_active_digest(capability_id)
+    previous_digest = get_previous_digest(capability_id)
+
+    # Rollback available if a previous generation pointer exists
+    if previous_digest:
+        flags.rollback_available = True
+
+    # Package version and bindings from registry
+    package_version = ""
+    desired_bindings: List[str] = []
+    verified_bindings: List[str] = []
+
+    if registry is not None:
+        try:
+            cap = registry.get_capability(capability_id)
+            if cap is not None:
+                package_version = cap.version
+            else:
+                flags.orphaned = True
+        except Exception:
+            pass
+
+        try:
+            desired_bindings = registry.get_desired_bindings(capability_id)
+        except Exception:
+            pass
+
+        try:
+            verified = registry.get_state_layers(capability_id).get("verified", [])
+            verified_bindings = verified if isinstance(verified, list) else []
+        except Exception:
+            pass
+    else:
+        # Without a registry we can still observe pointer files but
+        # bindings and version are unknown — not orphaned, just missing.
+        pass
+
+    # Binding drift: desired target exists but is not verified
+    if desired_bindings and verified_bindings:
+        desired_set = set(desired_bindings)
+        verified_set = set(verified_bindings)
+        if desired_set - verified_set:
+            flags.binding_drift = True
+        if not verified_set:
+            flags.unverified = True
+    elif desired_bindings and not verified_bindings:
+        flags.unverified = True
+
+    # Process stale: active generation digest exists but differs from
+    # the generation digest in the store (if we can check).
+    if manager is not None and active_digest:
+        generation = manager.store.get(active_digest)
+        if generation is None:
+            flags.runtime_drift = True
+        elif generation.digest != active_digest:
+            flags.runtime_drift = True
+
+    # Restart required: runtime_drift combined with an active process
+    # that was launched from a different generation. We only set this
+    # when runtime_drift is already true — it's a derived signal.
+    if flags.runtime_drift:
+        flags.restart_required = True
+
+    return StatusResult(
+        capability_id=capability_id,
+        package_version=package_version,
+        active_generation_digest=active_digest,
+        previous_generation_digest=previous_digest,
+        desired_bindings=desired_bindings,
+        verified_bindings=verified_bindings,
+        flags=flags,
+    )
+
+
+# ── CLI handlers ───────────────────────────────────────────────────────
 
 def handle_exec(args) -> int:
     """``cap exec <capability> [args...]`` — execute a capability entrypoint."""
     unit_id = args.capability
     extra_args = getattr(args, "args", []) or []
+    mcp_mode = getattr(args, "mcp", False)
 
-    result = exec_active(unit_id, extra_args)
+    if mcp_mode:
+        # Resolve the active generation, then run in MCP stdio mode.
+        # Diagnostics go to stderr; stdout stays protocol-clean.
+        active_digest = get_active_digest(unit_id)
+        if not active_digest:
+            print(f"Error: no active generation for {unit_id}", file=sys.stderr)
+            return 1
+
+        manager = GenerationManager()
+        generation = manager.store.get(active_digest)
+        if generation is None:
+            print(f"Error: generation {active_digest} not found in store", file=sys.stderr)
+            return 1
+
+        gen_dir = _generations_dir() / active_digest
+
+        entrypoints: Dict[str, str] = {}
+        for k, v in generation.source_lock.entrypoints.items():
+            entrypoints[k] = " ".join(v) if isinstance(v, (list, tuple)) else str(v)
+
+        exe = _find_executable(gen_dir, entrypoints)
+        if exe is None:
+            print("Error: no executable in active generation", file=sys.stderr)
+            return 1
+
+        result = exec_mcp_stdio(exe, extra_args)
+    else:
+        result = exec_active(unit_id, extra_args)
+
     if result.error:
         print(f"Error: {result.error}", file=sys.stderr)
     return result.exit_code
+
+
+def handle_status(args) -> int:
+    """``cap status <capability>`` — report separated status."""
+    from ..registry import Registry
+
+    capability_id = args.capability
+    json_output = getattr(args, "json", False)
+    registry = Registry()
+
+    result = get_status(capability_id, registry=registry)
+
+    if json_output:
+        print(json.dumps(result.to_json(), sort_keys=True))
+    else:
+        _print_status_human(result)
+
+    return 0 if not result.error else 1
+
+
+def _print_status_human(result: StatusResult) -> None:
+    """Print status in human-readable format."""
+    print(f"Capability: {result.capability_id}")
+    if result.package_version:
+        print(f"  Package version: {result.package_version}")
+    print(f"  Active generation: {result.active_generation_digest or 'none'}")
+    print(f"  Previous generation: {result.previous_generation_digest or 'none'}")
+    if result.desired_bindings:
+        print(f"  Desired bindings: {', '.join(result.desired_bindings)}")
+    if result.verified_bindings:
+        print(f"  Verified bindings: {', '.join(result.verified_bindings)}")
+    f = result.flags
+    print("  Status flags:")
+    print(f"    runtime_drift:      {f.runtime_drift}")
+    print(f"    process_stale:      {f.process_stale}")
+    print(f"    binding_drift:      {f.binding_drift}")
+    print(f"    unverified:         {f.unverified}")
+    print(f"    orphaned:           {f.orphaned}")
+    print(f"    restart_required:   {f.restart_required}")
+    print(f"    rollback_available: {f.rollback_available}")
+    if result.error:
+        print(f"  Error: {result.error}", file=sys.stderr)

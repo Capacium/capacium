@@ -1,4 +1,4 @@
-"""Tests for CAP117-ACTIVATE-011 dispatch 1 (criteria 1-3).
+"""Tests for CAP117-ACTIVATE-011 dispatch 1 & 2 (criteria 1-6).
 
 C1: Probe system (version, import, CLI, protocol) — a failed probe
     leaves the previous generation active.
@@ -7,6 +7,13 @@ C2: Atomic activation via pointer-file rename; retains the previous
 C3: cap exec and platform shims forward stdin, stdout, stderr,
     signals and exit status without build, download or dependency
     mutation.
+C4: MCP stdio mode emits protocol bytes only on stdout; diagnostics
+    use stderr or logs.
+C5: cap status separates package version, active runtime generation,
+    desired/verified host binding and observed process generation.
+C6: runtime_drift, process_stale, binding_drift, unverified,
+    orphaned, restart_required and rollback_available are reported
+    without guessing.
 """
 
 import json
@@ -21,15 +28,20 @@ from capacium.commands.exec import (
     ActivationResult,
     ProbeKind,
     ProbeResult,
+    StatusFlags,
+    StatusResult,
     activate,
     activation_to_json,
     all_probes_passed,
     exec_active,
     exec_entrypoint,
+    exec_mcp_stdio,
     generate_shim,
     get_active_digest,
     get_previous_digest,
+    get_status,
     handle_exec,
+    handle_status,
     probes_to_json,
     rollback,
     run_probes,
@@ -635,3 +647,337 @@ class TestHandleExec:
         ns = argparse.Namespace(capability="test/test-skill", args=["--version"])
         rc = handle_exec(ns)
         assert rc == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 4: MCP stdio mode
+# ──────────────────────────────────────────────────────────────────────
+
+class TestMcpStdio:
+    def test_exec_mcp_stdio_runs_and_returns_exit_code(self, tmp_path):
+        script = tmp_path / "mcp_test"
+        script.write_text("#!/bin/sh\necho '{\"jsonrpc\":\"2.0\",\"result\":{}}'\n")
+        script.chmod(0o755)
+        result = exec_mcp_stdio(script, [])
+        assert result.exit_code == 0
+
+    def test_exec_mcp_stdio_exit_code(self, tmp_path):
+        script = tmp_path / "mcp_exit"
+        script.write_text("#!/bin/sh\nexit 42\n")
+        script.chmod(0o755)
+        result = exec_mcp_stdio(script, [])
+        assert result.exit_code == 42
+
+    def test_exec_mcp_stdio_not_found(self):
+        result = exec_mcp_stdio(Path("/nonexistent"), [])
+        assert result.exit_code == 1
+        assert "not found" in result.error.lower()
+
+    def test_handle_exec_mcp_mode_no_generation(self, temp_home, capsys):
+        import argparse
+        ns = argparse.Namespace(capability="test/missing", args=[], mcp=True)
+        rc = handle_exec(ns)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "no active generation" in captured.err
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 5: cap status — separated layers
+# ──────────────────────────────────────────────────────────────────────
+
+class TestStatusResult:
+    def test_status_result_defaults(self):
+        sr = StatusResult(capability_id="test/skill")
+        assert sr.capability_id == "test/skill"
+        assert sr.package_version == ""
+        assert sr.active_generation_digest is None
+        assert sr.desired_bindings == []
+        assert sr.verified_bindings == []
+
+    def test_status_result_to_json(self):
+        sr = StatusResult(
+            capability_id="test/skill",
+            package_version="1.2.3",
+            active_generation_digest="a" * 64,
+            previous_generation_digest="b" * 64,
+            desired_bindings=["claude-code", "opencode"],
+            verified_bindings=["claude-code"],
+            flags=StatusFlags(binding_drift=True, rollback_available=True),
+        )
+        j = sr.to_json()
+        assert j["capability_id"] == "test/skill"
+        assert j["package_version"] == "1.2.3"
+        assert j["active_generation_digest"] == "a" * 64
+        assert j["previous_generation_digest"] == "b" * 64
+        assert j["desired_bindings"] == ["claude-code", "opencode"]
+        assert j["verified_bindings"] == ["claude-code"]
+        assert j["flags"]["binding_drift"] is True
+        assert j["flags"]["rollback_available"] is True
+        assert j["flags"]["runtime_drift"] is False
+
+    def test_status_result_to_json_stable_keys(self):
+        sr = StatusResult(capability_id="test/skill")
+        j = sr.to_json()
+        expected_keys = {
+            "capability_id", "package_version",
+            "active_generation_digest", "previous_generation_digest",
+            "desired_bindings", "verified_bindings",
+            "flags", "error",
+        }
+        assert set(j.keys()) == expected_keys
+        flag_keys = {
+            "runtime_drift", "process_stale", "binding_drift",
+            "unverified", "orphaned", "restart_required",
+            "rollback_available",
+        }
+        assert set(j["flags"].keys()) == flag_keys
+
+
+class TestGetStatus:
+    def test_status_from_pointers_only(self, temp_home):
+        """Without registry, status derives from pointer files only."""
+        unit_id = "test/skill"
+        active_path = _pointer_path(unit_id)
+        prev_path = _pointer_path(unit_id, ".previous")
+
+        _write_pointer(active_path, "a" * 64)
+        _write_pointer(prev_path, "b" * 64)
+
+        result = get_status(unit_id)
+        assert result.active_generation_digest == "a" * 64
+        assert result.previous_generation_digest == "b" * 64
+        assert result.flags.rollback_available is True
+        # Without registry, bindings are empty and orphaned stays False
+        assert result.desired_bindings == []
+        assert result.flags.orphaned is False
+
+    def test_status_no_active_generation(self, temp_home):
+        result = get_status("test/nonexistent")
+        assert result.active_generation_digest is None
+        assert result.flags.rollback_available is False
+
+    def test_status_with_registry_orphaned(self, temp_home):
+        """When registry has no entry, orphaned flag is set."""
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+
+        # Create a registry where the capability doesn't exist
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        unit_id = "test/orphaned-skill"
+        result = get_status(unit_id, registry=registry)
+        assert result.flags.orphaned is True
+
+    def test_status_no_guessing(self, temp_home):
+        """Status flags are only True when evidence is conclusive."""
+        result = get_status("test/empty")
+        # No evidence → all flags False
+        assert result.flags.runtime_drift is False
+        assert result.flags.process_stale is False
+        assert result.flags.binding_drift is False
+        assert result.flags.unverified is False
+        assert result.flags.orphaned is False
+        assert result.flags.restart_required is False
+        assert result.flags.rollback_available is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Criterion 6: Status flags — exact observations
+# ──────────────────────────────────────────────────────────────────────
+
+class TestStatusFlags:
+    def test_all_flags_default_false(self):
+        flags = StatusFlags()
+        assert not flags.runtime_drift
+        assert not flags.process_stale
+        assert not flags.binding_drift
+        assert not flags.unverified
+        assert not flags.orphaned
+        assert not flags.restart_required
+        assert not flags.rollback_available
+
+    def test_rollback_available_from_pointer(self, temp_home):
+        unit_id = "test/rollback-flag"
+        _write_pointer(_pointer_path(unit_id, ".previous"), "a" * 64)
+        result = get_status(unit_id)
+        assert result.flags.rollback_available is True
+        # Other flags unaffected
+        assert result.flags.runtime_drift is False
+
+    def test_binding_drift_detected(self, temp_home):
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        # Insert a capability with desired bindings but no verification
+        owner, name = "test", "drift-skill"
+        registry._insert_raw(owner, name, "1.0.0",
+                             desired_bindings=["claude-code", "opencode"])
+
+        unit_id = f"{owner}/{name}"
+        result = get_status(unit_id, registry=registry)
+        assert "claude-code" in result.desired_bindings
+        assert "opencode" in result.desired_bindings
+        # Desired bindings exist but none are verified → unverified
+        assert result.flags.unverified is True
+
+    def test_binding_drift_when_verified_partial(self, temp_home):
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        owner, name = "test", "partial-skill"
+        registry._insert_raw(owner, name, "1.0.0",
+                             desired_bindings=["claude-code", "opencode"])
+
+        # Mark one adapter as verified
+        registry.set_adapter_status(f"{owner}/{name}", "1.0.0",
+                                    "claude-code", "verified")
+
+        unit_id = f"{owner}/{name}"
+        result = get_status(unit_id, registry=registry)
+        # claude-code verified, opencode not → binding_drift
+        assert result.flags.binding_drift is True
+        # At least one verified → unverified stays False
+        assert result.flags.unverified is False
+
+    def test_runtime_drift_from_store_mismatch(self, temp_home):
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        unit_id = "test/drifted"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+
+        # Store has a different digest → runtime_drift
+        from capacium.runtimes import GenerationManager, RuntimeGeneration, SourceLock
+        manager = GenerationManager()
+        source_lock = SourceLock(source_url="file:///tmp", digest="b" * 64)
+        generation = RuntimeGeneration(digest="b" * 64, source_lock=source_lock)
+        manager.store.add(generation)
+
+        result = get_status(unit_id, registry=registry, manager=manager)
+        assert result.flags.runtime_drift is True
+        assert result.flags.restart_required is True
+
+    def test_handle_status_json(self, temp_home, capsys):
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        _ = __import__("capacium.registry", fromlist=["Registry"]).Registry(
+            db_path=cap_home / "registry.db"
+        )
+
+        import argparse
+        ns = argparse.Namespace(capability="test/json-skill", json=True)
+
+        # handle_status creates its own registry — we can't inject.
+        # Test with a non-existent capability for a stable code path.
+        rc = handle_status(ns)
+        # Missing capability → error
+        captured = capsys.readouterr()
+        assert rc == 0
+        parsed = json.loads(captured.out)
+        assert parsed["capability_id"] == "test/json-skill"
+        assert parsed["flags"]["orphaned"] is True
+
+    def test_handle_status_human(self, temp_home, capsys):
+        import argparse
+        ns = argparse.Namespace(capability="test/human-skill", json=False)
+        handle_status(ns)
+        captured = capsys.readouterr()
+        assert "Capability: test/human-skill" in captured.out
+        assert "runtime_drift" in captured.out
+        assert "rollback_available" in captured.out
+
+    def test_restart_required_derived_from_drift(self, temp_home):
+        """restart_required is derived from runtime_drift — not guessed."""
+        flags = StatusFlags(runtime_drift=True)
+        result = StatusResult(
+            capability_id="test/skill",
+            flags=flags,
+        )
+        # Runtime drift alone doesn't set restart_required in the data
+        # model — that's computed in get_status() which derives it.
+        # Here we test the derivation logic directly.
+        from capacium.registry import Registry
+        cap_home = temp_home / ".capacium"
+        cap_home.mkdir(exist_ok=True)
+        registry = Registry(db_path=cap_home / "registry.db")
+
+        unit_id = "test/drift-restart"
+        active_path = _pointer_path(unit_id)
+        _write_pointer(active_path, "a" * 64)
+
+        from capacium.runtimes import GenerationManager, RuntimeGeneration, SourceLock
+        manager = GenerationManager()
+        source_lock = SourceLock(source_url="file:///tmp", digest="b" * 64)
+        generation = RuntimeGeneration(digest="b" * 64, source_lock=source_lock)
+        manager.store.add(generation)
+
+        result = get_status(unit_id, registry=registry, manager=manager)
+        assert result.flags.runtime_drift is True
+        assert result.flags.restart_required is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helper for raw registry inserts in tests
+# ──────────────────────────────────────────────────────────────────────
+
+def _register_raw_insert():
+    """Monkey-patch Registry with a helper for test inserts."""
+    from capacium.registry import Registry
+    import json as _json
+
+    def _insert_raw(self, owner, name, version,
+                    published=None, desired_bindings=None,
+                    adapter_statuses=None):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM capabilities WHERE owner=? AND name=? AND version=?",
+                (owner, name, version),
+            )
+            row = cursor.fetchone()
+            if row:
+                if desired_bindings is not None:
+                    cursor.execute(
+                        "UPDATE capabilities SET desired_bindings=? WHERE id=?",
+                        (_json.dumps(sorted(set(desired_bindings))), row[0]),
+                    )
+                if adapter_statuses is not None:
+                    cursor.execute(
+                        "UPDATE capabilities SET adapter_statuses=? WHERE id=?",
+                        (_json.dumps(adapter_statuses), row[0]),
+                    )
+            else:
+                published_json = _json.dumps(
+                    sorted(set(published)) if published else []
+                )
+                desired_json = _json.dumps(
+                    sorted(set(desired_bindings)) if desired_bindings else []
+                )
+                statuses_json = _json.dumps(adapter_statuses or {})
+                fingerprint = f"test-fp-{owner}-{name}-{version}"
+                install_path = f"/tmp/test-install/{owner}/{name}"
+                cursor.execute(
+                    """INSERT INTO capabilities
+                       (owner, name, version, kind, fingerprint, install_path,
+                        frameworks, published_frameworks, desired_bindings,
+                        adapter_statuses, installed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (owner, name, version, "skill", fingerprint, install_path,
+                     published_json, published_json, desired_json,
+                     statuses_json),
+                )
+            conn.commit()
+
+    Registry._insert_raw = _insert_raw
+
+
+_register_raw_insert()
