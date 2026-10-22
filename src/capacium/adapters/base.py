@@ -122,6 +122,42 @@ class HostOperationResult:
         }
 
 
+@dataclass
+class HostStatusResult:
+    """Host status separating desired, verified and observed layers.
+
+    Criterion 5: Desired binding (from registry), verified configuration
+    (from host config inspection) and observed process (from PID files)
+    are kept separate. Unattestable GUI environments report unknown.
+    """
+    framework: str
+    desired_bindings: List[str] = field(default_factory=list)
+    verified_skills: List[str] = field(default_factory=list)
+    verified_mcp_servers: List[str] = field(default_factory=list)
+    observed_process_generation: Optional[str] = None
+    observed_process_pid: Optional[int] = None
+    process_attestable: bool = False  # False for GUI-only hosts
+    foreign_entries: List[str] = field(default_factory=list)
+    config_path: Optional[str] = None
+    config_valid: bool = True
+    error: str = ""
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "framework": self.framework,
+            "desired_bindings": self.desired_bindings,
+            "verified_skills": self.verified_skills,
+            "verified_mcp_servers": self.verified_mcp_servers,
+            "observed_process_generation": self.observed_process_generation,
+            "observed_process_pid": self.observed_process_pid,
+            "process_attestable": self.process_attestable,
+            "foreign_entries": self.foreign_entries,
+            "config_path": self.config_path,
+            "config_valid": self.config_valid,
+            "error": self.error,
+        }
+
+
 def ensure_package_dir(storage, cap_name: str, version: str, source_dir: Path, owner: str = "global") -> Path:
     """Copy source_dir → package_dir if they differ. Returns package_dir."""
     from ..utils.copytree import remove_git_metadata, ensure_execution_permissions
@@ -214,6 +250,11 @@ class FrameworkAdapter(ABC):
     ) -> HostOperationResult:
         raise NotImplementedError(
             f"unregister() not implemented for {self.__class__.__name__}"
+        )
+
+    def status(self) -> HostStatusResult:
+        raise NotImplementedError(
+            f"status() not implemented for {self.__class__.__name__}"
         )
 
     def plan_host_operation(

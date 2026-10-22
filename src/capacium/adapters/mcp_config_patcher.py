@@ -536,6 +536,7 @@ class McpConfigPatcher:
         source_dir: Path,
         mcp_meta: Optional[Dict[str, Any]] = None,
         resolver=None,
+        owner: str = "global",
     ) -> bool:
         """Full pipeline: build (runtime-gated) → backup → read → inject → write.
 
@@ -543,6 +544,7 @@ class McpConfigPatcher:
         any filesystem mutation — no backup file, no config write.
         """
         entry = cls.build_mcp_entry(cap_name, source_dir, mcp_meta, resolver=resolver)
+        entry["_capacium_owner"] = f"capacium:{cap_name}:mcp-server"
         cls.backup(config_path)
         config = cls.read_json(config_path)
         servers = config.setdefault(mcp_section_key, {})

@@ -20,6 +20,7 @@ from ..symlink_manager import SymlinkManager
 from .base import (
     FrameworkAdapter, ensure_package_dir,
     HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+    HostStatusResult,
 )
 from .mcp_config_patcher import McpConfigPatcher
 
@@ -144,6 +145,11 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
         )
 
     def capability_exists(self, cap_name: str) -> bool:
+        # Skills are stored in the package cache, not as direct MCP entries
+        cap_home = Path.home() / ".capacium" / "packages"
+        for owner_dir in (cap_home / "global",):
+            if (owner_dir / cap_name).exists():
+                return True
         return McpConfigPatcher.mcp_server_exists_json(
             config_path=self.config_path,
             server_key=McpConfigPatcher.build_server_key(cap_name),
@@ -311,6 +317,27 @@ class ClaudeDesktopAdapter(FrameworkAdapter):
                 success=True, plan=plan,
             )
         return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def status(self) -> HostStatusResult:
+        """Report desired, verified and observed layers separately.
+
+        Claude Desktop is a GUI app — process observation is not
+        attestable, so observed_process_generation reports unknown.
+        """
+        inspect_result = self.inspect()
+        return HostStatusResult(
+            framework="claude-desktop",
+            desired_bindings=[],
+            verified_skills=inspect_result.managed_skills,
+            verified_mcp_servers=inspect_result.managed_mcp_servers,
+            observed_process_generation=None,
+            observed_process_pid=None,
+            process_attestable=False,  # GUI — unknown
+            foreign_entries=inspect_result.foreign_entries,
+            config_path=inspect_result.config_path,
+            config_valid=inspect_result.config_valid,
+            error=inspect_result.error,
+        )
 
     def unregister(
         self, capability_id: str, kind: str,

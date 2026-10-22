@@ -1,7 +1,7 @@
 """Host registration management — CAP117-HOST-012.
 
 Production CLI caller for the host adapter contract: register, inspect,
-verify, repair and unregister with dry-run and stable machine plans.
+verify, repair, unregister and status with dry-run and stable machine plans.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from ..adapters import get_adapter
-from ..adapters.base import HostOperationResult, HostInspectResult
+from ..adapters.base import HostOperationResult, HostInspectResult, HostStatusResult
 
 
 def _get_adapter_for_framework(framework: str):
@@ -40,6 +40,8 @@ def handle_host(args) -> int:
         return _cmd_repair(args)
     elif sub == "unregister":
         return _cmd_unregister(args)
+    elif sub == "status":
+        return _cmd_status(args)
     else:
         print(f"Error: unknown host subcommand '{sub}'", file=sys.stderr)
         return 1
@@ -150,6 +152,67 @@ def _print_operation_result(result: HostOperationResult, json_output: bool) -> i
         if result.backup_path:
             print(f"    backup: {result.backup_path}")
     return 0 if result.success else 1
+
+
+def _cmd_status(args) -> int:
+    framework = getattr(args, "framework", "claude-code")
+    json_output = getattr(args, "json", False)
+    adapter = _get_adapter_for_framework(framework)
+
+    try:
+        result = adapter.status()
+    except NotImplementedError:
+        print(f"Error: status not implemented for {framework}", file=sys.stderr)
+        return 1
+
+    if json_output:
+        print(json.dumps(result.to_json(), sort_keys=True))
+    else:
+        _print_status_human(result)
+    return 0
+
+
+def _print_status_human(result: HostStatusResult) -> None:
+    print(f"Framework: {result.framework}")
+    if result.config_path:
+        valid = "valid" if result.config_valid else "INVALID"
+        print(f"  Config: {result.config_path} ({valid})")
+
+    # Desired bindings
+    if result.desired_bindings:
+        print(f"  Desired bindings ({len(result.desired_bindings)}):")
+        for b in result.desired_bindings:
+            print(f"    - {b}")
+    else:
+        print("  Desired bindings: (none)")
+
+    # Verified configuration
+    if result.verified_skills:
+        print(f"  Verified skills ({len(result.verified_skills)}):")
+        for s in result.verified_skills:
+            print(f"    - {s}")
+    if result.verified_mcp_servers:
+        print(f"  Verified MCP servers ({len(result.verified_mcp_servers)}):")
+        for s in result.verified_mcp_servers:
+            print(f"    - {s}")
+
+    # Observed process
+    if result.process_attestable:
+        if result.observed_process_generation:
+            pid_str = f" (pid {result.observed_process_pid})" if result.observed_process_pid else ""
+            print(f"  Observed process generation: {result.observed_process_generation}{pid_str}")
+        else:
+            print("  Observed process: (none)")
+    else:
+        print("  Observed process: unknown (unattestable GUI environment)")
+
+    if result.foreign_entries:
+        print(f"  Foreign entries ({len(result.foreign_entries)}):")
+        for e in result.foreign_entries:
+            print(f"    - {e}")
+
+    if result.error:
+        print(f"  Error: {result.error}", file=sys.stderr)
 
 
 def _print_inspect_human(result: HostInspectResult) -> None:

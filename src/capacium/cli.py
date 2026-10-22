@@ -332,6 +332,9 @@ def main():
     host_unregister.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
     host_unregister.add_argument("--dry-run", action="store_true", help="Show plan without applying")
     host_unregister.add_argument("--json", action="store_true", help="Output as JSON")
+    host_status = host_sub.add_parser("status", help="Show host status (desired, verified, observed)")
+    host_status.add_argument("--framework", help="Target framework", default="claude-code")
+    host_status.add_argument("--json", action="store_true", help="Output as JSON")
 
     gc_parser = subparsers.add_parser(
         "gc",

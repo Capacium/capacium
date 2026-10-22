@@ -14,6 +14,7 @@ from ..symlink_manager import SymlinkManager
 from .base import (
     FrameworkAdapter, _cap_id, ensure_package_dir,
     HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
+    HostStatusResult,
 )
 from .mcp_config_patcher import McpConfigPatcher
 
@@ -239,6 +240,52 @@ class CodexAdapter(FrameworkAdapter):
                 success=True, plan=plan,
             )
         return self.register(capability_id, kind, source_dir, dry_run=False, owner=owner)
+
+    def status(self) -> HostStatusResult:
+        """Report desired, verified and observed layers separately.
+
+        Codex runs as a CLI process, so process observation is
+        attestable via PID files from cap exec.
+        """
+        from ..commands.exec import _read_pid_file, _is_process_alive
+
+        inspect_result = self.inspect()
+
+        observed_gen = None
+        observed_pid = None
+
+        for skill_name in inspect_result.managed_skills:
+            pid_data = _read_pid_file(skill_name)
+            if pid_data:
+                pid = pid_data.get("pid")
+                if isinstance(pid, int) and _is_process_alive(pid):
+                    observed_pid = pid
+                    observed_gen = pid_data.get("generation")
+                    break
+
+        if observed_gen is None:
+            for mcp_name in inspect_result.managed_mcp_servers:
+                pid_data = _read_pid_file(mcp_name)
+                if pid_data:
+                    pid = pid_data.get("pid")
+                    if isinstance(pid, int) and _is_process_alive(pid):
+                        observed_pid = pid
+                        observed_gen = pid_data.get("generation")
+                        break
+
+        return HostStatusResult(
+            framework="codex",
+            desired_bindings=[],
+            verified_skills=inspect_result.managed_skills,
+            verified_mcp_servers=inspect_result.managed_mcp_servers,
+            observed_process_generation=observed_gen,
+            observed_process_pid=observed_pid,
+            process_attestable=True,
+            foreign_entries=inspect_result.foreign_entries,
+            config_path=inspect_result.config_path,
+            config_valid=inspect_result.config_valid,
+            error=inspect_result.error,
+        )
 
     def unregister(
         self, capability_id: str, kind: str,

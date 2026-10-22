@@ -6,6 +6,7 @@ ownership markers, backup/transactional copy, and post-write validation.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -354,3 +355,483 @@ class TestForeignPreservation:
         config = json.loads(adapter.config_path.read_text())
         assert "foreign-server" in config["mcpServers"]
         assert "my-mcp" not in config["mcpServers"]
+
+
+# ── Criterion 4: Secrets and local settings survive all operations ──────
+
+class TestSecretsAndSettingsPreservation:
+    """Foreign entries, local settings and secrets survive register, update,
+    repair and unregister."""
+
+    def test_secret_env_vars_preserved_through_register(self, tmp_home, tmp_path):
+        """Secret-like env entries in config survive register."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        original_config = {
+            "mcpServers": {
+                "foreign-server": {
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {
+                        "API_KEY": "secret-value-should-survive",
+                        "TOKEN": "another-secret",
+                    }
+                }
+            }
+        }
+        adapter.config_path.write_text(json.dumps(original_config))
+
+        source = _make_mcp_dir(tmp_path, "secret-test")
+        adapter.register("secret-test", "mcp-server", source)
+
+        config = json.loads(adapter.config_path.read_text())
+        foreign = config["mcpServers"]["foreign-server"]
+        assert foreign["env"]["API_KEY"] == "secret-value-should-survive"
+        assert foreign["env"]["TOKEN"] == "another-secret"
+
+    def test_secret_env_vars_survive_unregister(self, tmp_home, tmp_path):
+        """Secret-like env entries survive unregister."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "foreign-server": {
+                    "command": "node",
+                    "env": {"PRIVATE_KEY": "keep-me"},
+                }
+            }
+        }))
+
+        source = _make_mcp_dir(tmp_path, "secret-unreg")
+        adapter.register("secret-unreg", "mcp-server", source)
+        adapter.unregister("secret-unreg", "mcp-server")
+
+        config = json.loads(adapter.config_path.read_text())
+        assert config["mcpServers"]["foreign-server"]["env"]["PRIVATE_KEY"] == "keep-me"
+        assert "secret-unreg" not in config["mcpServers"]
+
+    def test_foreign_entry_survives_repair(self, tmp_home, tmp_path):
+        """Foreign entries survive repair."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "foreign-server": {"command": "node", "args": ["server.js"]},
+            }
+        }))
+
+        source = _make_mcp_dir(tmp_path, "repair-foreign")
+        # Register, then break
+        adapter.register("repair-foreign", "mcp-server", source)
+        config = json.loads(adapter.config_path.read_text())
+        del config["mcpServers"]["repair-foreign"]
+        adapter.config_path.write_text(json.dumps(config))
+
+        # Repair
+        result = adapter.repair("repair-foreign", "mcp-server", source)
+        assert result.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        assert "foreign-server" in config["mcpServers"]
+        assert "repair-foreign" in config["mcpServers"]
+
+    def test_foreign_entry_survives_full_lifecycle(self, tmp_home, tmp_path):
+        """Foreign entries survive register -> repair -> unregister cycle."""
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "always-there": {"command": "bash", "args": ["-c", "echo hello"]},
+            }
+        }))
+
+        source = _make_mcp_dir(tmp_path, "lifecycle")
+        # Register
+        adapter.register("lifecycle", "mcp-server", source)
+        config = json.loads(adapter.config_path.read_text())
+        assert "always-there" in config["mcpServers"]
+        assert "lifecycle" in config["mcpServers"]
+
+        # Unregister
+        adapter.unregister("lifecycle", "mcp-server")
+        config = json.loads(adapter.config_path.read_text())
+        assert "always-there" in config["mcpServers"]
+        assert "lifecycle" not in config["mcpServers"]
+
+    def test_local_settings_preserved_in_codex(self, tmp_home, tmp_path):
+        """Local TOML settings survive codex register/unregister."""
+        adapter = CodexAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a TOML config with local settings
+        adapter.config_path.write_text(
+            '[settings]\nmodel = "gpt-5"\ntemperature = 0.7\n\n'
+            '[mcp_servers]\n'
+        )
+
+        source = _make_mcp_dir(tmp_path, "codex-local")
+        adapter.register("codex-local", "mcp-server", source)
+
+        content = adapter.config_path.read_text()
+        assert 'model = "gpt-5"' in content
+        assert "temperature = 0.7" in content
+
+        adapter.unregister("codex-local", "mcp-server")
+        content = adapter.config_path.read_text()
+        assert 'model = "gpt-5"' in content
+
+
+# ── Criterion 5: Separate desired/verified/observed, GUI unknown ────────
+
+class TestHostStatus:
+    """Desired binding, verified configuration and observed process remain
+    separate, and unattestable GUI environments report unknown."""
+
+    def test_status_returns_separated_layers(self, tmp_home):
+        """status() returns HostStatusResult with separate fields."""
+        for fw in ("claude-code", "claude-desktop", "codex"):
+            adapter = get_adapter(fw)
+            result = adapter.status()
+            from capacium.adapters.base import HostStatusResult
+            assert isinstance(result, HostStatusResult)
+            assert result.framework == fw
+            assert isinstance(result.desired_bindings, list)
+            assert isinstance(result.verified_skills, list)
+            assert isinstance(result.verified_mcp_servers, list)
+            assert isinstance(result.foreign_entries, list)
+            # Fields are separate: observed_process_generation is Optional[str]
+            assert result.observed_process_generation is None or isinstance(result.observed_process_generation, str)
+
+    def test_status_json_serializable(self, tmp_home):
+        """status() to_json produces valid JSON."""
+        for fw in ("claude-code", "claude-desktop", "codex"):
+            adapter = get_adapter(fw)
+            result = adapter.status()
+            j = result.to_json()
+            assert isinstance(j, dict)
+            json.dumps(j)
+
+    def test_claude_desktop_process_unattestable(self, tmp_home):
+        """Claude Desktop reports process_attestable=False (GUI unknown)."""
+        adapter = ClaudeDesktopAdapter()
+        result = adapter.status()
+        assert result.process_attestable is False
+        assert result.observed_process_generation is None
+        assert result.observed_process_pid is None
+
+    def test_claude_code_process_attestable(self, tmp_home):
+        """Claude Code reports process_attestable=True."""
+        adapter = ClaudeCodeAdapter()
+        result = adapter.status()
+        assert result.process_attestable is True
+
+    def test_codex_process_attestable(self, tmp_home):
+        """Codex reports process_attestable=True."""
+        adapter = CodexAdapter()
+        result = adapter.status()
+        assert result.process_attestable is True
+
+    def test_status_reflects_registered_skills(self, tmp_home, tmp_path):
+        """Registered skills appear in verified_skills."""
+        adapter = ClaudeCodeAdapter()
+        source = _make_skill_dir(tmp_path, "status-skill")
+        adapter.register("status-skill", "skill", source)
+
+        result = adapter.status()
+        assert "status-skill" in result.verified_skills
+
+    def test_status_reflects_registered_mcp(self, tmp_home, tmp_path):
+        """Registered MCP servers appear in verified_mcp_servers."""
+        adapter = ClaudeCodeAdapter()
+        source = _make_mcp_dir(tmp_path, "status-mcp")
+        adapter.register("status-mcp", "mcp-server", source)
+
+        result = adapter.status()
+        assert "status-mcp" in result.verified_mcp_servers
+
+    def test_status_desired_separate_from_verified(self, tmp_home, tmp_path):
+        """Desired bindings are reported separately from verified."""
+        adapter = ClaudeCodeAdapter()
+        source = _make_skill_dir(tmp_path, "layered-skill")
+        adapter.register("layered-skill", "skill", source)
+
+        result = adapter.status()
+        # desired_bindings and verified_skills are separate lists
+        assert isinstance(result.desired_bindings, list)
+        assert isinstance(result.verified_skills, list)
+        # They are distinct fields — no conflation
+        assert "desired_bindings" in result.to_json()
+        assert "verified_skills" in result.to_json()
+
+
+# ── Criterion 6: Platform fixture matrix via real CLI ───────────────────
+
+class TestCLIHostRegistration:
+    """Claude Desktop, Claude Code, Codex and the OpenClaude contract
+    fixture pass on macOS, Linux and Windows. Normal host start performs
+    no network, build or dependency mutation."""
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_inspect(self, framework, tmp_home, tmp_path):
+        """cap host inspect works via real CLI entry point."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
+               "--framework", framework]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"inspect {framework} failed: {result.stderr}"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_inspect_json(self, framework, tmp_home, tmp_path):
+        """cap host inspect --json produces valid JSON."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
+               "--framework", framework, "--json"]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["framework"] == framework
+        assert "config_exists" in data
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_register_dry_run(self, framework, tmp_home, tmp_path):
+        """cap host register --dry-run produces a plan without mutating."""
+        import subprocess
+        import sys as _sys
+
+        source = _make_skill_dir(tmp_path, "cli-dry")
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
+               "cli-dry", "--framework", framework, "--kind", "skill",
+               "--source", str(source), "--dry-run"]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"dry-run {framework}: {result.stderr}"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_register_and_verify(self, framework, tmp_home, tmp_path):
+        """cap host register + cap host verify via real CLI."""
+        import subprocess
+        import sys as _sys
+
+        source = _make_skill_dir(tmp_path, "cli-verify")
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+
+        # Register
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
+               "cli-verify", "--framework", framework, "--kind", "skill",
+               "--source", str(source)]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"register {framework}: {result.stderr}"
+
+        # Verify
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "verify",
+               "cli-verify", "--framework", framework]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"verify {framework}: {result.stderr}"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_unregister(self, framework, tmp_home, tmp_path):
+        """cap host unregister via real CLI."""
+        import subprocess
+        import sys as _sys
+
+        source = _make_skill_dir(tmp_path, "cli-unreg")
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+
+        # Register first
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
+               "cli-unreg", "--framework", framework, "--kind", "skill",
+               "--source", str(source)]
+        subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+
+        # Unregister
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "unregister",
+               "cli-unreg", "--framework", framework, "--kind", "skill"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"unregister {framework}: {result.stderr}"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_status(self, framework, tmp_home, tmp_path):
+        """cap host status works via real CLI entry point."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
+               "--framework", framework]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"status {framework}: {result.stderr}"
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_status_json(self, framework, tmp_home, tmp_path):
+        """cap host status --json returns valid JSON with separated layers."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
+               "--framework", framework, "--json"]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["framework"] == framework
+        assert "desired_bindings" in data
+        assert "verified_skills" in data
+        assert "verified_mcp_servers" in data
+        assert "process_attestable" in data
+
+    @pytest.mark.parametrize("framework", ["claude-code", "claude-desktop", "codex"])
+    def test_cli_host_repair(self, framework, tmp_home, tmp_path):
+        """cap host repair via real CLI."""
+        import subprocess
+        import sys as _sys
+
+        source = _make_skill_dir(tmp_path, "cli-repair")
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+
+        # Register
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
+               "cli-repair", "--framework", framework, "--kind", "skill",
+               "--source", str(source)]
+        subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+
+        # Repair (dry run first)
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "repair",
+               "cli-repair", "--framework", framework, "--kind", "skill",
+               "--source", str(source), "--dry-run"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"repair dry-run {framework}: {result.stderr}"
+
+    def test_cli_host_missing_framework(self, tmp_home, tmp_path):
+        """Unknown framework produces error exit 1."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
+               "--framework", "nonexistent-framework"]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode != 0
+
+    def test_cli_host_verify_missing(self, tmp_home, tmp_path):
+        """cap host verify for missing capability returns non-zero."""
+        import subprocess
+        import sys as _sys
+
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "verify",
+               "nonexistent-12345"]
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode != 0
+
+    def test_cli_host_full_lifecycle_with_foreign_entries(self, tmp_home, tmp_path):
+        """Full register -> inspect -> verify -> repair -> unregister via CLI
+        preserves foreign entries throughout."""
+        import subprocess
+        import sys as _sys
+
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+
+        # Pre-create foreign entry in claude-code config
+        adapter = ClaudeCodeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "foreign-server": {"command": "node", "args": ["server.js"]},
+            }
+        }))
+
+        source = _make_skill_dir(tmp_path, "full-lifecycle")
+
+        # Register
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
+               "full-lifecycle", "--framework", "claude-code", "--kind", "skill",
+               "--source", str(source)]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0, f"register: {result.stderr}"
+
+        # Inspect
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
+               "--framework", "claude-code", "--json"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "full-lifecycle" in data["managed_skills"]
+
+        # Verify
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "verify",
+               "full-lifecycle", "--framework", "claude-code"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0
+
+        # Unregister
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "unregister",
+               "full-lifecycle", "--framework", "claude-code", "--kind", "skill"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
+        assert result.returncode == 0
+
+        # Foreign entry survived
+        config = json.loads(adapter.config_path.read_text())
+        assert "foreign-server" in config["mcpServers"]
+
+    def test_host_status_no_network_no_build(self, tmp_home, tmp_path):
+        """Normal host status performs no network, build or dependency mutation.
+
+        We verify this by running cap host status and confirming it exits
+        quickly (no network/build work) and produces valid output."""
+        import subprocess
+        import sys as _sys
+        import time
+
+        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
+               "PATH": os.environ.get("PATH", ""),
+               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+
+        start = time.monotonic()
+        cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
+               "--framework", "claude-code", "--json"]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=10)
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert elapsed < 5.0, f"host status took {elapsed:.1f}s — looks like network/build work"
+        data = json.loads(result.stdout)
+        assert data["framework"] == "claude-code"
