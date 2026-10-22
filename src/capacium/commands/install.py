@@ -354,9 +354,21 @@ def install_capability(
             # Validate a caller-supplied local source before StorageManager or
             # Registry can create operator-home state. Remote sources retain
             # their Exchange declaration precedence and clone-time migration.
-            local_source_manifest = Manifest.detect_source_declaration(
-                source_path
-            )
+            try:
+                local_source_manifest = Manifest.detect_source_declaration(
+                    source_path
+                )
+            except ManifestDeclarationError as exc:
+                if json_output:
+                    print(_json.dumps({
+                        "operation": "install",
+                        "source": source_raw,
+                        "status": "error",
+                        "error": str(exc),
+                    }))
+                else:
+                    print(f"Error: {exc}")
+                return False
 
     if project:
         # V7/STAB-006: explicit project root for project-scoped clients
@@ -727,7 +739,8 @@ def install_capability(
         )
         owner, cap_name = Registry.parse_cap_id(canonical_cap_id)
         cap_id = canonical_cap_id
-        print(f"  Canonical relocation: {requested_cap_id} → {canonical_cap_id}")
+        if not json_output:
+            print(f"  Canonical relocation: {requested_cap_id} → {canonical_cap_id}")
 
     if version_spec in ["latest", "stable"]:
         version = (
@@ -747,20 +760,43 @@ def install_capability(
         current_key = VersionManager.semver_key(current.version)
         resolved_key = VersionManager.semver_key(version)
         if current_key is not None and resolved_key is not None and resolved_key <= current_key:
-            print(
-                f"No newer version found for {cap_id}: "
-                f"installed {current.version}, resolved {version}."
-            )
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version,
+                    "status": "unchanged",
+                    "installed_version": current.version,
+                    "resolved_version": version,
+                }))
+            else:
+                print(
+                    f"No newer version found for {cap_id}: "
+                    f"installed {current.version}, resolved {version}."
+                )
             return True
 
-        print(f"Update available: {cap_id} {current.version} → {version}")
+        if not json_output:
+            print(f"Update available: {cap_id} {current.version} → {version}")
         if force or yes:
-            print("  Replacing installed version (--yes/--force).")
+            if not json_output:
+                print("  Replacing installed version (--yes/--force).")
         elif not _is_interactive():
-            print(
-                "  Non-interactive session: replacement skipped. "
-                "Re-run with --yes or --force."
-            )
+            if json_output:
+                print(_json.dumps({
+                    "operation": "install",
+                    "cap_id": cap_id,
+                    "version": version,
+                    "status": "error",
+                    "error": "non-interactive session: replacement skipped",
+                    "installed_version": current.version,
+                    "resolved_version": version,
+                }))
+            else:
+                print(
+                    "  Non-interactive session: replacement skipped. "
+                    "Re-run with --yes or --force."
+                )
             return True
         elif not PromptHandler.ask(
             f"Replace {cap_id} {current.version} → {version}?",
@@ -982,7 +1018,8 @@ def install_capability(
             )
             fingerprint = compute_bundle_fingerprint(sub_fingerprints)
         else:
-            print(f"  Computing fingerprint for {cap_name}...")
+            if not json_output:
+                print(f"  Computing fingerprint for {cap_name}...")
             fingerprint = compute_fingerprint(package_dir, exclude_patterns=_fingerprint_excludes)
 
         first_fw = resolved_frameworks[0] if resolved_frameworks else "opencode"
@@ -1018,8 +1055,9 @@ def install_capability(
 
         disposition = _install_disposition(existing_before, cap.fingerprint)
         if disposition.outcome is IngestOutcome.CONFLICT:
-            print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
-                  f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
+            if not json_output:
+                print(f"Warning: Duplicate registry key {cap_id}@{version} — fingerprint differs: "
+                      f"{existing_before.fingerprint[:8]} vs {cap.fingerprint[:8]}")
         _record_install_status(registry, cap_id, version, resolved_frameworks)
         for fw in resolved_frameworks:
             journal.record_adapter_status(cap_id, version, fw)
@@ -1036,11 +1074,13 @@ def install_capability(
                 fingerprint=fingerprint,
                 frameworks=resolved_frameworks,
             )
-            if created:
+            if created and not json_output:
                 print(f"  Omni-symlinks created for: {', '.join(created)}")
 
         from .lock import enforce_lock
         if not enforce_lock(cap_id, no_lock=no_lock):
+            if json_output:
+                raise RuntimeError(f"Lock enforcement failed for {cap_id}@{version}")
             print(f"Install aborted: lock enforcement failed for {cap_id}@{version}")
             raise RuntimeError("Lock enforcement failed")
 
