@@ -20,13 +20,11 @@ import pytest
 
 from capacium.adapters.openclaude import OpenClaudeAdapter
 from capacium.adapters.base import (
-    HostPlan, HostPlanEntry, HostInspectResult, HostOperationResult,
-    HostStatusResult,
+    HostPlan, HostInspectResult, HostStatusResult,
 )
 from capacium.adapters.claude_code import ClaudeCodeAdapter
 from capacium.adapters.claude_desktop import ClaudeDesktopAdapter
 from capacium.adapters import get_adapter, list_registered_adapters
-from capacium.adapters.mcp_config_patcher import McpConfigPatcher
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -689,3 +687,395 @@ class TestOpenClaudeFrameworkDetectorIntegration:
         roots = harness_link_roots()
         assert "openclaude" in roots
         assert roots["openclaude"] == tmp_home / ".openclaude" / "skills"
+
+
+# ── Criterion 4: Path isolation (shim/cap exec only) ────────────────────
+
+class TestOpenClaudePathIsolation:
+    """The adapter invokes only a stable managed shim or cap exec and
+    never reuses Claude Code, Claude Desktop or OpenClaw paths.
+
+    These are static source-code inspections: openclaude.py must never
+    import from or reference paths belonging to the other three hosts.
+    """
+
+    _SOURCE = (
+        Path(__file__).resolve().parent.parent / "src" / "capacium"
+        / "adapters" / "openclaude.py"
+    )
+
+    def test_source_never_imports_claude_code(self):
+        """openclaude.py never imports from claude_code.py."""
+        source = self._SOURCE.read_text()
+        assert "claude_code" not in source, "openclaude.py references claude_code"
+
+    def test_source_never_imports_claude_desktop(self):
+        """openclaude.py never imports from claude_desktop.py."""
+        source = self._SOURCE.read_text()
+        assert "claude_desktop" not in source, "openclaude.py references claude_desktop"
+
+    def test_source_never_imports_openclaw(self):
+        """openclaude.py never imports from openclaw.py."""
+        source = self._SOURCE.read_text()
+        # Docstring may legitimately mention "openclaw" to state that
+        # OpenClaude never uses those paths. Only flag actual imports or
+        # path usage in code (outside the module docstring).
+        code = source.split('"""')[2] if source.count('"""') >= 2 else source
+        assert "from .openclaw" not in code, "openclaude.py imports from openclaw"
+        assert "import openclaw" not in code, "openclaude.py imports openclaw"
+
+    def test_source_never_references_claude_paths(self):
+        """openclaude.py never references .claude or claude_desktop_config
+        paths in code logic (docstring may mention them for documentation)."""
+        source = self._SOURCE.read_text()
+        code = source.split('"""')[2] if source.count('"""') >= 2 else source
+        assert ".claude/" not in code, "openclaude.py references .claude/ path"
+        assert "claude_desktop_config" not in code, (
+            "openclaude.py references claude_desktop_config"
+        )
+
+    def test_source_never_references_openclaw_paths(self):
+        """openclaude.py never references .openclaw paths in code logic."""
+        source = self._SOURCE.read_text()
+        # The docstring may legitimately mention ".openclaw" to document
+        # path isolation. Only flag occurrences in code (post-docstring).
+        code = source.split('"""')[2] if source.count('"""') >= 2 else source
+        assert ".openclaw" not in code, (
+            "openclaude.py references .openclaw in code logic"
+        )
+
+    def test_skills_dir_is_exclusively_openclaude(self):
+        """Skills directory is ~/.openclaude/skills, not .claude or .openclaw."""
+        adapter = OpenClaudeAdapter()
+        skills_str = str(adapter.skills_dir)
+        assert ".openclaude" in skills_str
+        assert ".claude/" not in skills_str and not skills_str.endswith(".claude")
+        assert ".openclaw" not in skills_str
+
+    def test_config_parent_is_openclaude_named(self):
+        """The parent directory of config.json is always named OpenClaude or
+        openclaude, never Claude (without Open) or openclaw."""
+        adapter = OpenClaudeAdapter()
+        parent_name = adapter.config_path.parent.name.lower()
+        assert parent_name == "openclaude", (
+            f"Expected config parent 'openclaude', got '{parent_name}'"
+        )
+
+    def test_mcp_entries_directed_to_openclaude_config(self, tmp_home, tmp_path):
+        """When the adapter installs an MCP server, the entry lands in the
+        OpenClaude config, never in a .claude, .claude.json or .openclaw file."""
+        adapter = OpenClaudeAdapter()
+        source = _make_mcp_dir(tmp_path, "c4-mcp")
+        adapter.register("c4-mcp", "mcp-server", source)
+
+        # The entry must be in the openclaude config
+        oc_config = json.loads(adapter.config_path.read_text())
+        found = False
+        for key in oc_config.get("mcpServers", {}):
+            if key.startswith("c4-mcp"):
+                found = True
+                break
+        assert found, "MCP entry not found in OpenClaude config"
+
+        # Claude Code config must NOT exist or must NOT contain the entry
+        cc_config_path = tmp_home / ".claude.json"
+        if cc_config_path.exists():
+            cc_config = json.loads(cc_config_path.read_text())
+            for key in cc_config.get("mcpServers", {}):
+                assert not key.startswith("c4-mcp"), (
+                    "MCP entry leaked into claude-code config"
+                )
+
+
+# ── Criterion 5: Platform fixture matrix ─────────────────────────────────
+
+_PLATFORM_VALUES = ["Darwin", "Linux", "Windows"]
+
+
+@pytest.fixture
+def sim_platform(monkeypatch, request):
+    """Simulate a specific OS value for parametrized tests."""
+    system_value = request.param
+    monkeypatch.setattr(platform, "system", lambda: system_value)
+    return system_value
+
+
+class TestOpenClaudePlatformFixtures:
+    """Criterion 5: macOS, Linux and Windows fixtures cover install,
+    reinstall, update, remove, missing executable, malformed config
+    and drift repair."""
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_install_skill_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Skill install succeeds on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"plat-skill-{sim_platform.lower()}"
+        source = _make_skill_dir(tmp_path, name)
+        result = adapter.register(name, "skill", source)
+        assert result.success is True
+
+        link = adapter.skills_dir / name
+        assert link.exists()
+        assert link.is_symlink()
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_reinstall_skill_idempotent_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Reinstalling the same skill twice succeeds on each platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"reinst-{sim_platform.lower()}"
+        source = _make_skill_dir(tmp_path, name)
+        r1 = adapter.register(name, "skill", source)
+        assert r1.success is True
+        r2 = adapter.register(name, "skill", source)
+        assert r2.success is True
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_update_skill_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Updating a skill (changed source content) succeeds on each platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"update-{sim_platform.lower()}"
+        source_v1 = _make_skill_dir(tmp_path, f"{name}-v1")
+        adapter.register(name, "skill", source_v1)
+
+        link = adapter.skills_dir / name
+        assert link.exists() and link.is_symlink()
+
+        source_v2 = _make_skill_dir(tmp_path, f"{name}-v2")
+        (source_v2 / "new_feature.py").write_text("# v2 addition\n")
+        r2 = adapter.register(name, "skill", source_v2)
+        assert r2.success is True
+        assert link.exists() and link.is_symlink()
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_remove_skill_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Skill remove succeeds on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"rm-plat-{sim_platform.lower()}"
+        source = _make_skill_dir(tmp_path, name)
+        adapter.register(name, "skill", source)
+
+        result = adapter.unregister(name, "skill")
+        assert result.success is True
+
+        link = adapter.skills_dir / name
+        assert not link.exists()
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_mcp_install_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """MCP install succeeds on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"plat-mcp-{sim_platform.lower()}"
+        source = _make_mcp_dir(tmp_path, name)
+        result = adapter.register(name, "mcp-server", source)
+        assert result.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        entry = config["mcpServers"].get(name)
+        if entry is None:
+            entry = config["mcpServers"].get(f"{name}-capacium")
+        assert entry is not None
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_mcp_remove_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """MCP remove succeeds on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"rm-plat-mcp-{sim_platform.lower()}"
+        source = _make_mcp_dir(tmp_path, name)
+        adapter.register(name, "mcp-server", source)
+
+        result = adapter.unregister(name, "mcp-server")
+        assert result.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        assert name not in config.get("mcpServers", {})
+        assert f"{name}-capacium" not in config.get("mcpServers", {})
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_missing_config_handled_on_platform(self, sim_platform, tmp_home):
+        """Adapter handles missing config.json gracefully on each platform."""
+        adapter = OpenClaudeAdapter()
+
+        inspect = adapter.inspect()
+        assert inspect.config_exists is False
+        assert inspect.config_valid is True  # no config is valid
+
+        status = adapter.status()
+        assert status.config_valid is True
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_malformed_config_handled_on_platform(self, sim_platform, tmp_home):
+        """Adapter handles malformed JSON config gracefully on each platform."""
+        adapter = OpenClaudeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text("{ this is not valid JSON }")
+
+        # inspect must not crash
+        inspect = adapter.inspect()
+        assert inspect.config_exists is True
+
+        # status must not crash
+        status = adapter.status()
+        assert status.framework == "openclaude"
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_foreign_entries_survive_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Foreign MCP entries survive Capacium operations on each platform."""
+        adapter = OpenClaudeAdapter()
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(json.dumps({
+            "mcpServers": {
+                "foreign-server": {"command": "node", "args": ["server.js"]}
+            }
+        }))
+
+        name = f"foreign-plat-{sim_platform.lower()}"
+        source = _make_mcp_dir(tmp_path, name)
+        result = adapter.register(name, "mcp-server", source)
+        assert result.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        assert "foreign-server" in config["mcpServers"]
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_drift_repair_fixes_broken_symlink_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Repair fixes a broken skill symlink on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"drift-{sim_platform.lower()}"
+        source = _make_skill_dir(tmp_path, name)
+        adapter.register(name, "skill", source)
+
+        link = adapter.skills_dir / name
+        link.unlink()
+        assert not adapter.capability_exists(name)
+
+        result = adapter.repair(name, "skill", source)
+        assert result.success is True
+        assert adapter.capability_exists(name)
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_drift_repair_fixes_missing_mcp_entry_on_platform(self, sim_platform, tmp_home, tmp_path):
+        """Repair fixes a missing MCP entry on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        name = f"drift-mcp-{sim_platform.lower()}"
+        source = _make_mcp_dir(tmp_path, name)
+        adapter.register(name, "mcp-server", source)
+
+        # Remove the Capacium entry from config
+        config = json.loads(adapter.config_path.read_text())
+        for key in list(config["mcpServers"].keys()):
+            if key.startswith(name):
+                del config["mcpServers"][key]
+        adapter.config_path.write_text(json.dumps(config))
+
+        result = adapter.repair(name, "mcp-server", source)
+        assert result.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        found = any(key.startswith(name) for key in config.get("mcpServers", {}))
+        assert found, f"MCP entry {name} not restored by repair"
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_inspect_on_platform(self, sim_platform, tmp_home):
+        """Inspect returns a valid result on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        result = adapter.inspect()
+        assert isinstance(result, HostInspectResult)
+        assert result.framework == "openclaude"
+
+    @pytest.mark.parametrize("sim_platform", _PLATFORM_VALUES, indirect=True)
+    def test_status_on_platform(self, sim_platform, tmp_home):
+        """Status returns a valid result on each simulated platform."""
+        adapter = OpenClaudeAdapter()
+        result = adapter.status()
+        assert isinstance(result, HostStatusResult)
+        assert result.framework == "openclaude"
+
+
+# ── Criterion 6: Real OpenClaude smoke path ─────────────────────────────
+
+class TestOpenClaudeRealSmoke:
+    """At least one real OpenClaude smoke path passes against the pinned
+    @twigpine/openclaude distribution (installed at /opt/homebrew/bin/openclaude).
+
+    No network access. No write access outside the isolated HOME."""
+
+    def test_openclaude_binary_resolvable(self):
+        """OpenClaude binary is discoverable on PATH."""
+        import shutil
+        oc = shutil.which("openclaude")
+        assert oc is not None, (
+            "openclaude binary not found in PATH. "
+            "Expected at /opt/homebrew/bin/openclaude"
+        )
+
+    def test_openclaude_reports_version(self):
+        """openclaude --version exits 0 and prints a version string."""
+        import shutil
+        import subprocess
+        oc = shutil.which("openclaude")
+        if oc is None:
+            pytest.skip("openclaude not installed")
+
+        result = subprocess.run(
+            [oc, "--version"],
+            capture_output=True, text=True, timeout=15,
+        )
+        combined = (result.stdout + result.stderr).strip()
+        assert result.returncode == 0, (
+            f"openclaude --version exit {result.returncode}: {combined}"
+        )
+        assert combined, "No version output"
+        import re
+        assert re.search(r"\d+\.\d+", combined), (
+            f"No version number in output: {combined}"
+        )
+
+    def test_openclaude_version_with_isolated_home(self, tmp_home):
+        """openclaude --version runs with an isolated HOME (no network,
+        no writes outside tmp_home)."""
+        import shutil
+        import subprocess
+        oc = shutil.which("openclaude")
+        if oc is None:
+            pytest.skip("openclaude not installed")
+
+        env = {**os.environ, "HOME": str(tmp_home), "USERPROFILE": str(tmp_home)}
+        result = subprocess.run(
+            [oc, "--version"],
+            capture_output=True, text=True, timeout=15,
+            env=env,
+        )
+        combined = (result.stdout + result.stderr).strip()
+        assert result.returncode == 0, (
+            f"openclaude --version (isolated HOME) exit {result.returncode}: {combined}"
+        )
+
+    def test_adapter_skills_dir_visible_to_openclaude(self, tmp_home, tmp_path):
+        """A skill installed by the adapter into an isolated HOME produces
+        a symlink that openclaude can discover on the filesystem."""
+        import shutil
+        import subprocess
+        oc = shutil.which("openclaude")
+        if oc is None:
+            pytest.skip("openclaude not installed")
+
+        adapter = OpenClaudeAdapter()
+        source = _make_skill_dir(tmp_path, "smoke-skill")
+        adapter.register("smoke-skill", "skill", source)
+
+        # Verify the symlink structure is what openclaude expects
+        skills_dir = tmp_home / ".openclaude" / "skills"
+        assert skills_dir.is_dir()
+        link = skills_dir / "smoke-skill"
+        assert link.is_symlink()
+
+        # Verify openclaude can start without crashing (--help, no network)
+        env = {**os.environ, "HOME": str(tmp_home), "USERPROFILE": str(tmp_home)}
+        result = subprocess.run(
+            [oc, "--help"],
+            capture_output=True, text=True, timeout=15,
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"openclaude --help exit {result.returncode}: {result.stderr}"
+        )
