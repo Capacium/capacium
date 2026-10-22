@@ -260,8 +260,18 @@ def update_capability(
     # V8/UP-001: held packages (locally patched) are never updated.
     hold = get_hold(f"{cap.owner}/{cap.name}")
     if hold is not None and not force:
-        print(f"{cap_label} is held: {hold.get('reason') or 'locally patched'}")
-        print("  Skipping update. Release with 'cap unhold' or use --force.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "update",
+                "cap_id": cap_id,
+                "version": cap.version,
+                "status": "skipped",
+                "reason": "held",
+                "hold_reason": hold.get("reason") or "locally patched",
+            }))
+        else:
+            print(f"{cap_label} is held: {hold.get('reason') or 'locally patched'}")
+            print("  Skipping update. Release with 'cap unhold' or use --force.")
         return True
 
     # ── Transaction journal (CAP117-TRANSACT-004 criterion 1) ─────────
