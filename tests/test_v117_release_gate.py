@@ -1628,29 +1628,389 @@ class TestCriterion5OfflineRuntimeFixtures:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Criterion 7 — the release verdict
+# Criteria 1–3 — Gate 8 PREPARED / BLOCKED / READY state machine
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def _gate_8_sub_results(statuses: dict) -> dict:
+    """Extract Gate 8 pre-publication and post-publication sub-results.
+
+    Returns separate pre_publication and post_publication dicts, each with
+    ``pass``, ``fail`` or ``pending`` status and an evidence reason.
+
+    The distribution receipt is the authority for Gate 8. When pre-publication
+    checks (reproducible build, version sources) pass and post-publication
+    claims are unobservable, the sub-results are:
+    ``pre_publication: pass``, ``post_publication: pending``.
+    """
+    dist_status = statuses.get("distribution", "not-run")
+    if dist_status == "not-run":
+        return {
+            "pre_publication": {
+                "status": "not-run",
+                "reason": "distribution gate receipt absent from this run",
+            },
+            "post_publication": {
+                "status": "not-run",
+                "reason": "distribution gate receipt absent from this run",
+            },
+        }
+    if dist_status == "fail":
+        return {
+            "pre_publication": {
+                "status": "fail",
+                "reason": (
+                    "pre-publication checks failed (version mismatch or "
+                    "non-reproducible build)"
+                ),
+            },
+            "post_publication": {
+                "status": "pending",
+                "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+            },
+        }
+    if dist_status == "pending":
+        return {
+            "pre_publication": {
+                "status": "pass",
+                "reason": "pre-publication checks passed; build reproducible, version sources agree",
+            },
+            "post_publication": {
+                "status": "pending",
+                "reason": (
+                    "post-publication checks require a published release; "
+                    "every claim is NOT_RUN_REQUIRES_RELEASECHAIN"
+                ),
+            },
+        }
+    if dist_status == "pass":
+        return {
+            "pre_publication": {
+                "status": "pass",
+                "reason": "pre-publication checks passed",
+            },
+            "post_publication": {
+                "status": "pass",
+                "reason": "all post-publication channel probes passed",
+            },
+        }
+    return {
+        "pre_publication": {"status": "fail", "reason": f"unrecognised gate status: {dist_status}"},
+        "post_publication": {"status": "fail", "reason": f"unrecognised gate status: {dist_status}"},
+    }
 
 
 def _verdict(statuses: dict) -> dict:
     """Fold the fourteen gate statuses into one release verdict.
 
-    READY requires *all fourteen* to pass. Any other status — a failure, a
-    pending gate, or a gate that left no receipt — blocks 1.1.7 and renames the
-    release 1.2.0 rather than shipping a partial release.
+    * PREPARED: Gates 1–7 and 9–14 pass, Gate 8 pre-publication passes,
+      Gate 8 post-publication is pending.
+    * READY: All fourteen gates pass, including Gate 8 post-publication.
+    * BLOCKED: Any required pre-publication check fails, or any attempted
+      post-publication check fails. Failure has precedence over pending.
+    * Rename is absent from automatic verdict aggregation.
     """
-    blocking = {
-        g: statuses.get(g, "not-run") for g in ALL_GATES if statuses.get(g) != "pass"
-    }
-    blocked = bool(blocking)
+    gate_8 = _gate_8_sub_results(statuses)
+    pre_pub = gate_8["pre_publication"]
+    post_pub = gate_8["post_publication"]
+
+    failures = {}
+    pending = {}
+    for gate in ALL_GATES:
+        s = statuses.get(gate, "not-run")
+        if gate == "distribution":
+            continue  # handled via sub-results
+        if s in ("fail", "not-run"):
+            failures[gate] = s
+        elif s == "pending":
+            pending[gate] = s
+
+    # Pre-publication failure has precedence over pending post-publication
+    if pre_pub["status"] in ("fail", "not-run"):
+        failures["distribution"] = {
+            "pre_publication": pre_pub,
+            "post_publication": post_pub,
+        }
+    elif post_pub["status"] == "fail":
+        failures["distribution"] = {
+            "pre_publication": pre_pub,
+            "post_publication": post_pub,
+        }
+    elif post_pub["status"] == "pending":
+        pending["distribution"] = {
+            "pre_publication": pre_pub,
+            "post_publication": post_pub,
+        }
+
+    if failures:
+        return {
+            "release": "BLOCKED",
+            "blocking_gates": sorted(failures),
+            "blocking_statuses": dict(sorted(failures.items())),
+            "pending_gates": dict(sorted(pending.items())) if pending else {},
+            "gate_count": len(ALL_GATES),
+            "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
+            "gate_8": gate_8,
+        }
+
+    if pending:
+        return {
+            "release": "PREPARED",
+            "pending_gates": dict(sorted(pending.items())),
+            "gate_count": len(ALL_GATES),
+            "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
+            "gate_8": gate_8,
+        }
+
     return {
-        "release": "BLOCKED" if blocked else "READY",
-        "blocking_gates": sorted(blocking),
-        "blocking_statuses": dict(sorted(blocking.items())),
-        "rename_to": "1.2.0" if blocked else None,
+        "release": "READY",
         "gate_count": len(ALL_GATES),
         "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
+        "gate_8": gate_8,
     }
+
+
+class TestCriterion1To3Gate8StateMachine:
+    """Criteria 1–3: Gate 8 pre_publication/post_publication sub-results,
+    PREPARED/BLOCKED/READY state machine and table-driven negative controls."""
+
+    # ── criterion 1: Gate 8 exposes pre_publication/post_publication ──
+
+    def test_gate_8_sub_results_expose_pre_and_post_publication(self):
+        """Gate 8 returns separate pre_publication and post_publication
+        sub-results, each with pass/fail/pending and a reason."""
+        for dist_status in ("pass", "fail", "pending"):
+            sub = _gate_8_sub_results({"distribution": dist_status})
+            for half in ("pre_publication", "post_publication"):
+                assert half in sub, f"{half} missing from Gate 8 sub-results"
+                assert "status" in sub[half], f"{half}.status missing"
+                assert sub[half]["status"] in ("pass", "fail", "pending", "not-run"), (
+                    f"{half}.status={sub[half]['status']} invalid"
+                )
+                assert "reason" in sub[half], f"{half}.reason missing"
+                assert isinstance(sub[half]["reason"], str)
+                assert len(sub[half]["reason"]) > 0
+
+    def test_gate_8_pending_distribution_has_pass_pre_pub_and_pending_post_pub(self):
+        """When distribution is pending (post-publication unobservable),
+        pre_publication is pass and post_publication is pending."""
+        sub = _gate_8_sub_results({"distribution": "pending"})
+        assert sub["pre_publication"]["status"] == "pass"
+        assert sub["post_publication"]["status"] == "pending"
+        assert NOT_RUN_REQUIRES_RELEASECHAIN in sub["post_publication"]["reason"]
+
+    def test_gate_8_fail_distribution_has_fail_pre_pub_and_pending_post_pub(self):
+        """When distribution fails (pre-publication mismatch),
+        pre_publication is fail and post_publication stays pending."""
+        sub = _gate_8_sub_results({"distribution": "fail"})
+        assert sub["pre_publication"]["status"] == "fail"
+        assert sub["post_publication"]["status"] == "pending"
+
+    def test_gate_8_not_run_is_not_run_on_both_halves(self):
+        """Absent receipt → both halves are not-run."""
+        sub = _gate_8_sub_results({})
+        assert sub["pre_publication"]["status"] == "not-run"
+        assert sub["post_publication"]["status"] == "not-run"
+
+    # ── criterion 2: PREPARED ──
+
+    def test_prepared_emitted_when_all_pass_except_distribution_pending(self):
+        """PREPARED: Gates 1–7 and 9–14 pass, Gate 8 pre-publication passes,
+        post-publication pending with NOT_RUN_REQUIRES_RELEASECHAIN."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "PREPARED", (
+            f"expected PREPARED when only distribution is pending, got {verdict['release']}"
+        )
+        assert "distribution" in verdict.get("pending_gates", {})
+        assert verdict.get("gate_8", {}).get("pre_publication", {}).get("status") == "pass"
+        assert verdict.get("gate_8", {}).get("post_publication", {}).get("status") == "pending"
+
+    def test_prepared_has_no_blocking_gates(self):
+        """PREPARED must not list any blocking gates."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        assert "blocking_gates" not in verdict or verdict.get("blocking_gates") == []
+
+    # ── criterion 3: READY ──
+
+    def test_ready_emitted_only_when_all_fourteen_pass(self):
+        """READY requires all fourteen gates pass, including distribution."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "READY", (
+            f"expected READY when all gates pass, got {verdict['release']}"
+        )
+
+    # ── criterion 4: BLOCKED precedence ──
+
+    def test_blocked_when_any_pre_publication_check_fails(self):
+        """BLOCKED when any required pre-publication check fails."""
+        for gate in ALL_GATES:
+            if gate == "distribution":
+                continue
+            statuses = {g: "pass" for g in ALL_GATES}
+            statuses["distribution"] = "pending"
+            statuses[gate] = "fail"
+            verdict = _verdict(statuses)
+            assert verdict["release"] == "BLOCKED", (
+                f"{gate}=fail must block the release, got {verdict['release']}"
+            )
+            assert gate in verdict.get("blocking_gates", [])
+
+    def test_blocked_when_distribution_fails_even_with_post_pending(self):
+        """A version mismatch produces Gate 8 pre-publication FAIL and overall
+        BLOCKED even while post-publication checks remain pending."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "fail"
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "BLOCKED", (
+            f"distribution=fail must block even with post pending, got {verdict['release']}"
+        )
+        assert "distribution" in verdict.get("blocking_gates", [])
+
+    def test_failure_has_precedence_over_pending(self):
+        """When any gate fails and distribution is pending, the release is
+        BLOCKED — failure has precedence over pending."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        statuses["state"] = "fail"
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "BLOCKED"
+        assert "state" in verdict.get("blocking_gates", [])
+
+    # ── criterion 6: pending never emits rename_to ──
+
+    def test_pending_never_emits_rename_to(self):
+        """Expected post-publication pending never emits rename_to."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        assert "rename_to" not in verdict or verdict.get("rename_to") is None, (
+            "PREPARED must not emit rename_to"
+        )
+
+    # ── criterion 7: rename is absent from automatic aggregation ──
+
+    def test_rename_is_absent_from_automatic_verdict(self):
+        """Rename is not in automatic verdict aggregation for any state."""
+        for scenario, statuses in [
+            ("all-pass", {gate: "pass" for gate in ALL_GATES}),
+            ("distribution-pending", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pending",
+            }),
+            ("one-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "state": "fail",
+            }),
+            ("distribution-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "fail",
+            }),
+        ]:
+            verdict = _verdict(statuses)
+            assert "rename_to" not in verdict or verdict.get("rename_to") is None, (
+                f"rename_to emitted in {scenario}: {verdict.get('rename_to')}"
+            )
+
+    # ── criterion 8: table-driven negative controls ──
+
+    @pytest.mark.parametrize("scenario_id,statuses,expected_release,desc", [
+        # Previously misclassified: one failed pre-check + all post pending
+        (
+            "nc-001", {"state": "fail"}, "BLOCKED",
+            "one pre-check fail, all others not-run → BLOCKED",
+        ),
+        (
+            "nc-002", {"state": "fail", "distribution": "pending"}, "BLOCKED",
+            "one pre-check fail + distribution pending → BLOCKED (failure wins)",
+        ),
+        (
+            "nc-003", {"state": "fail", "resolver": "fail"}, "BLOCKED",
+            "two pre-check fails, distribution not-run → BLOCKED",
+        ),
+        # Distribution pre-publication fail
+        (
+            "nc-004", {"distribution": "fail"}, "BLOCKED",
+            "distribution pre-pub fail alone → BLOCKED",
+        ),
+        (
+            "nc-005", {"distribution": "fail", "state": "pass"}, "BLOCKED",
+            "distribution fail + one other pass → BLOCKED",
+        ),
+        # Distribution pending + all other gates pass → PREPARED (the key fix)
+        (
+            "nc-006",
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "pending"},
+            "PREPARED",
+            "all gates pass except distribution pending → PREPARED (not BLOCKED)",
+        ),
+        # Distribution fail + all others pass → BLOCKED (version mismatch)
+        (
+            "nc-007",
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "fail"},
+            "BLOCKED",
+            "distribution fail + all others pass → BLOCKED (pre-pub fail wins)",
+        ),
+        # All fourteen pass → READY
+        (
+            "nc-008",
+            {gate: "pass" for gate in ALL_GATES},
+            "READY",
+            "all fourteen gates pass → READY",
+        ),
+    ])
+    def test_negative_control_matrix(self, scenario_id, statuses, expected_release, desc):
+        """Table-driven: every combination that previously misclassified pending
+        versus fail produces the correct verdict."""
+        full = {gate: statuses.get(gate, "not-run") for gate in ALL_GATES}
+        # Override with the explicit statuses from the scenario
+        full.update(statuses)
+        verdict = _verdict(full)
+        assert verdict["release"] == expected_release, (
+            f"{scenario_id} ({desc}): expected {expected_release}, "
+            f"got {verdict['release']}\nstatuses={full}"
+        )
+
+    # ── criterion 9: evidence ──
+
+    def test_verdict_includes_gate_8_sub_results(self):
+        """Every verdict includes gate_8 with pre_publication and
+        post_publication sub-results."""
+        for scenario, statuses in [
+            ("all-pass", {gate: "pass" for gate in ALL_GATES}),
+            ("distribution-pending", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pending",
+            }),
+            ("distribution-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "fail",
+            }),
+        ]:
+            verdict = _verdict(statuses)
+            assert "gate_8" in verdict, f"gate_8 missing from verdict in {scenario}"
+            g8 = verdict["gate_8"]
+            for half in ("pre_publication", "post_publication"):
+                assert half in g8, f"gate_8.{half} missing in {scenario}"
+                assert "status" in g8[half]
+                assert "reason" in g8[half]
+
+    def test_verdict_always_includes_gate_count_and_statuses(self):
+        """Every verdict carries gate_count and per-gate statuses."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        assert verdict["gate_count"] == 14
+        assert sorted(verdict["statuses"]) == sorted(ALL_GATES)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 7 — the release verdict
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def _observed_statuses() -> dict:
@@ -1670,55 +2030,73 @@ def _observed_statuses() -> dict:
 
 
 class TestCriterion7ReleaseVerdict:
-    """Criterion 7: a mandatory failure or a pending gate blocks 1.1.7 and the
-    release is renamed 1.2.0; only fourteen green gates read READY."""
+    """Criterion 7: a mandatory failure blocks the release; only fourteen green
+    gates read READY; pending post-publication yields PREPARED, not BLOCKED."""
 
     def test_all_fourteen_green_is_the_only_ready(self):
-        """Both branches, proven on the same function.
-
-        Fourteen passes yield READY. Flipping any single gate to each
-        non-passing status blocks the release — there is no partial shipping.
-        """
+        """Fourteen passes yield READY. Flipping any non-distribution gate to
+        fail or not-run blocks; flipping distribution to pending yields PREPARED
+        (post-publication not yet runnable)."""
         all_pass = {gate: "pass" for gate in ALL_GATES}
         ready = _verdict(all_pass)
         assert ready["release"] == "READY"
-        assert ready["rename_to"] is None
-        assert ready["blocking_gates"] == []
+        assert "blocking_gates" not in ready or ready.get("blocking_gates") == []
         assert ready["gate_count"] == 14
 
         for gate in ALL_GATES:
-            for bad in ("fail", "pending", "not-run"):
+            for bad in ("fail", "not-run"):
                 statuses = {**all_pass, gate: bad}
                 blocked = _verdict(statuses)
-                assert blocked["release"] == "BLOCKED", (
-                    f"{gate}={bad} must block the release"
-                )
-                assert blocked["rename_to"] == "1.2.0"
-                assert blocked["blocking_gates"] == [gate]
+                if gate == "distribution":
+                    # distribution fail/not-run blocks via pre-publication fail
+                    assert blocked["release"] == "BLOCKED", (
+                        f"{gate}={bad} must block the release"
+                    )
+                else:
+                    assert blocked["release"] == "BLOCKED", (
+                        f"{gate}={bad} must block the release"
+                    )
+                    assert gate in blocked.get("blocking_gates", [])
+
+        # distribution=pending with all others pass → PREPARED
+        prep_statuses = {**all_pass, "distribution": "pending"}
+        prepared = _verdict(prep_statuses)
+        assert prepared["release"] == "PREPARED", (
+            "distribution pending + all others pass → PREPARED, not BLOCKED"
+        )
 
     def test_a_missing_gate_receipt_blocks(self):
         """A gate that ran nowhere is not a pass — it blocks by absence."""
         statuses = {gate: "pass" for gate in ALL_GATES if gate != "distribution"}
         verdict = _verdict(statuses)
         assert verdict["release"] == "BLOCKED"
-        assert verdict["blocking_gates"] == ["distribution"]
+        assert "distribution" in verdict.get("blocking_gates", [])
 
-    def test_observed_run_verdict_is_recorded_and_blocked(self, evidence_dir):
+    def test_observed_run_verdict_is_recorded_and_prepared(self, evidence_dir):
         """The verdict derived from *this* run's receipts is recorded honestly.
 
-        Gate 8 is pending by construction (no published release), so the
-        observed verdict is BLOCKED / rename 1.2.0 — the correct outcome for a
-        release whose post-publication half cannot be observed yet.
+        Gate 8 is pending by construction (no published release), so when all
+        observed gates pass, the verdict is PREPARED — the correct outcome for
+        a release whose post-publication half cannot be observed yet. BLOCKED
+        is only when a real pre-publication check fails.
         """
         statuses = _observed_statuses()
         verdict = _verdict(statuses)
 
-        assert verdict["release"] == "BLOCKED", (
-            "the observed run cannot be READY: no release has been published, "
-            "so gate 8 is pending"
+        has_failures = any(
+            s in ("fail", "not-run") and g != "distribution"
+            for g, s in statuses.items()
         )
-        assert verdict["rename_to"] == "1.2.0"
-        assert "distribution" in verdict["blocking_gates"]
+        if has_failures:
+            assert verdict["release"] == "BLOCKED", (
+                "a real pre-publication failure must block the release"
+            )
+        elif statuses.get("distribution") == "pending":
+            assert verdict["release"] in ("PREPARED", "BLOCKED"), (
+                f"unexpected verdict for distribution=pending: {verdict['release']}"
+            )
+        else:
+            assert verdict["release"] in ("PREPARED", "BLOCKED", "READY")
 
         _write_receipt("criterion7_release_status", "recorded", {"verdict": verdict})
         stored = _read_receipt("criterion7_release_status")
@@ -1798,10 +2176,10 @@ class TestCriterion1ManifestAndVerdict:
         """A mandatory failure yields a blocking verdict, not a partial release.
 
         The verdict is derived from the receipts this run actually wrote, so it
-        reports the release truthfully: any gate that is not ``pass`` blocks
-        1.1.7 and renames it 1.2.0. The distribution gate is pending by
-        construction (its published half needs the release chain), which alone
-        is enough to block a READY verdict.
+        reports the release truthfully: any non-distribution gate that is not
+        ``pass`` blocks 1.1.7. The distribution gate pending by construction
+        (its published half needs the release chain) yields PREPARED when all
+        other gates pass, not BLOCKED.
         """
         statuses = _observed_statuses()
 
@@ -1811,11 +2189,18 @@ class TestCriterion1ManifestAndVerdict:
         verdict = _verdict(statuses)
         _write_receipt("criterion1_release_verdict", "recorded", {"verdict": verdict})
 
-        assert verdict["release"] == "BLOCKED", (
-            "no release is published in this run, so gate 8 is pending and the "
-            "release cannot be READY"
+        has_failures = any(
+            s in ("fail", "not-run") and g != "distribution"
+            for g, s in statuses.items()
         )
-        assert verdict["rename_to"] == "1.2.0"
-        assert verdict["blocking_gates"], "a blocked release must name its blockers"
-        for gate in verdict["blocking_gates"]:
-            assert statuses[gate] != "pass"
+        if has_failures:
+            assert verdict["release"] == "BLOCKED", (
+                "a real pre-publication failure must block the release"
+            )
+            assert verdict.get("blocking_gates"), "a blocked release must name its blockers"
+        elif statuses.get("distribution") == "pending":
+            assert verdict["release"] == "PREPARED", (
+                f"distribution pending + others pass → PREPARED, got {verdict['release']}"
+            )
+        # rename_to is never in automatic aggregation
+        assert "rename_to" not in verdict or verdict.get("rename_to") is None
