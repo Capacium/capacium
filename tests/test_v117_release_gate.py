@@ -32,6 +32,7 @@ Nothing here changes the expectations of any other test module.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -135,22 +136,34 @@ def _tested_commit() -> str:
         return ""
 
 
+class EvidenceDirError(RuntimeError):
+    """``CAP117_GATE_EVIDENCE_DIR`` is unset or points inside the repository."""
+
+
 def _evidence_dir() -> Path:
     """The evidence directory — deliberately resolved outside the repository.
 
-    An unset or in-repo location is a configuration error, not a silent
-    fallback: evidence written inside the tree would be overwritten by the next
-    build and could not be bound to a checkout.
+    An unset or in-repo location is a configuration error and raises rather
+    than falling back: evidence written inside the tree would be overwritten by
+    the next build and could not be bound to a checkout, and a silent fallback
+    to the process CWD would put receipts into the repository root during a real
+    run — exactly what criterion 1 forbids.
     """
     raw = os.environ.get(EVIDENCE_DIR_ENV)
     if not raw:
-        return Path()
+        raise EvidenceDirError(
+            f"{EVIDENCE_DIR_ENV} is unset; evidence must be written to a "
+            f"directory outside {REPO_ROOT}"
+        )
     target = Path(raw).expanduser()
     try:
         target.resolve().relative_to(REPO_ROOT.resolve())
     except ValueError:
         return target
-    return Path()  # in-repo path is rejected
+    raise EvidenceDirError(
+        f"{EVIDENCE_DIR_ENV}={target} is inside {REPO_ROOT}; evidence must be "
+        "written outside the repository"
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -168,10 +181,6 @@ def _write_receipt(gate: str, status: str, detail: dict) -> Path:
     gate only; the run manifest is what binds them to a commit and digest set.
     """
     directory = _evidence_dir()
-    if not directory:
-        raise RuntimeError(
-            f"{EVIDENCE_DIR_ENV} must name a directory outside {REPO_ROOT}"
-        )
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "gate": gate,
@@ -188,8 +197,15 @@ def _write_receipt(gate: str, status: str, detail: dict) -> Path:
 
 
 def _read_receipt(gate: str) -> dict | None:
-    directory = _evidence_dir()
-    if not directory:
+    """Read a receipt, or ``None`` when this run has no usable evidence dir.
+
+    Reading is the *probe* direction: tests that must observe an existing
+    receipt assert on the returned object, while callers that need a definite
+    directory call ``_evidence_dir`` directly and get a hard error.
+    """
+    try:
+        directory = _evidence_dir()
+    except EvidenceDirError:
         return None
     path = directory / f"{gate}.json"
     if not path.is_file():
@@ -314,7 +330,18 @@ def evidence_dir(tmp_path_factory):
     """
     supplied = os.environ.get(EVIDENCE_DIR_ENV)
     if supplied:
-        directory = Path(supplied).expanduser()
+        candidate = Path(supplied).expanduser()
+        # An operator-supplied in-repo path is a hard failure, not a quiet
+        # downgrade to tmp: the whole point of the env pin is the location.
+        try:
+            candidate.resolve().relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            directory = candidate
+        else:
+            raise EvidenceDirError(
+                f"{EVIDENCE_DIR_ENV}={candidate} is inside {REPO_ROOT}; "
+                "evidence must be written outside the repository"
+            )
     else:
         directory = tmp_path_factory.mktemp("cap117-evidence")
     directory.mkdir(parents=True, exist_ok=True)
@@ -351,6 +378,22 @@ def _run_owner_module(owner: str, gate: str) -> dict:
         "exit_code": result.returncode,
         "summary": tail,
     }
+
+
+@contextlib.contextmanager
+def _recorded_gate(gate: str, detail: dict):
+    """Record the status a gate's own checks actually produced.
+
+    The receipt is written ``pass`` only when the guarded body completes, and
+    ``fail`` when it raises; the exception is then re-raised so the test still
+    fails. A literal status would claim an outcome the run never observed.
+    """
+    try:
+        yield
+    except BaseException as exc:  # noqa: BLE001 — status must record any failure
+        _write_receipt(gate, "fail", {**detail, "error": f"{type(exc).__name__}: {exc}"})
+        raise
+    _write_receipt(gate, "pass", detail)
 
 
 def _source_skill(root: Path, name: str, version: str = "1.0.0", **extra) -> Path:
@@ -406,12 +449,34 @@ class TestCriterion1GateEvidence:
     """Criterion 1: all fourteen gates produce immutable pass/fail evidence
     linked to the tested commit and the artifact digests."""
 
-    def test_evidence_path_may_not_live_inside_the_repository(self, tmp_path, monkeypatch):
-        """An in-repo evidence directory is rejected, not silently used."""
+    def test_evidence_path_may_not_live_inside_the_repository(
+        self, tmp_path, monkeypatch
+    ):
+        """An in-repo or unset evidence directory is an error, never a fallback.
+
+        The failure mode this guards against is silent: a fallback would put
+        receipts in the process CWD (the repository root during a real run) and
+        they would then be mistaken for committed evidence.
+        """
         monkeypatch.setenv(EVIDENCE_DIR_ENV, str(REPO_ROOT / "dist" / "evidence"))
-        assert _evidence_dir() == Path(), (
-            "evidence inside the repository must be rejected"
-        )
+        with pytest.raises(EvidenceDirError):
+            _evidence_dir()
+
+        monkeypatch.setenv(EVIDENCE_DIR_ENV, str(REPO_ROOT))
+        with pytest.raises(EvidenceDirError):
+            _evidence_dir()
+
+        monkeypatch.delenv(EVIDENCE_DIR_ENV, raising=False)
+        with pytest.raises(EvidenceDirError):
+            _evidence_dir()
+        # No fallback path exists for a write: it raises instead of using CWD.
+        with pytest.raises(EvidenceDirError):
+            _write_receipt("probe_guard", "fail", {})
+
+        # An outside directory is accepted and is the *only* accepted shape.
+        outside = tmp_path / "evidence"
+        monkeypatch.setenv(EVIDENCE_DIR_ENV, str(outside))
+        assert _evidence_dir() == outside
 
     def test_artifact_digests_bind_sdist_and_wheel_to_the_tested_commit(
         self, tmp_path, evidence_dir
@@ -444,11 +509,10 @@ class TestCriterion1GateEvidence:
             capture_output=True,
             text=True,
         )
-        if build.returncode != 0:
-            pytest.skip(
-                "python -m build unavailable in this environment; artifact digests "
-                f"cannot be produced here:\n{build.stderr[-800:]}"
-            )
+        assert build.returncode == 0, (
+            "the sdist/wheel build failed, so criterion 1's artifact digests cannot "
+            f"be produced on the tested commit:\n{build.stdout[-800:]}\n{build.stderr[-800:]}"
+        )
 
         sdist = next(out.glob("*.tar.gz"), None)
         wheel = next(out.glob("*.whl"), None)
@@ -788,48 +852,47 @@ class TestCriterion4PublisherAndBundleRegression:
         identical coordinate is a reported conflict, not a silent overwrite."""
         source = _source_skill(tmp_path / "src", "publish-fixture", "1.0.0")
         packaged = tmp_path / "dist"
-        package = _run_cli(tmp_path, "package", "--manifest", str(source / "capability.yaml"),
-                           "--output-dir", str(packaged))
-        assert package.returncode == 0, package.stderr
-        tarball = next(packaged.glob("*.tar.gz"), None)
-        assert tarball is not None, "cap package produced no tarball"
+        results: list[dict] = []
+        detail = {"fixture": "publisher-first-and-subsequent", "steps": results}
 
-        results = []
-        with _StubRegistry() as registry:
-            first = _run_cli(
-                tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
+        with _recorded_gate("gate_regression", detail):
+            package = _run_cli(
+                tmp_path, "package", "--manifest", str(source / "capability.yaml"),
+                "--output-dir", str(packaged),
             )
-            assert first.returncode == 0, f"first publish failed: {first.stdout}{first.stderr}"
-            first_report = json.loads(first.stdout)
-            assert first_report["valid"] is True
-            results.append({"publish": "first", "created": True})
+            assert package.returncode == 0, package.stderr
+            tarball = next(packaged.glob("*.tar.gz"), None)
+            assert tarball is not None, "cap package produced no tarball"
 
-            second = _run_cli(
-                tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
-            )
-            assert second.returncode == 0, f"subsequent publish failed: {second.stderr}"
-            second_report = json.loads(second.stdout)
-            assert second_report["valid"] is True
-            results.append({"publish": "subsequent", "created": False})
+            with _StubRegistry() as registry:
+                first = _run_cli(
+                    tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
+                )
+                assert first.returncode == 0, f"first publish failed: {first.stdout}{first.stderr}"
+                first_report = json.loads(first.stdout)
+                assert first_report["valid"] is True
+                results.append({"publish": "first", "created": True})
 
-            assert len(registry.publishes) == 2
-            assert registry.publishes[0]["canonical_listing_id"] == "global/publish-fixture"
+                second = _run_cli(
+                    tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
+                )
+                assert second.returncode == 0, f"subsequent publish failed: {second.stderr}"
+                second_report = json.loads(second.stdout)
+                assert second_report["valid"] is True
+                results.append({"publish": "subsequent", "created": False})
 
-        with _StubRegistry(conflict_after=0) as registry:
-            conflict = _run_cli(
-                tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
-            )
-            assert conflict.returncode != 0, "an existing listing must be a conflict"
-            conflict_report = json.loads(conflict.stdout)
-            assert conflict_report["valid"] is False
-            codes = {d["code"] for d in conflict_report["diagnostics"]}
-            assert "publish.registry.conflict" in codes, codes
+                assert len(registry.publishes) == 2
+                assert registry.publishes[0]["canonical_listing_id"] == "global/publish-fixture"
 
-        _write_receipt(
-            "gate_regression",
-            "pass",
-            {"fixture": "publisher-first-and-subsequent", "steps": results},
-        )
+            with _StubRegistry(conflict_after=0) as registry:
+                conflict = _run_cli(
+                    tmp_path, "publish", str(tarball), "--registry", registry.url, "--json"
+                )
+                assert conflict.returncode != 0, "an existing listing must be a conflict"
+                conflict_report = json.loads(conflict.stdout)
+                assert conflict_report["valid"] is False
+                codes = {d["code"] for d in conflict_report["diagnostics"]}
+                assert "publish.registry.conflict" in codes, codes
 
     def test_complete_skillweave_bundle_installation_remains_green(
         self, gate_home, tmp_path, evidence_dir
@@ -837,62 +900,61 @@ class TestCriterion4PublisherAndBundleRegression:
         """The complete SkillWeave bundle installs all members and reports them."""
         bundle = _bundle_source(tmp_path / "src")
 
-        install = _run_cli(
-            gate_home,
-            "install",
-            "--source",
-            str(bundle),
-            "--yes",
-            "--json",
-            cwd=gate_home,
-        )
-        assert install.returncode == 0, (
-            f"bundle install failed ({install.returncode}): {install.stdout}{install.stderr}"
-        )
-        report = _cli_json_document(install)
-        assert report["operation"] == "install"
-        assert report["plan"]["kind"] == "bundle", "the installed plan must be the bundle"
-        assert report["cap_id"] == "global/skillweave"
-        assert report["status"] == "applied"
+        detail: dict = {"fixture": "skillweave-complete-bundle"}
+        with _recorded_gate("gate_bundle_install", detail):
+            install = _run_cli(
+                gate_home,
+                "install",
+                "--source",
+                str(bundle),
+                "--yes",
+                "--json",
+                cwd=gate_home,
+            )
+            assert install.returncode == 0, (
+                f"bundle install failed ({install.returncode}): {install.stdout}{install.stderr}"
+            )
+            report = _cli_json_document(install)
+            assert report["operation"] == "install"
+            assert report["plan"]["kind"] == "bundle", "the installed plan must be the bundle"
+            assert report["cap_id"] == "global/skillweave"
+            assert report["status"] == "applied"
 
-        listing = _cli_json(gate_home, "list", "--json", cwd=gate_home)
-        names = {entry["name"] for entry in listing}
-        for member in ("skillweave-core", "skillweave-blueprint", "skillweave-promptchain"):
-            assert member in names, f"bundle member {member} missing from cap list: {names}"
+            listing = _cli_json(gate_home, "list", "--json", cwd=gate_home)
+            names = {entry["name"] for entry in listing}
+            for member in ("skillweave-core", "skillweave-blueprint", "skillweave-promptchain"):
+                assert member in names, f"bundle member {member} missing from cap list: {names}"
 
-        bundle_entry = next(e for e in listing if e["name"] == "skillweave")
-        assert bundle_entry["kind"] == "bundle"
-        assert bundle_entry["installed"], "the bundle must show an installed binding"
+            bundle_entry = next(e for e in listing if e["name"] == "skillweave")
+            assert bundle_entry["kind"] == "bundle"
+            assert bundle_entry["installed"], "the bundle must show an installed binding"
 
-        _write_receipt(
-            "gate_bundle_install",
-            "pass",
-            {
-                "fixture": "skillweave-complete-bundle",
-                "cap_id": report["cap_id"],
-                "members": sorted(names),
-            },
-        )
+            detail["cap_id"] = report["cap_id"]
+            detail["members"] = sorted(names)
 
     def test_bundle_members_are_removable_as_a_unit(self, gate_home, tmp_path, evidence_dir):
         """A complete installation stays reversible: removing the bundle removes
         its members rather than leaving orphaned skills behind."""
         bundle = _bundle_source(tmp_path / "src")
-        install = _run_cli(
-            gate_home, "install", "--source", str(bundle), "--yes", "--json", cwd=gate_home
-        )
-        assert install.returncode == 0, install.stderr
+        detail: dict = {"members_removed": True}
+        with _recorded_gate("gate_bundle_removal", detail):
+            install = _run_cli(
+                gate_home, "install", "--source", str(bundle), "--yes", "--json", cwd=gate_home
+            )
+            assert install.returncode == 0, install.stderr
 
-        removal = _run_cli(gate_home, "remove", "global/skillweave", "--force", cwd=gate_home)
-        assert removal.returncode == 0, f"bundle removal failed: {removal.stdout}{removal.stderr}"
+            removal = _run_cli(
+                gate_home, "remove", "global/skillweave", "--force", cwd=gate_home
+            )
+            assert removal.returncode == 0, (
+                f"bundle removal failed: {removal.stdout}{removal.stderr}"
+            )
 
-        listing = _cli_json(gate_home, "list", "--json", cwd=gate_home)
-        names = {entry["name"] for entry in listing}
-        assert "skillweave" not in names
-        for member in ("skillweave-core", "skillweave-blueprint", "skillweave-promptchain"):
-            assert member not in names, f"orphaned bundle member after removal: {member}"
-
-        _write_receipt("gate_bundle_removal", "pass", {"members_removed": True})
+            listing = _cli_json(gate_home, "list", "--json", cwd=gate_home)
+            names = {entry["name"] for entry in listing}
+            assert "skillweave" not in names
+            for member in ("skillweave-core", "skillweave-blueprint", "skillweave-promptchain"):
+                assert member not in names, f"orphaned bundle member after removal: {member}"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -987,11 +1049,11 @@ class TestCriterion1ManifestAndVerdict:
         assert len(commit) == 40
 
         artifact_receipt = _read_receipt("criterion1_artifact_digests")
-        if artifact_receipt is None:
-            pytest.skip(
-                "artifact digests were not produced in this run; run "
-                "test_artifact_digests_bind_sdist_and_wheel_to_the_tested_commit first"
-            )
+        assert artifact_receipt is not None, (
+            "no artifact-digest receipt in this run; the manifest cannot be bound to "
+            "sdist/wheel digests"
+        )
+        assert artifact_receipt.get("run_id") == _RUN_ID
         artifacts = artifact_receipt["artifacts"]
 
         gates = {}
