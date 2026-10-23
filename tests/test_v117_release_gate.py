@@ -1700,7 +1700,7 @@ def _gate_8_sub_results(statuses: dict) -> dict:
     }
 
 
-def _verdict(statuses: dict) -> dict:
+def _verdict(statuses: dict, *, gate_8_override: dict | None = None) -> dict:
     """Fold the fourteen gate statuses into one release verdict.
 
     * PREPARED: Gates 1–7 and 9–14 pass, Gate 8 pre-publication passes,
@@ -1709,8 +1709,11 @@ def _verdict(statuses: dict) -> dict:
     * BLOCKED: Any required pre-publication check fails, or any attempted
       post-publication check fails. Failure has precedence over pending.
     * Rename is absent from automatic verdict aggregation.
+
+    *gate_8_override* lets callers supply explicit Gate 8 sub-results for
+    negative-control testing without changing the distribution receipt.
     """
-    gate_8 = _gate_8_sub_results(statuses)
+    gate_8 = gate_8_override if gate_8_override is not None else _gate_8_sub_results(statuses)
     pre_pub = gate_8["pre_publication"]
     post_pub = gate_8["post_publication"]
 
@@ -1881,7 +1884,107 @@ class TestCriterion1To3Gate8StateMachine:
         assert verdict["release"] == "BLOCKED"
         assert "state" in verdict.get("blocking_gates", [])
 
-    # ── criterion 6: pending never emits rename_to ──
+    # ── criterion 4 (extended): post-publication failure → BLOCKED ──
+
+    def test_blocked_when_attempted_post_publication_check_fails(self):
+        """BLOCKED when any attempted post-publication check fails.
+
+        This is the explicit negative control for criterion 4: Gate 8
+        pre-publication passed, but a post-publication probe that actually ran
+        failed. The verdict must be BLOCKED, not pending or PREPARED.
+        """
+        # Simulate: all pre-pub passes, but a post-pub probe failed
+        gate_8_override = {
+            "pre_publication": {
+                "status": "pass",
+                "reason": "pre-publication checks passed",
+            },
+            "post_publication": {
+                "status": "fail",
+                "reason": "forgejo_tag_and_release: tag target differs from accepted main SHA",
+            },
+        }
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pass"  # the receipt says pass, but override says fail
+        verdict = _verdict(statuses, gate_8_override=gate_8_override)
+        assert verdict["release"] == "BLOCKED", (
+            f"post-publication fail must block the release, got {verdict['release']}"
+        )
+        assert "distribution" in verdict.get("blocking_gates", [])
+
+    def test_post_publication_failure_has_precedence_over_pending(self):
+        """A post-publication check failure has precedence over pending.
+
+        When any post-publication probe fails, the release is BLOCKED even
+        though other post-publication probes are still pending. The verdict
+        must not hide the failure behind pending.
+        """
+        gate_8_override = {
+            "pre_publication": {
+                "status": "pass",
+                "reason": "pre-publication checks passed",
+            },
+            "post_publication": {
+                "status": "fail",
+                "reason": "pypi: uploaded wheel digest does not match qualified artifact",
+            },
+        }
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        verdict = _verdict(statuses, gate_8_override=gate_8_override)
+        assert verdict["release"] == "BLOCKED", (
+            f"post-pub fail must produce BLOCKED, got {verdict['release']}"
+        )
+
+    # ── criterion 5: version-source mismatch → Gate 8 pre-pub FAIL + BLOCKED ──
+
+    def test_version_source_mismatch_yields_gate8_pre_pub_fail_and_blocked(self):
+        """A pyproject/README/.version.yaml/changelog mismatch produces Gate 8
+        pre-publication FAIL and overall BLOCKED even while post-publication
+        checks remain pending.
+
+        The criterion requires that the version mismatch is a hard failure —
+        BLOCKED, not PREPARED — and that the post-publication pending status is
+        preserved in the evidence but does not downgrade the failure.
+        """
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "fail"
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "BLOCKED", (
+            f"version mismatch must yield BLOCKED, got {verdict['release']}"
+        )
+        assert "distribution" in verdict.get("blocking_gates", [])
+        gate_8 = verdict.get("gate_8", {})
+        assert gate_8.get("pre_publication", {}).get("status") == "fail", (
+            "version mismatch must be a pre-publication FAIL"
+        )
+        assert "version" in gate_8.get("pre_publication", {}).get("reason", "").lower(), (
+            "the pre-publication fail reason must name version mismatch"
+        )
+        assert gate_8.get("post_publication", {}).get("status") == "pending", (
+            "post-publication must remain pending even when pre-pub fails"
+        )
+
+    def test_version_mismatch_blocked_while_other_gates_all_pass(self):
+        """A version-source mismatch blocks 1.1.7 even when every other gate
+        passes — the release is BLOCKED, not PREPARED.
+
+        This is the key correction from criterion 5: the old code misclassified
+        a version mismatch as "pending" or "PREPARED" because post-publication
+        was pending; the corrected state machine makes pre-publication failure
+        produce BLOCKED regardless of post-publication status.
+        """
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "fail"
+        verdict = _verdict(statuses)
+        assert verdict["release"] == "BLOCKED"
+        # Only distribution should block; all other gates passed
+        assert verdict.get("blocking_gates") == ["distribution"], (
+            f"only distribution should block, got {verdict.get('blocking_gates')}"
+        )
+        # Post-publication is still recorded as pending
+        assert verdict.get("gate_8", {}).get("post_publication", {}).get("status") == "pending"
+
+    # ── criterion 6: pending never emits rename_to, target_version or rename ──
 
     def test_pending_never_emits_rename_to(self):
         """Expected post-publication pending never emits rename_to."""
@@ -1891,6 +1994,61 @@ class TestCriterion1To3Gate8StateMachine:
         assert "rename_to" not in verdict or verdict.get("rename_to") is None, (
             "PREPARED must not emit rename_to"
         )
+
+    def test_pending_never_emits_target_version(self):
+        """Expected post-publication pending never emits target_version."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        assert "target_version" not in verdict or verdict.get("target_version") is None, (
+            "PREPARED must not emit target_version"
+        )
+
+    def test_pending_never_emits_rename_instruction(self):
+        """Expected post-publication pending never contains an instruction to
+        rename 1.1.7 in any field of the verdict."""
+        statuses = {gate: "pass" for gate in ALL_GATES}
+        statuses["distribution"] = "pending"
+        verdict = _verdict(statuses)
+        verdict_json = json.dumps(verdict)
+        assert "rename" not in verdict_json.lower(), (
+            "PREPARED verdict must not contain rename in any field:\n"
+            f"{json.dumps(verdict, indent=2)}"
+        )
+
+    def test_blocked_never_emits_rename_to_or_target_version(self):
+        """A BLOCKED verdict never emits rename_to, target_version or rename
+        instruction. Rename is only a separate explicit owner decision."""
+        for scenario_name, statuses in [
+            ("pre-pub-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "state": "fail",
+            }),
+            ("distribution-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "fail",
+            }),
+            ("post-pub-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pass",
+            }),
+        ]:
+            gate_8_override = None
+            if scenario_name == "post-pub-fail":
+                gate_8_override = {
+                    "pre_publication": {"status": "pass", "reason": "ok"},
+                    "post_publication": {"status": "fail", "reason": "forgejo probe failed"},
+                }
+            verdict = _verdict(statuses, gate_8_override=gate_8_override)
+            assert verdict["release"] == "BLOCKED", (
+                f"{scenario_name} must be BLOCKED"
+            )
+            assert "rename_to" not in verdict or verdict.get("rename_to") is None, (
+                f"BLOCKED ({scenario_name}) must not emit rename_to"
+            )
+            assert "target_version" not in verdict or verdict.get("target_version") is None, (
+                f"BLOCKED ({scenario_name}) must not emit target_version"
+            )
 
     # ── criterion 7: rename is absent from automatic aggregation ──
 
