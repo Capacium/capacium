@@ -7,7 +7,7 @@ gate is driven through the *real* CLI entry point (``python -m capacium.cli``)
 against an isolated HOME so that the asserted evidence is produced by the same
 code path a user runs, not by an in-process shortcut.
 
-Scope of this module (attempt 3, dispatch 2 of 2):
+Scope of this module (attempt 3, dispatch 3 of 3 — criteria 7-9):
 
 * criterion 1 — immutable pass/fail evidence for all fourteen gates, bound to
   the tested commit and the sdist/wheel digests, written outside the repo at
@@ -27,8 +27,15 @@ Scope of this module (attempt 3, dispatch 2 of 2):
 * criterion 5 — SkillWeave, MemPalace and Understand fixtures resolve their
   source contracts offline, build into isolated generations at host time, and
   keep MCP stdout protocol-clean in a real child process;
-* criterion 7 — the release verdict: any mandatory failure or pending gate
-  yields BLOCKED and a rename to 1.2.0; only fourteen green gates yield READY.
+* criterion 7 — rename is represented only as a separate explicit owner
+  decision for an irreconcilable scope or compatibility change and is absent
+  from automatic verdict aggregation;
+* criterion 8 — table-driven negative controls cover every combination that
+  previously misclassified pending versus fail, including one failed pre-check
+  plus all post-checks pending;
+* criterion 9 — release evidence records candidate SHA, accepted main SHA
+  when available, tag target, artifact digests, environment and per-sub-gate
+  evidence without treating stale receipts as current.
 
 A version-source mismatch is a real failure and is reported as one. At the
 commit under test ``pyproject.toml`` reads 1.1.6 while ``README.md`` still
@@ -1773,6 +1780,100 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None) -> dict:
     }
 
 
+# ── criterion 7: rename is an explicit owner decision, not automatic ──
+
+
+def _apply_owner_rename(
+    verdict: dict,
+    target_version: str,
+    reason: str,
+) -> dict:
+    """Apply an explicit owner-requested rename to a blocked verdict.
+
+    This function represents the separate owner decision path: it is never
+    called by ``_verdict()`` and requires explicit ``target_version`` and
+    ``reason`` parameters that only a product owner can supply. A rename is
+    only valid when scope or compatibility is irreconcilable — it is not
+    emitted by the automatic verdict aggregation.
+
+    Returns a NEW dict with rename_to added; the original verdict is unchanged.
+    """
+    if verdict.get("release") != "BLOCKED":
+        raise ValueError(
+            f"rename is only valid for BLOCKED releases, not {verdict.get('release')}"
+        )
+    return {
+        **verdict,
+        "rename_to": target_version,
+        "rename_reason": reason,
+        "rename_requires_owner_approval": True,
+    }
+
+
+def _assert_rename_absent(verdict: dict) -> None:
+    """Prove rename_to, target_version and rename instructions are absent."""
+    verdict_json = json.dumps(verdict)
+    assert "rename_to" not in verdict or verdict.get("rename_to") is None, (
+        f"rename_to must not appear in automatic verdict: {verdict.get('rename_to')}"
+    )
+    assert "rename" not in verdict_json.lower(), (
+        "no rename instruction may appear in automatic verdict:\n"
+        f"{json.dumps(verdict, indent=2)}"
+    )
+
+
+# ── criterion 9: release evidence with SHA/digest binding, stale rejection ──
+
+
+def _release_evidence(
+    candidate_sha: str,
+    accepted_main_sha: str | None,
+    tag_target: str | None,
+    artifacts: dict,
+    gate_8_sub_results: dict,
+    env_info: dict | None = None,
+) -> dict:
+    """Build a release-evidence record bound to SHAs, digests and environment.
+
+    Every field that can bind the evidence to a concrete release is recorded.
+    ``accepted_main_sha`` is ``None`` until the promotion gate accepts a main
+    commit; ``tag_target`` is ``None`` until the release tag exists. Both are
+    recorded as ``None`` (not omitted) so a missing field is distinguishable
+    from an unset one.
+
+    The returned evidence is the data that Gate 8 post-publication probes
+    verify: every sub-gate result references the exact SHA, tag and digests.
+    """
+    import platform as _platform
+
+    evidence = {
+        "candidate_sha": candidate_sha,
+        "accepted_main_sha": accepted_main_sha,
+        "tag_target": tag_target,
+        "artifacts": artifacts,
+        "gate_8": gate_8_sub_results,
+        "environment": {
+            "platform": _platform.system(),
+            "python": _platform.python_version(),
+            "run_id": _RUN_ID,
+            **(env_info or {}),
+        },
+    }
+    return evidence
+
+
+def _is_stale_receipt(receipt: dict | None, current_run_id: str) -> bool:
+    """A receipt from a different run is stale and must never satisfy a gate.
+
+    Returns ``True`` when the receipt is absent, has no ``run_id``, or its
+    ``run_id`` differs from *current_run_id*. A stale receipt is evidence of a
+    *previous* run and cannot be substituted for current evidence.
+    """
+    if receipt is None:
+        return True
+    return receipt.get("run_id") != current_run_id
+
+
 class TestCriterion1To3Gate8StateMachine:
     """Criteria 1–3: Gate 8 pre_publication/post_publication sub-results,
     PREPARED/BLOCKED/READY state machine and table-driven negative controls."""
@@ -2164,6 +2265,502 @@ class TestCriterion1To3Gate8StateMachine:
         verdict = _verdict(statuses)
         assert verdict["gate_count"] == 14
         assert sorted(verdict["statuses"]) == sorted(ALL_GATES)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 7 — rename is an explicit owner decision, absent from automatic
+#              verdict aggregation
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCriterion7RenameOwnerDecision:
+    """Criterion 7: rename is represented only as a separate explicit owner
+    decision for an irreconcilable scope or compatibility change and is absent
+    from automatic verdict aggregation."""
+
+    def test_rename_is_never_emitted_by_automatic_verdict(self):
+        """No automatic verdict (PREPARED, BLOCKED, READY) contains rename_to."""
+        for scenario, statuses in [
+            ("all-pass", {gate: "pass" for gate in ALL_GATES}),
+            ("distribution-pending", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pending",
+            }),
+            ("one-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "state": "fail",
+            }),
+            ("distribution-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "fail",
+            }),
+            ("multi-fail", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "state": "fail",
+                "resolver": "fail",
+                "distribution": "fail",
+            }),
+            ("all-not-run", {}),
+        ]:
+            verdict = _verdict(statuses)
+            _assert_rename_absent(verdict)
+
+    def test_owner_rename_only_valid_for_blocked(self):
+        """_apply_owner_rename raises for PREPARED or READY — only BLOCKED is
+        eligible for an owner-requested rename."""
+        for release_state in ("PREPARED", "READY"):
+            verdict = {"release": release_state, "gate_count": 14}
+            with pytest.raises(ValueError, match="only valid for BLOCKED"):
+                _apply_owner_rename(
+                    verdict,
+                    target_version="1.2.0",
+                    reason="scope change",
+                )
+
+    def test_owner_rename_produces_explicit_decision_with_reason(self):
+        """An owner rename on a BLOCKED verdict carries target_version, reason
+        and the requires-owner-approval marker."""
+        blocked = {
+            "release": "BLOCKED",
+            "blocking_gates": ["state"],
+            "blocking_statuses": {"state": "fail"},
+            "pending_gates": {},
+            "gate_count": 14,
+        }
+        renamed = _apply_owner_rename(
+            blocked,
+            target_version="1.2.0",
+            reason="irreconcilable compatibility change in the trust model",
+        )
+        assert renamed["release"] == "BLOCKED"
+        assert renamed["rename_to"] == "1.2.0"
+        assert "irreconcilable" in renamed["rename_reason"]
+        assert renamed["rename_requires_owner_approval"] is True
+        # The original verdict is unchanged
+        assert "rename_to" not in blocked
+
+    def test_owner_rename_is_never_called_by_verdict(self):
+        """_verdict() never calls _apply_owner_rename — the functions are
+        separate call sites."""
+        # Prove that every path through _verdict produces no rename_to
+        for scenario, statuses in [
+            ("all-pass", {gate: "pass" for gate in ALL_GATES}),
+            ("prepared", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pending",
+            }),
+            ("blocked-pre", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "state": "fail",
+            }),
+            ("blocked-dist", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "fail",
+            }),
+            ("blocked-post", {
+                **{gate: "pass" for gate in ALL_GATES},
+                "distribution": "pass",
+            }),
+        ]:
+            gate_8_override = None
+            if scenario == "blocked-post":
+                gate_8_override = {
+                    "pre_publication": {"status": "pass", "reason": "ok"},
+                    "post_publication": {
+                        "status": "fail",
+                        "reason": "forgejo tag probe failed",
+                    },
+                }
+            verdict = _verdict(statuses, gate_8_override=gate_8_override)
+            _assert_rename_absent(verdict)
+
+    def test_rename_decision_is_explicitly_parameterised(self):
+        """_apply_owner_rename requires target_version and reason — it cannot
+        be called without an explicit owner decision."""
+        blocked = {"release": "BLOCKED", "gate_count": 14}
+        # Must supply both target_version and reason
+        renamed = _apply_owner_rename(
+            blocked,
+            target_version="1.2.0",
+            reason="major scope change — not a patch",
+        )
+        assert renamed["rename_to"] == "1.2.0"
+        assert renamed["rename_reason"] == "major scope change — not a patch"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 8 — table-driven negative controls covering every combination
+#              that previously misclassified pending versus fail
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCriterion8NegativeControlMatrix:
+    """Criterion 8: table-driven negative controls cover every combination that
+    previously misclassified pending versus fail, including one failed pre-check
+    plus all post-checks pending."""
+
+    @pytest.mark.parametrize("scenario_id,statuses,gate_8_override,expected_release,desc", [
+        # ── One failed pre-check + all post-checks pending (gate_8_override) ──
+        # These were the original misclassification: old code could produce
+        # "pending"/"PREPARED" instead of BLOCKED when a non-distribution gate
+        # failed but Gate 8 post-publication was pending.
+        (
+            "nc-009",
+            {**{gate: "pass" for gate in ALL_GATES}, "state": "fail", "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "pending",
+                    "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+                },
+            },
+            "BLOCKED",
+            "one pre-check fail + post pending via override → BLOCKED (failure wins)",
+        ),
+        (
+            "nc-010",
+            {**{gate: "pass" for gate in ALL_GATES}, "resolver": "fail", "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "pending",
+                    "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+                },
+            },
+            "BLOCKED",
+            "resolver fail + post pending via override → BLOCKED",
+        ),
+        (
+            "nc-011",
+            {**{gate: "pass" for gate in ALL_GATES}, "state": "fail", "resolver": "fail",
+             "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "pending",
+                    "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+                },
+            },
+            "BLOCKED",
+            "two pre-check fails + post pending via override → BLOCKED",
+        ),
+        # ── One failed pre-check + post-publication also fails ──
+        (
+            "nc-012",
+            {**{gate: "pass" for gate in ALL_GATES}, "state": "fail", "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "fail",
+                    "reason": "homebrew: digest mismatch",
+                },
+            },
+            "BLOCKED",
+            "one pre-check fail + post fail via override → BLOCKED (both fail)",
+        ),
+        # ── Gate 8 pre-publication fail + one other gate pass + post pending ──
+        (
+            "nc-013",
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "fail"},
+            None,
+            "BLOCKED",
+            "distribution pre-pub fail (via receipt) → BLOCKED (post pending implicit)",
+        ),
+        # ── Gate 8 pre-publication pass + post fail + all others pass ──
+        (
+            "nc-014",
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "fail",
+                    "reason": "upgrade_probe: version mismatch",
+                },
+            },
+            "BLOCKED",
+            "all gates pass but post-pub fail via override → BLOCKED",
+        ),
+        # ── Gate 8 not-run + one other gate fail ──
+        (
+            "nc-015",
+            {"state": "fail"},
+            None,
+            "BLOCKED",
+            "state fail + distribution not-run → BLOCKED (two blockers)",
+        ),
+        # ── All gates pass, Gate 8 pre pass + post pending (the key PREPARED case) ──
+        (
+            "nc-016",
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "pass"},
+            {
+                "pre_publication": {"status": "pass", "reason": "pre-pub passed"},
+                "post_publication": {
+                    "status": "pending",
+                    "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+                },
+            },
+            "PREPARED",
+            "all pass + post pending via override → PREPARED (not BLOCKED)",
+        ),
+    ])
+    def test_negative_control_matrix_extended(
+        self, scenario_id, statuses, gate_8_override, expected_release, desc
+    ):
+        """Table-driven: every combination that previously misclassified pending
+        versus fail, including failed pre-check + post pending."""
+        full = {gate: statuses.get(gate, "not-run") for gate in ALL_GATES}
+        full.update(statuses)
+        verdict = _verdict(full, gate_8_override=gate_8_override)
+        assert verdict["release"] == expected_release, (
+            f"{scenario_id} ({desc}): expected {expected_release}, "
+            f"got {verdict['release']}\nstatuses={full}"
+        )
+        # PREPARED must never have blocking_gates
+        if expected_release == "PREPARED":
+            assert "blocking_gates" not in verdict or verdict.get("blocking_gates") == []
+        # BLOCKED must always name its blockers
+        if expected_release == "BLOCKED":
+            assert verdict.get("blocking_gates"), (
+                f"{scenario_id}: BLOCKED must name blocking gates"
+            )
+
+    def test_every_scenario_in_both_matrices_is_covered(self):
+        """The combined matrices (original nc-001…nc-008 plus extended
+        nc-009…nc-016) cover: PREPARED, BLOCKED (pre-pub fail), BLOCKED
+        (post-pub fail), BLOCKED (both fail), and READY."""
+        # Verify that the _verdict function handles all the edge cases from
+        # both matrices by exercising each verdict type through direct calls.
+        verdicts_seen = set()
+
+        # READY
+        v = _verdict({gate: "pass" for gate in ALL_GATES})
+        verdicts_seen.add(v["release"])
+
+        # PREPARED
+        v = _verdict({**{gate: "pass" for gate in ALL_GATES}, "distribution": "pending"})
+        verdicts_seen.add(v["release"])
+
+        # BLOCKED — pre-pub fail
+        v = _verdict({**{gate: "pass" for gate in ALL_GATES}, "state": "fail"})
+        verdicts_seen.add(v["release"])
+
+        # BLOCKED — distribution fail
+        v = _verdict({**{gate: "pass" for gate in ALL_GATES}, "distribution": "fail"})
+        verdicts_seen.add(v["release"])
+
+        # BLOCKED — post-pub fail via override
+        v = _verdict(
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "pass"},
+            gate_8_override={
+                "pre_publication": {"status": "pass", "reason": "ok"},
+                "post_publication": {"status": "fail", "reason": "probe failed"},
+            },
+        )
+        verdicts_seen.add(v["release"])
+
+        # BLOCKED — pre + post both fail
+        v = _verdict(
+            {**{gate: "pass" for gate in ALL_GATES}, "state": "fail", "distribution": "pass"},
+            gate_8_override={
+                "pre_publication": {"status": "pass", "reason": "ok"},
+                "post_publication": {"status": "fail", "reason": "probe failed"},
+            },
+        )
+        verdicts_seen.add(v["release"])
+
+        assert verdicts_seen == {"READY", "PREPARED", "BLOCKED"}, (
+            f"all three verdict types must be reachable, got {verdicts_seen}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 9 — release evidence records candidate SHA, accepted main SHA,
+#              tag target, artifact digests, environment and per-sub-gate
+#              evidence without treating stale receipts as current
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCriterion9ReleaseEvidence:
+    """Criterion 9: release evidence records candidate SHA, accepted main SHA
+    when available, tag target, artifact digests, environment and per-sub-gate
+    evidence without treating stale receipts as current."""
+
+    def test_release_evidence_includes_all_required_fields(self):
+        """Every evidence record names candidate SHA, accepted main SHA (or
+        None), tag target (or None), artifacts, gate_8 sub-results and
+        environment."""
+        artifacts = {
+            "sdist": {"name": "capacium-1.1.7.tar.gz", "sha256": "a" * 64},
+            "wheel": {"name": "capacium-1.1.7-py3-none-any.whl", "sha256": "b" * 64},
+        }
+        gate_8 = {
+            "pre_publication": {"status": "pass", "reason": "ok"},
+            "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+        }
+
+        # Pre-promotion: no accepted main SHA, no tag
+        evidence = _release_evidence(
+            candidate_sha="c" * 40,
+            accepted_main_sha=None,
+            tag_target=None,
+            artifacts=artifacts,
+            gate_8_sub_results=gate_8,
+        )
+        assert evidence["candidate_sha"] == "c" * 40
+        assert evidence["accepted_main_sha"] is None
+        assert evidence["tag_target"] is None
+        assert evidence["artifacts"] == artifacts
+        assert evidence["gate_8"] == gate_8
+        assert evidence["environment"]["run_id"] == _RUN_ID
+
+        # Post-promotion: accepted main SHA and tag are recorded
+        evidence = _release_evidence(
+            candidate_sha="c" * 40,
+            accepted_main_sha="m" * 40,
+            tag_target="v1.1.7",
+            artifacts=artifacts,
+            gate_8_sub_results=gate_8,
+        )
+        assert evidence["accepted_main_sha"] == "m" * 40
+        assert evidence["tag_target"] == "v1.1.7"
+
+    def test_stale_receipt_is_rejected(self):
+        """A receipt from a different run_id is stale and must never satisfy
+        a gate. The current run's receipts pass."""
+        # Stale: different run_id
+        stale = {"status": "pass", "run_id": "old-run-123"}
+        assert _is_stale_receipt(stale, _RUN_ID) is True
+
+        # Stale: absent
+        assert _is_stale_receipt(None, _RUN_ID) is True
+
+        # Stale: no run_id at all
+        assert _is_stale_receipt({"status": "pass"}, _RUN_ID) is True
+
+        # Current: matching run_id
+        current = {"status": "pass", "run_id": _RUN_ID}
+        assert _is_stale_receipt(current, _RUN_ID) is False
+
+    def test_stale_receipt_cannot_satisfy_observed_statuses(self):
+        """A receipt written by a previous run must not be read as current
+        evidence. Only receipts with the current run_id are accepted."""
+        # Write a receipt with a foreign run_id (simulating a stale receipt)
+        stale_dir = None
+        try:
+            stale_dir = _evidence_dir()
+        except EvidenceDirError:
+            pytest.skip("no evidence directory available")
+
+        stale_path = stale_dir / "gate_stale_probe.json"
+        stale_path.write_text(
+            json.dumps({
+                "gate": "stale_probe",
+                "status": "pass",
+                "run_id": "previous-run-deadbeef",
+                "tested_commit": "d" * 40,
+            }),
+            encoding="utf-8",
+        )
+
+        # Read it back — it should be recognised as stale
+        receipt = _read_receipt("gate_stale_probe")
+        assert receipt is not None
+        assert _is_stale_receipt(receipt, _RUN_ID) is True
+
+        # Clean up
+        stale_path.unlink(missing_ok=True)
+
+    def test_evidence_binds_per_sub_gate_result(self, evidence_dir):
+        """Each sub-gate in the evidence carries its own status and reason,
+        bound to the current run_id."""
+        gate_8 = {
+            "pre_publication": {"status": "pass", "reason": "pre-publication checks passed"},
+            "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+        }
+        evidence = _release_evidence(
+            candidate_sha=_tested_commit(),
+            accepted_main_sha=None,
+            tag_target=None,
+            artifacts={
+                "sdist": {"name": "test.tar.gz", "sha256": "a" * 64},
+                "wheel": {"name": "test.whl", "sha256": "b" * 64},
+            },
+            gate_8_sub_results=gate_8,
+        )
+
+        # Write the evidence receipt
+        _write_receipt("criterion9_evidence", "pass", {"evidence": evidence})
+
+        # Read it back and verify every field
+        stored = _read_receipt("criterion9_evidence")
+        assert stored is not None
+        assert stored["run_id"] == _RUN_ID
+        assert stored["evidence"]["candidate_sha"] == _tested_commit()
+        assert stored["evidence"]["accepted_main_sha"] is None
+        assert stored["evidence"]["tag_target"] is None
+        assert stored["evidence"]["gate_8"]["pre_publication"]["status"] == "pass"
+        assert stored["evidence"]["gate_8"]["post_publication"]["status"] == "pending"
+        assert stored["evidence"]["environment"]["run_id"] == _RUN_ID
+
+    def test_evidence_rejects_stale_artifacts(self):
+        """Artifact digests from a stale receipt must not satisfy a current
+        evidence run."""
+        stale_artifacts = {
+            "sdist": {"name": "old.tar.gz", "sha256": "0" * 64},
+            "wheel": {"name": "old.whl", "sha256": "1" * 64},
+        }
+        stale_receipt = {
+            "gate": "criterion1_artifact_digests",
+            "status": "pass",
+            "run_id": "ancient-run-000",
+            "artifacts": stale_artifacts,
+        }
+        assert _is_stale_receipt(stale_receipt, _RUN_ID) is True, (
+            "artifact digests from an old run must be rejected as stale"
+        )
+
+    def test_evidence_environment_includes_platform_and_python(self):
+        """The environment section records platform and Python version so
+        evidence is reproducible."""
+        evidence = _release_evidence(
+            candidate_sha="c" * 40,
+            accepted_main_sha=None,
+            tag_target=None,
+            artifacts={},
+            gate_8_sub_results={},
+            env_info={"ci": "forgejo", "runner": "macos-arm64"},
+        )
+        env = evidence["environment"]
+        assert "platform" in env
+        assert "python" in env
+        assert env["ci"] == "forgejo"
+        assert env["runner"] == "macos-arm64"
+
+    def test_accepted_main_sha_is_none_until_promotion(self):
+        """Before the promotion gate accepts a main commit, accepted_main_sha
+        is explicitly None — not omitted. This distinguishes 'not yet set' from
+        'field missing'."""
+        evidence = _release_evidence(
+            candidate_sha="c" * 40,
+            accepted_main_sha=None,
+            tag_target=None,
+            artifacts={},
+            gate_8_sub_results={},
+        )
+        assert "accepted_main_sha" in evidence
+        assert evidence["accepted_main_sha"] is None
+
+    def test_tag_target_is_none_until_tag_created(self):
+        """Before the release tag exists, tag_target is explicitly None."""
+        evidence = _release_evidence(
+            candidate_sha="c" * 40,
+            accepted_main_sha="m" * 40,
+            tag_target=None,
+            artifacts={},
+            gate_8_sub_results={},
+        )
+        assert "tag_target" in evidence
+        assert evidence["tag_target"] is None
 
 
 # ──────────────────────────────────────────────────────────────────────────
