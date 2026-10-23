@@ -1891,3 +1891,79 @@ class TestOpenClaudeEvidenceClaims:
         assert docstring is not None
         assert "version string" in docstring
         assert "identity" in docstring
+# ── Criterion 9: obsolete install is a negative control ─────────────────
+
+_OBSOLETE_SCOPE = "@gitlawb/openclaude"
+_OBSOLETE_VERSION = "0.31.0"
+
+
+def _obsolete_record(pin: dict, root: Path) -> dict:
+    """Build a record describing the obsolete @gitlawb distribution."""
+    package_root = root / "node_modules" / _OBSOLETE_SCOPE
+    bin_path = root / "node_modules" / ".bin" / pin["binary"]
+    package_root.mkdir(parents=True, exist_ok=True)
+    bin_path.parent.mkdir(parents=True, exist_ok=True)
+    bin_path.symlink_to(package_root / "bin" / pin["binary"])
+    return {
+        "package": _OBSOLETE_SCOPE,
+        "version": _OBSOLETE_VERSION,
+        "resolved": (
+            "https://registry.npmjs.org/@gitlawb/openclaude/-/"
+            "openclaude-0.31.0.tgz"
+        ),
+        "integrity": pin["integrity"],
+        "package_root": package_root,
+        "bin": bin_path,
+    }
+
+
+class TestOpenClaudeObsoleteScopeIsNegativeControl:
+    """Criterion 9: the old @gitlawb/openclaude@0.31.0 installation is a
+    negative control and can never satisfy the release gate.
+    """
+
+    def test_release_gate_verdict_rejects_obsolete_record(self, tmp_path):
+        pin = _load_declared_pin()
+        verdict = _release_gate_verdict(
+            _obsolete_record(pin, tmp_path / "obsolete"), pin,
+        )
+        assert verdict["qualified"] is False
+        assert verdict["evidence"] is None
+        joined = " ".join(verdict["violations"])
+        assert _OBSOLETE_SCOPE in joined
+        assert _OBSOLETE_VERSION in joined
+
+    def test_obsolete_scope_alone_blocks_the_gate(self, tmp_path):
+        """Even with every other field borrowed from the declared pin, the
+        obsolete scope cannot pass: the check is not version-only."""
+        pin = _load_declared_pin()
+        record = _obsolete_record(pin, tmp_path / "obsolete")
+        record["version"] = pin["version"]
+        verdict = _release_gate_verdict(record, pin)
+        assert verdict["qualified"] is False
+        assert any(_OBSOLETE_SCOPE in reason for reason in verdict["violations"])
+
+    def test_obsolete_path_is_rejected_without_an_installation(self, tmp_path):
+        """The negative control is hermetic: it does not depend on the
+        obsolete package being installed on this host."""
+        official_root = tmp_path / "official-package-root"
+        official_root.mkdir()
+        fabricated = (
+            tmp_path / "node_modules" / "@gitlawb" / "openclaude" / "bin"
+            / "openclaude"
+        )
+        fabricated.parent.mkdir(parents=True)
+        fabricated.write_text("#!/bin/sh\nexit 0\n")
+
+        violations = _identity_violations(fabricated, official_root)
+        assert violations
+        assert any("@gitlawb" in reason for reason in violations)
+
+    def test_release_gate_verdict_accepts_only_the_declared_pin(self, tmp_path):
+        """Positive control: the same gate accepts the declared record, so
+        the obsolete rejection above is not vacuous."""
+        pin = _load_declared_pin()
+        verdict = _release_gate_verdict(_qualified_record(pin, tmp_path), pin)
+        assert verdict["qualified"] is True
+        assert verdict["violations"] == []
+        assert verdict["evidence"] == f"{pin['package']}@{pin['version']}"
