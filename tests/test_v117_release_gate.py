@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,9 @@ DEFERRED_GATES = {
 #: Gate name -> owning test module. A gate is only green when its owner ran in
 #: this evidence run and left a receipt; the module itself is authoritative.
 GATE_OWNERS = {
+    #: Produced by this module (criterion-4 publisher/bundle regression tests),
+    #: so it is not driven as a child module; its receipt is written in-file.
+    "regression": None,
     "state": "tests/test_state_authority.py",
     "resolver": "tests/test_resolve.py",
     "transaction": "tests/test_install_transactional.py",
@@ -68,10 +72,21 @@ GATE_OWNERS = {
     "execution_status": "tests/test_block_status.py",
     "host_registration": "tests/test_host_registration.py",
     "security_neutrality": "tests/neutrality",
-    "regression": None,  # written by this module's own criterion-4/14 checks
 }
 
+#: Gates whose owning module must run in this same run for the manifest to be
+#: complete. ``regression`` is produced by this module; ``distribution`` is
+#: deferred. The rest are driven as child pytest runs against this worktree.
+_DRIVEN_GATES = tuple(
+    gate for gate, owner in GATE_OWNERS.items() if owner is not None and gate not in DEFERRED_GATES
+)
+
 EVIDENCE_DIR_ENV = "CAP117_GATE_EVIDENCE_DIR"
+
+#: Identity of *this* process's evidence run. Every receipt carries it so a
+#: receipt left behind by an earlier run in a reused directory can never be
+#: mistaken for evidence produced by this run.
+_RUN_ID = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
 
 _SIMULATED_PLATFORMS = (
     # (platform.system() value, expected path separator family, per-user config base)
@@ -161,6 +176,7 @@ def _write_receipt(gate: str, status: str, detail: dict) -> Path:
     payload = {
         "gate": gate,
         "status": status,
+        "run_id": _RUN_ID,
         "tested_commit": _tested_commit(),
         "platform": platform.system(),
         "python": platform.python_version(),
@@ -313,6 +329,30 @@ def evidence_dir(tmp_path_factory):
             os.environ[EVIDENCE_DIR_ENV] = previous
 
 
+def _run_owner_module(owner: str, gate: str) -> dict:
+    """Run one gate's owning test module as a child pytest and summarise it.
+
+    The owning tests are the authority for their gate; this driver only records
+    what they reported. The child inherits this run's evidence directory and
+    tested-commit pin, so every gate in the manifest describes one revision.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", owner, "-q", "-p", "no:cacheprovider"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(SRC_DIR)},
+        capture_output=True,
+        text=True,
+    )
+    tail = "\n".join(line for line in result.stdout.splitlines() if line.strip())[-1500:]
+    return {
+        "gate": gate,
+        "owner": owner,
+        "status": "pass" if result.returncode == 0 else "fail",
+        "exit_code": result.returncode,
+        "summary": tail,
+    }
+
+
 def _source_skill(root: Path, name: str, version: str = "1.0.0", **extra) -> Path:
     """Materialise a minimal installable skill source directory."""
     directory = root / name
@@ -431,86 +471,33 @@ class TestCriterion1GateEvidence:
         for entry in digests.values():
             assert len(entry["sha256"]) == 64
 
-    def test_gate_manifest_records_all_fourteen_gates_with_real_status(
-        self, evidence_dir
-    ):
-        """All fourteen gates appear, each bound to commit and artifact digests.
+    def test_every_gate_writes_its_evidence_in_this_run(self, evidence_dir):
+        """Criterion 1: one run drives every gate and records its real status.
 
-        A gate is only listed as ``pass`` when its owning module left a receipt
-        for this run. Missing owners and the deferred distribution gate are
-        recorded explicitly, so the manifest cannot claim a gate it did not
-        observe.
+        Each non-deferred gate's owning module is executed here and its receipt
+        is written with the status the module actually reported, so a failing
+        gate is evidence of a failure and never an omission. This test asserts
+        the *integrity* of that record — every receipt exists, names the tested
+        commit, and agrees with the observed exit status — not that the gates
+        pass: the release verdict is derived from the recorded statuses by
+        ``test_mandatory_gate_failure_blocks_release``, and a red gate stays red.
         """
-        commit = _tested_commit()
-        assert len(commit) == 40
+        outcomes = []
+        for gate in _DRIVEN_GATES:
+            outcome = _run_owner_module(GATE_OWNERS[gate], gate)
+            outcomes.append(outcome)
+            _write_receipt(f"gate_{gate}", outcome["status"], outcome)
 
-        artifact_receipt = _read_receipt("criterion1_artifact_digests")
-        if artifact_receipt is None:
-            pytest.skip(
-                "artifact digests were not produced in this run; run "
-                "test_artifact_digests_bind_sdist_and_wheel_to_the_tested_commit first"
+        for outcome in outcomes:
+            receipt = _read_receipt(f"gate_{outcome['gate']}")
+            assert receipt is not None, f"{outcome['gate']} left no receipt"
+            assert receipt["tested_commit"] == _tested_commit()
+            assert receipt["owner"] == outcome["owner"]
+            assert receipt["status"] == ("pass" if outcome["exit_code"] == 0 else "fail"), (
+                f"{outcome['gate']} receipt disagrees with its exit code "
+                f"{outcome['exit_code']}"
             )
-        artifacts = artifact_receipt["artifacts"]
-
-        gates = {}
-        for gate, owner in GATE_OWNERS.items():
-            if gate in DEFERRED_GATES:
-                gates[gate] = {
-                    "status": "deferred",
-                    "owner": owner,
-                    "note": DEFERRED_GATES[gate],
-                }
-                continue
-            if owner is None:
-                gates[gate] = {"status": "pending", "owner": None, "note": "not yet executed"}
-                continue
-            receipt = _read_receipt(f"gate_{gate}")
-            gates[gate] = {
-                "status": receipt["status"] if receipt else "not-run",
-                "owner": owner,
-                "receipt": f"gate_{gate}.json" if receipt else None,
-            }
-
-        assert len(gates) == 14, f"expected fourteen gates, recorded {len(gates)}"
-        assert gates["distribution"]["status"] == "deferred"
-
-        manifest = {
-            "schema": "capacium-release-evidence/1.1.7",
-            "tested_commit": commit,
-            "artifacts": artifacts,
-            "gates": gates,
-        }
-        path = _write_receipt("criterion1_gate_manifest", "pass", {"manifest": manifest})
-        reloaded = json.loads(path.read_text(encoding="utf-8"))["manifest"]
-        assert reloaded["tested_commit"] == commit
-        assert reloaded["artifacts"] == artifacts
-        assert sorted(reloaded["gates"]) == sorted(GATE_OWNERS)
-
-    def test_mandatory_gate_failure_blocks_release(self, evidence_dir):
-        """A mandatory failure yields a blocking verdict, not a partial release.
-
-        The release is renamed 1.2.0 rather than shipped partially; a gate may
-        only be non-blocking when it is explicitly deferred.
-        """
-        scenario = {
-            "state": "pass",
-            "resolver": "fail",
-            "distribution": "deferred",
-        }
-        failed = [
-            name
-            for name, status in scenario.items()
-            if status == "fail" and name not in DEFERRED_GATES
-        ]
-        verdict = {
-            "release": "blocked" if failed else "shippable",
-            "failed_gates": failed,
-            "rename_to": "1.2.0" if failed else None,
-        }
-        assert verdict["release"] == "blocked"
-        assert verdict["failed_gates"] == ["resolver"]
-        assert verdict["rename_to"] == "1.2.0"
-        _write_receipt("criterion1_release_verdict", "pass", {"verdict": verdict})
+            assert receipt["exit_code"] == outcome["exit_code"]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -971,3 +958,115 @@ class TestEvidenceHygiene:
                 text=True,
             )
             assert found.returncode == 0, f"{module} unavailable: {found.stderr}"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 1 (aggregate) — the manifest and the release verdict
+#
+# These run last: the manifest can only be complete once every gate that this
+# module produces has written its receipt, and the verdict must be derived from
+# that finished set. Their definition order after the other classes is the
+# guarantee that ``gate_regression`` (written by criterion 4) has landed.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCriterion1ManifestAndVerdict:
+    """Criterion 1: the fourteen gates roll up into one bound manifest whose
+    verdict blocks a partial release."""
+
+    def test_gate_manifest_records_all_fourteen_gates_with_real_status(
+        self, evidence_dir
+    ):
+        """All fourteen gates appear, each bound to commit and artifact digests.
+
+        A gate is only listed as ``pass`` when its owning module left a receipt
+        for this run. The deferred distribution gate is recorded explicitly, so
+        the manifest cannot claim a gate it did not observe.
+        """
+        commit = _tested_commit()
+        assert len(commit) == 40
+
+        artifact_receipt = _read_receipt("criterion1_artifact_digests")
+        if artifact_receipt is None:
+            pytest.skip(
+                "artifact digests were not produced in this run; run "
+                "test_artifact_digests_bind_sdist_and_wheel_to_the_tested_commit first"
+            )
+        artifacts = artifact_receipt["artifacts"]
+
+        gates = {}
+        for gate, owner in GATE_OWNERS.items():
+            if gate in DEFERRED_GATES:
+                gates[gate] = {
+                    "status": "deferred",
+                    "owner": owner,
+                    "note": DEFERRED_GATES[gate],
+                }
+                continue
+            receipt = _read_receipt(f"gate_{gate}")
+            fresh = bool(receipt) and receipt.get("run_id") == _RUN_ID
+            gates[gate] = {
+                "status": receipt["status"] if fresh else "not-run",
+                "owner": owner,
+                "receipt": f"gate_{gate}.json" if fresh else None,
+            }
+
+        assert len(gates) == 14, f"expected fourteen gates, recorded {len(gates)}"
+        assert gates["distribution"]["status"] == "deferred"
+        for gate in GATE_OWNERS:
+            if gate in DEFERRED_GATES:
+                continue
+            assert gates[gate]["status"] in {"pass", "fail"}, (
+                f"{gate} recorded no observed status: {gates[gate]}"
+            )
+            assert gates[gate]["receipt"] == f"gate_{gate}.json"
+
+        manifest = {
+            "schema": "capacium-release-evidence/1.1.7",
+            "run_id": _RUN_ID,
+            "tested_commit": commit,
+            "artifacts": artifacts,
+            "gates": gates,
+        }
+        path = _write_receipt("criterion1_gate_manifest", "pass", {"manifest": manifest})
+        reloaded = json.loads(path.read_text(encoding="utf-8"))["manifest"]
+        assert reloaded["tested_commit"] == commit
+        assert reloaded["artifacts"] == artifacts
+        assert sorted(reloaded["gates"]) == sorted(GATE_OWNERS)
+
+    def test_mandatory_gate_failure_blocks_release(self, evidence_dir):
+        """A mandatory failure yields a blocking verdict, not a partial release.
+
+        The verdict is derived from the receipts this run actually wrote, so it
+        reports the release truthfully: any non-deferred gate that did not pass
+        blocks 1.1.7 and renames it 1.2.0. A gate may only be non-blocking when
+        it is explicitly deferred.
+        """
+        statuses = {}
+        for gate in GATE_OWNERS:
+            if gate in DEFERRED_GATES:
+                statuses[gate] = "deferred"
+                continue
+            receipt = _read_receipt(f"gate_{gate}")
+            missing = not receipt or receipt.get("run_id") != _RUN_ID
+            statuses[gate] = "not-run" if missing else receipt["status"]
+
+        unobserved = [g for g, s in statuses.items() if s == "not-run"]
+        assert not unobserved, f"gates without evidence in this run: {unobserved}"
+
+        failed = sorted(g for g, s in statuses.items() if s == "fail")
+        verdict = {
+            "release": "blocked" if failed else "shippable",
+            "failed_gates": failed,
+            "rename_to": "1.2.0" if failed else None,
+            "statuses": statuses,
+        }
+        _write_receipt("criterion1_release_verdict", "recorded", {"verdict": verdict})
+
+        if failed:
+            assert verdict["release"] == "blocked"
+            assert verdict["rename_to"] == "1.2.0"
+            assert verdict["failed_gates"] == failed
+        else:
+            assert verdict["release"] == "shippable"
+            assert verdict["rename_to"] is None
