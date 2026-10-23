@@ -1,4 +1,5 @@
-"""OpenClaude adapter tests — CAP117-OPENCLAUDE-006, Dispatch 1 (C1-C3).
+"""OpenClaude adapter tests — CAP117-OPENCLAUDE-006 (C1-C3) and
+CAP117F-OPENCLAUDE-004 (C4-C6).
 
 Criterion 1: Harness ID, executable detection, documented config locations.
 Criterion 2: Idempotent skill and MCP install/inspect/verify/repair/remove
@@ -6,6 +7,25 @@ Criterion 2: Idempotent skill and MCP install/inspect/verify/repair/remove
 Criterion 3: cap host, cap list, cap info, cap reconcile, cap repair and
              cap doctor report OpenClaude through the shared state and
              finding contracts.
+
+CAP117F-OPENCLAUDE-004 declares a single qualified distribution identity
+(``@twigpine/openclaude@0.32.0``) in ``fixtures/openclaude-pin.json``. The
+identity gate below rejects any other package, version, registry URL,
+integrity or executable ownership BEFORE the adapter mutates host state,
+as does a pin declaration that itself diverges from the official identity.
+The qualified lifecycle exercises Capacium's adapter paths rather than
+``which openclaude`` and ``openclaude --version`` alone.
+
+Criterion 4: ``TestOpenClaudeIdentityGate`` proves each mismatch aborts
+             before the adapter writes a skill symlink or MCP config.
+Criterion 5: ``TestOpenClaudeQualifiedLifecycle`` runs
+             install/register/status/remove through ``OpenClaudeAdapter``
+             against the isolated pinned binary and preserves foreign
+             config entries.
+Criterion 6: those lifecycle tests drive adapter paths, not ``which``.
+Criterion 7: ``TestOpenClaudeHostClassifiedSmoke`` classifies a real-binary
+             smoke by host and availability instead of assuming identity.
+Criterion 9: a global ``@gitlawb`` install is a negative control only.
 """
 from __future__ import annotations
 
@@ -690,7 +710,7 @@ class TestOpenClaudeFrameworkDetectorIntegration:
         assert roots["openclaude"] == tmp_home / ".openclaude" / "skills"
 
 
-# ── Criterion 4: Path isolation (shim/cap exec only) ────────────────────
+# ── CAP117-OPENCLAUDE-006 C4: Path isolation (shim/cap exec only) ───────
 
 class TestOpenClaudePathIsolation:
     """The adapter invokes only a stable managed shim or cap exec and
@@ -788,7 +808,7 @@ class TestOpenClaudePathIsolation:
                 )
 
 
-# ── Criterion 5: Platform fixture matrix ─────────────────────────────────
+# ── CAP117-OPENCLAUDE-006 C5: Platform fixture matrix ───────────────────
 
 _PLATFORM_VALUES = ["Darwin", "Linux", "Windows"]
 
@@ -802,7 +822,7 @@ def sim_platform(monkeypatch, request):
 
 
 class TestOpenClaudePlatformFixtures:
-    """Criterion 5: macOS, Linux and Windows fixtures cover install,
+    """CAP117-OPENCLAUDE-006 C5: macOS, Linux and Windows fixtures cover install,
     reinstall, update, remove, missing executable, malformed config
     and drift repair."""
 
@@ -1082,6 +1102,116 @@ def _nearest_gitlawb_install() -> Path | None:
     return resolved
 
 
+class OpenClaudePinViolation(AssertionError):
+    """Raised when an install record does not match the declared release pin."""
+
+
+def _pin_violations(record: dict, pin: dict) -> list[str]:
+    """Return every reason ``record`` differs from the declared pin.
+
+    Checks package name, exact version, source registry/tarball URL,
+    integrity and executable ownership. An empty list means qualified.
+    """
+    violations: list[str] = []
+    if record.get("package") != pin["package"]:
+        violations.append(
+            f"package {record.get('package')!r} != declared {pin['package']!r}"
+        )
+    if record.get("version") != pin["version"]:
+        violations.append(
+            f"version {record.get('version')!r} != declared {pin['version']!r}"
+        )
+    if record.get("resolved") != pin["tarball"]:
+        violations.append(
+            f"resolved {record.get('resolved')!r} != declared {pin['tarball']!r}"
+        )
+    if record.get("integrity") != pin["integrity"]:
+        violations.append("integrity does not match the declared pin")
+    # Ownership must be proven, never assumed: a record that omits the
+    # executable or its package root cannot demonstrate where the binary came
+    # from, so it fails closed instead of defaulting both to one path.
+    if not record.get("bin") or not record.get("package_root"):
+        violations.append(
+            "executable ownership is unproven: record omits bin or package_root"
+        )
+    else:
+        violations.extend(
+            _identity_violations(record["bin"], record["package_root"])
+        )
+    return violations
+
+
+def _require_qualified_identity(record: dict, pin: dict) -> None:
+    """Raise :class:`OpenClaudePinViolation` before any adapter mutation."""
+    violations = _pin_violations(record, pin)
+    if violations:
+        raise OpenClaudePinViolation("; ".join(violations))
+
+
+def _owning_package_metadata(executable: Path) -> tuple[Path | None, dict | None]:
+    """Return the nearest package root and its ``package.json`` metadata."""
+    resolved = Path(os.path.realpath(executable))
+    for parent in resolved.parents:
+        package_json = parent / "package.json"
+        if package_json.exists():
+            try:
+                return parent, json.loads(package_json.read_text())
+            except (OSError, ValueError):
+                return parent, None
+    return None, None
+
+
+def _run_qualified_lifecycle(
+    adapter: OpenClaudeAdapter, record: dict, pin: dict,
+    skill_source: Path, mcp_source: Path,
+) -> dict:
+    """Gate the identity, then run register for skill and MCP-server.
+
+    The gate runs first so a mismatched package/version/integrity/executable
+    aborts before the adapter writes host state.
+    """
+    _require_qualified_identity(record, pin)
+    skill_result = adapter.register("qualified-skill", "skill", skill_source)
+    mcp_result = adapter.register("qualified-mcp", "mcp-server", mcp_source)
+    return {"skill": skill_result, "mcp": mcp_result}
+
+
+@pytest.fixture(scope="module")
+def pinned_install(tmp_path_factory) -> dict:
+    """Isolated install of the declared pin, shared by pin-aware tests.
+
+    Skips, with an explicit reason, when the host lacks npm/node. This is
+    the only source of executable evidence for the release gate.
+    """
+    if not _npm_available():
+        pytest.skip(
+            "npm/node unavailable: pinned real-binary smoke classified as "
+            "not runnable on this host"
+        )
+    pin = _load_declared_pin()
+    root = tmp_path_factory.mktemp("openclaude-pinned-install")
+    return _record_isolated_install(root, pin)
+
+
+@pytest.fixture
+def pinned_on_path(pinned_install, monkeypatch) -> Path:
+    """Put the pinned install's bin directory first on PATH.
+
+    Any Capacium or adapter lookup of ``openclaude`` must resolve to the
+    isolated qualified executable, never to a global installation.
+    """
+    bin_dir = pinned_install["bin"].parent
+    monkeypatch.setenv(
+        "PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+    )
+    resolved = shutil.which("openclaude")
+    assert resolved is not None, "pinned executable not on PATH"
+    assert Path(os.path.realpath(resolved)) == Path(
+        os.path.realpath(pinned_install["bin"])
+    ), f"PATH resolved {resolved}, expected {pinned_install['bin']}"
+    return bin_dir
+
+
 class TestOpenClaudeDeclaredPin:
     """Criterion 1: the declared release pin is exactly the official one."""
 
@@ -1114,10 +1244,9 @@ class TestOpenClaudeIsolatedInstall:
     """
 
     @pytest.fixture(scope="class")
-    def install_record(self, tmp_path_factory):
-        pin = _load_declared_pin()
-        root = tmp_path_factory.mktemp("openclaude-install")
-        return _record_isolated_install(root, pin)
+    def install_record(self, pinned_install):
+        """The single isolated install record shared by the pin-aware tests."""
+        return pinned_install
 
     def test_install_records_name_version_registry_and_integrity(
         self, install_record,
@@ -1153,8 +1282,8 @@ class TestOpenClaudeIsolatedInstall:
 
 
 class TestOpenClaudeObsoleteScopeNegativeControl:
-    """Criterion 3 negative control: an obsolete @gitlawb installation can
-    never satisfy the identity gate.
+    """Criterion 9: an obsolete @gitlawb installation can never satisfy the
+    identity gate, with or without a globally installed binary.
     """
 
     def test_obsolete_gitlawb_install_is_rejected(self, tmp_path):
@@ -1170,92 +1299,385 @@ class TestOpenClaudeObsoleteScopeNegativeControl:
         )
         assert any("@gitlawb" in reason for reason in violations)
 
+    def test_global_install_cannot_inherit_qualified_identity(self):
+        """Whatever ``openclaude`` is globally installed is NOT treated as
+        the declared pin; its own package metadata decides the verdict.
+        """
+        pin = _load_declared_pin()
+        global_bin = shutil.which("openclaude")
+        if global_bin is None:
+            pytest.skip("no global openclaude installation on this host")
 
-# ── Criterion 6: Real OpenClaude smoke path ─────────────────────────────
+        package_root, metadata = _owning_package_metadata(Path(global_bin))
+        assert package_root is not None, (
+            f"{global_bin} has no owning package.json"
+        )
+        assert metadata is not None, f"{package_root}/package.json unreadable"
 
-class TestOpenClaudeRealSmoke:
-    """At least one real OpenClaude smoke path passes against the pinned
-    @twigpine/openclaude distribution (installed at /opt/homebrew/bin/openclaude).
+        qualified = (
+            metadata.get("name") == pin["package"]
+            and metadata.get("version") == pin["version"]
+        )
+        if qualified:
+            # A genuinely qualified global install is the only accepted case.
+            assert _identity_violations(Path(global_bin), package_root) == []
+            return
 
-    No network access. No write access outside the isolated HOME."""
-
-    def test_openclaude_binary_resolvable(self):
-        """OpenClaude binary is discoverable on PATH."""
-        import shutil
-        oc = shutil.which("openclaude")
-        assert oc is not None, (
-            "openclaude binary not found in PATH. "
-            "Expected at /opt/homebrew/bin/openclaude"
+        violations = _pin_violations(
+            {
+                "package": metadata.get("name"),
+                "version": metadata.get("version"),
+                "resolved": pin["tarball"],
+                "integrity": pin["integrity"],
+                "package_root": package_root,
+                "bin": Path(global_bin),
+            },
+            pin,
+        )
+        assert violations, (
+            f"global {global_bin} "
+            f"({metadata.get('name')}@{metadata.get('version')}) was accepted "
+            f"as the declared {pin['package']}@{pin['version']} pin"
         )
 
-    def test_openclaude_reports_version(self):
-        """openclaude --version exits 0 and prints a version string."""
-        import shutil
-        import subprocess
-        oc = shutil.which("openclaude")
-        if oc is None:
-            pytest.skip("openclaude not installed")
 
-        result = subprocess.run(
-            [oc, "--version"],
-            capture_output=True, text=True, timeout=15,
-        )
-        combined = (result.stdout + result.stderr).strip()
-        assert result.returncode == 0, (
-            f"openclaude --version exit {result.returncode}: {combined}"
-        )
-        assert combined, "No version output"
-        import re
-        assert re.search(r"\d+\.\d+", combined), (
-            f"No version number in output: {combined}"
-        )
+# ── Criterion 4: identity gate fails before mutation ────────────────────
 
-    def test_openclaude_version_with_isolated_home(self, tmp_home):
-        """openclaude --version runs with an isolated HOME (no network,
-        no writes outside tmp_home)."""
-        import shutil
-        import subprocess
-        oc = shutil.which("openclaude")
-        if oc is None:
-            pytest.skip("openclaude not installed")
+def _qualified_record(pin: dict, root: Path) -> dict:
+    """Build an install record matching the declared pin."""
+    package_root = root / "node_modules" / pin["package"]
+    bin_path = root / "node_modules" / ".bin" / pin["binary"]
+    bin_path.parent.mkdir(parents=True, exist_ok=True)
+    package_root.mkdir(parents=True, exist_ok=True)
+    bin_path.symlink_to(package_root / "bin" / pin["binary"])
+    return {
+        "package": pin["package"],
+        "version": pin["version"],
+        "resolved": pin["tarball"],
+        "integrity": pin["integrity"],
+        "package_root": package_root,
+        "bin": bin_path,
+    }
 
-        env = {**os.environ, "HOME": str(tmp_home), "USERPROFILE": str(tmp_home)}
-        result = subprocess.run(
-            [oc, "--version"],
-            capture_output=True, text=True, timeout=15,
-            env=env,
-        )
-        combined = (result.stdout + result.stderr).strip()
-        assert result.returncode == 0, (
-            f"openclaude --version (isolated HOME) exit {result.returncode}: {combined}"
-        )
 
-    def test_adapter_skills_dir_visible_to_openclaude(self, tmp_home, tmp_path):
-        """A skill installed by the adapter into an isolated HOME produces
-        a symlink that openclaude can discover on the filesystem."""
-        import shutil
-        import subprocess
-        oc = shutil.which("openclaude")
-        if oc is None:
-            pytest.skip("openclaude not installed")
+class TestOpenClaudeIdentityGate:
+    """Criterion 4: a mismatch in package, version, integrity, executable
+    ownership or declared pin aborts before any host mutation.
+    """
 
+    def _assert_rejected_before_mutation(
+        self, record: dict, reason: str, tmp_home, tmp_path, pin: dict | None = None,
+    ):
+        pin = pin or _load_declared_pin()
         adapter = OpenClaudeAdapter()
-        source = _make_skill_dir(tmp_path, "smoke-skill")
-        adapter.register("smoke-skill", "skill", source)
+        skill_source = _make_skill_dir(tmp_path, "gate-skill")
+        mcp_source = _make_mcp_dir(tmp_path, "gate-mcp")
 
-        # Verify the symlink structure is what openclaude expects
-        skills_dir = tmp_home / ".openclaude" / "skills"
-        assert skills_dir.is_dir()
-        link = skills_dir / "smoke-skill"
+        with pytest.raises(OpenClaudePinViolation, match=reason):
+            _run_qualified_lifecycle(
+                adapter, record, pin, skill_source, mcp_source,
+            )
+
+        assert not (adapter.skills_dir / "qualified-skill").exists(), (
+            "skill symlink written despite identity failure"
+        )
+        assert not adapter.config_path.exists(), (
+            "MCP config written despite identity failure"
+        )
+
+    def test_wrong_package_name_fails_before_mutation(self, tmp_home, tmp_path):
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        record["package"] = "@gitlawb/openclaude"
+        self._assert_rejected_before_mutation(
+            record, "package ", tmp_home, tmp_path,
+        )
+
+    def test_wrong_version_fails_before_mutation(self, tmp_home, tmp_path):
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        record["version"] = "0.31.0"
+        self._assert_rejected_before_mutation(
+            record, "version ", tmp_home, tmp_path,
+        )
+
+    def test_wrong_integrity_fails_before_mutation(self, tmp_home, tmp_path):
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        record["integrity"] = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+        self._assert_rejected_before_mutation(
+            record, "integrity", tmp_home, tmp_path,
+        )
+
+    def test_foreign_tarball_fails_before_mutation(self, tmp_home, tmp_path):
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        record["resolved"] = (
+            "https://registry.npmjs.org/@gitlawb/openclaude/-/"
+            "openclaude-0.31.0.tgz"
+        )
+        self._assert_rejected_before_mutation(
+            record, "resolved", tmp_home, tmp_path,
+        )
+
+    def test_diverging_declared_pin_fails_before_mutation(
+        self, tmp_home, tmp_path,
+    ):
+        """The gate reads the declaration: if the pin itself is not the
+        official one, even a genuine install does not qualify.
+        """
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        tampered_pin = dict(pin, version="0.31.0")
+        self._assert_rejected_before_mutation(
+            record, "version ", tmp_home, tmp_path, pin=tampered_pin,
+        )
+
+    def test_executable_outside_package_root_fails_before_mutation(
+        self, tmp_home, tmp_path,
+    ):
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        foreign_root = tmp_path / "global" / "@gitlawb" / "openclaude"
+        foreign_root.mkdir(parents=True)
+        foreign_bin = foreign_root / "bin" / "openclaude"
+        foreign_bin.parent.mkdir(parents=True)
+        foreign_bin.write_text("#!/bin/sh\nexit 0\n")
+        record["bin"] = foreign_bin
+        self._assert_rejected_before_mutation(
+            record, "outside package root", tmp_home, tmp_path,
+        )
+
+    def test_unproven_executable_ownership_fails_before_mutation(
+        self, tmp_home, tmp_path,
+    ):
+        """A record that omits where the binary lives cannot prove ownership."""
+        pin = _load_declared_pin()
+        record = _qualified_record(pin, tmp_path / "install")
+        del record["package_root"]
+        self._assert_rejected_before_mutation(
+            record, "ownership is unproven", tmp_home, tmp_path,
+        )
+
+
+# ── Criterion 5: qualified adapter lifecycle against the exact binary ───
+
+@pytest.mark.skipif(
+    not _npm_available(), reason="npm/node unavailable for isolated install",
+)
+class TestOpenClaudeQualifiedLifecycle:
+    """Criteria 5 and 6: install/register/status/remove run through
+    Capacium's OpenClaude adapter against the exact pinned binary, and
+    foreign OpenClaude configuration entries are left unchanged.
+    """
+
+    def test_register_and_remove_skill_against_pinned_binary(
+        self, pinned_on_path, pinned_install, tmp_home, tmp_path,
+    ):
+        pin = _load_declared_pin()
+        adapter = OpenClaudeAdapter()
+        source = _make_skill_dir(tmp_path, "pinned-skill")
+
+        _require_qualified_identity(pinned_install, pin)
+
+        reg = adapter.register("pinned-skill", "skill", source)
+        assert reg.success is True
+
+        link = adapter.skills_dir / "pinned-skill"
         assert link.is_symlink()
+        # The host-facing name resolves back into the Capacium package store,
+        # and the qualified executable stays outside it.
+        assert ".capacium" in os.readlink(link)
+        assert adapter.capability_exists("pinned-skill") is True
 
-        # Verify openclaude can start without crashing (--help, no network)
+        status = adapter.status()
+        assert "pinned-skill" in status.verified_skills
+
+        # The exact qualified binary must start against the host state the
+        # adapter just generated (isolated HOME, no network).
+        observed = subprocess.run(
+            [str(pinned_install["bin"]), "--help"],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "HOME": str(tmp_home),
+                 "USERPROFILE": str(tmp_home)},
+        )
+        assert observed.returncode == 0, (
+            f"pinned openclaude --help exit {observed.returncode}: "
+            f"{(observed.stdout + observed.stderr)[-1000:]}"
+        )
+
+        rem = adapter.unregister("pinned-skill", "skill")
+        assert rem.success is True
+        assert not link.exists()
+        assert adapter.capability_exists("pinned-skill") is False
+
+    def test_install_capability_lifecycle_against_pinned_binary(
+        self, pinned_on_path, pinned_install, tmp_home, tmp_path,
+    ):
+        """``install_capability`` (the install path used by ``cap install``)
+        completes for a skill and an MCP server against the pinned binary.
+        """
+        pin = _load_declared_pin()
+        adapter = OpenClaudeAdapter()
+        _require_qualified_identity(pinned_install, pin)
+
+        skill_source = _make_skill_dir(tmp_path, "installed-skill")
+        assert adapter.install_capability(
+            "installed-skill", "1.0.0", skill_source, "skill",
+        ) is True
+        assert (adapter.skills_dir / "installed-skill").is_symlink()
+
+        mcp_source = _make_mcp_dir(tmp_path, "installed-mcp")
+        assert adapter.install_capability(
+            "installed-mcp", "1.0.0", mcp_source, "mcp-server",
+        ) is True
+        config = json.loads(adapter.config_path.read_text())
+        assert config["mcpServers"]["installed-mcp"]["_capacium_owner"] == (
+            "capacium:installed-mcp:mcp-server"
+        )
+
+        status = adapter.status()
+        assert "installed-skill" in status.verified_skills
+        assert "installed-mcp" in status.verified_mcp_servers
+
+        assert adapter.remove_capability("installed-skill", "skill") is True
+        assert adapter.remove_capability("installed-mcp", "mcp-server") is True
+        assert adapter.capability_exists("installed-skill") is False
+
+    def test_register_and_remove_mcp_against_pinned_binary(
+        self, pinned_on_path, pinned_install, tmp_home, tmp_path,
+    ):
+        pin = _load_declared_pin()
+        adapter = OpenClaudeAdapter()
+        assert adapter.config_path.exists() is False
+
+        # Pre-seed a foreign entry that must survive every adapter step.
+        foreign = {
+            "command": "foreign-server",
+            "args": ["--port", "9999"],
+            "env": {"FOREIGN_SECRET": "keep-me"},
+        }
+        adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+        adapter.config_path.write_text(
+            json.dumps({"mcpServers": {"foreign-server": foreign}})
+        )
+
+        source = _make_mcp_dir(tmp_path, "pinned-mcp")
+        _require_qualified_identity(pinned_install, pin)
+
+        reg = adapter.register("pinned-mcp", "mcp-server", source)
+        assert reg.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        assert config["mcpServers"]["foreign-server"] == foreign
+        entry = config["mcpServers"]["pinned-mcp"]
+        assert entry["_capacium_owner"] == "capacium:pinned-mcp:mcp-server"
+        # The entry routes through the stable cap exec surface, not a
+        # raw interpreter or the global install.
+        assert "exec" in [str(part) for part in entry.get("args", [])] or (
+            "exec" in entry.get("command", "")
+        )
+
+        status = adapter.status()
+        assert "pinned-mcp" in status.verified_mcp_servers
+        assert "mcp:foreign-server" in status.foreign_entries
+
+        rem = adapter.unregister("pinned-mcp", "mcp-server")
+        assert rem.success is True
+
+        config = json.loads(adapter.config_path.read_text())
+        assert "pinned-mcp" not in config["mcpServers"]
+        assert config["mcpServers"]["foreign-server"] == foreign
+
+    def test_pinned_executable_reports_declared_version(
+        self, pinned_on_path, pinned_install,
+    ):
+        pin = _load_declared_pin()
+        result = subprocess.run(
+            ["openclaude", "--version"],
+            capture_output=True, text=True, timeout=60,
+        )
+        combined = (result.stdout + result.stderr).strip()
+        assert result.returncode == 0, combined
+        assert pin["version"] in combined
+        package_root, metadata = _owning_package_metadata(
+            Path(shutil.which("openclaude"))
+        )
+        assert metadata is not None
+        assert metadata["name"] == pin["package"]
+        assert package_root is not None
+        assert Path(os.path.realpath(package_root)) == Path(
+            os.path.realpath(pinned_install["package_root"])
+        )
+
+
+# ── Criterion 7: host-classified real smoke (identity-aware) ────────────
+
+class TestOpenClaudeHostClassifiedSmoke:
+    """Criterion 7: a real-binary smoke is classified by host and
+    availability instead of assuming a package identity.
+
+    A global ``openclaude`` on PATH is only evidence when its own package
+    metadata matches the declared pin; the obsolete @gitlawb install is a
+    negative control (see ``TestOpenClaudeObsoleteScopeNegativeControl``).
+    """
+
+    def test_host_and_availability_are_recorded(self):
+        """Classification inputs are explicit, not implied."""
+        pin = _load_declared_pin()
+        finding = {
+            "host_system": platform.system(),
+            "host_machine": platform.machine(),
+            "npm_available": _npm_available(),
+            "declared_pin": f"{pin['package']}@{pin['version']}",
+            "global_binary": shutil.which("openclaude"),
+        }
+        assert finding["host_system"]
+        assert finding["declared_pin"] == "@twigpine/openclaude@0.32.0"
+        assert isinstance(finding["npm_available"], bool)
+
+    def test_global_binary_is_classified_by_its_own_metadata(self):
+        """The global binary is never assumed to be the declared pin."""
+        pin = _load_declared_pin()
+        global_bin = shutil.which("openclaude")
+        if global_bin is None:
+            pytest.skip("no global openclaude installation on this host")
+
+        package_root, metadata = _owning_package_metadata(Path(global_bin))
+        if package_root is None or metadata is None:
+            pytest.skip(f"{global_bin} has no readable package metadata")
+
+        same_name = metadata.get("name") == pin["package"]
+        same_version = metadata.get("version") == pin["version"]
+        if same_name and same_version:
+            assert _identity_violations(Path(global_bin), package_root) == []
+        else:
+            assert _pin_violations(
+                {
+                    "package": metadata.get("name"),
+                    "version": metadata.get("version"),
+                    "resolved": pin["tarball"],
+                    "integrity": pin["integrity"],
+                    "package_root": package_root,
+                    "bin": Path(global_bin),
+                },
+                pin,
+            ), "global binary was misclassified as the declared pin"
+
+    @pytest.mark.skipif(
+        not _npm_available(), reason="npm/node unavailable for pinned real smoke",
+    )
+    def test_pinned_smoke_runs_with_isolated_home(self, pinned_on_path, tmp_home):
+        """The qualified binary starts with an isolated HOME and writes
+        nothing outside it."""
         env = {**os.environ, "HOME": str(tmp_home), "USERPROFILE": str(tmp_home)}
         result = subprocess.run(
-            [oc, "--help"],
-            capture_output=True, text=True, timeout=15,
-            env=env,
+            ["openclaude", "--version"],
+            capture_output=True, text=True, timeout=60, env=env,
         )
+        combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0, (
-            f"openclaude --help exit {result.returncode}: {result.stderr}"
+            f"pinned openclaude --version (isolated HOME) exit "
+            f"{result.returncode}: {combined}"
         )
+        assert _load_declared_pin()["version"] in combined
