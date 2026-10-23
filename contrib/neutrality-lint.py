@@ -24,16 +24,22 @@ PROHIBITED_TERMS = [
     (r'\bVALID_PRICING_MODELS\b', 'pricing taxonomy in Core (MANIFESTO §4) — must be owner-controlled'),
     (r'\bprice_usd\b', 'price enforcement in Core (MANIFESTO §4)'),
     (r'\bVALID_TRIGGER_EVENTS\b', 'trigger event taxonomy in Core — must be owner-controlled'),
-    # Commercial license boundary — CAP117F-CORE-001 criterion 4 (MANIFESTO §4)
+    # Commercial license boundary — CAP117F-CORE-001 criteria 4-5 (MANIFESTO §4)
+    # Broader families (review F2): British spelling, alternative identifiers,
+    # issue-license functions, parser re-registration and tier mappings.
     # Snake_case terms use (?<![a-zA-Z])…(?![a-zA-Z]) so they match within
     # larger identifiers like LICENSE_TYPE_MAP or customer_licensee_id.
-    (r'(?<![a-zA-Z])licensee_id(?![a-zA-Z])', 'commercial license identifier in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'(?<![a-zA-Z])license_type(?![a-zA-Z])', 'commercial license type classification in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'/v2/licenses', 'commercial license REST endpoint reference in Core (MANIFESTO §4) — belongs in Exchange containment'),
-    (r'(?<![a-zA-Z])paid_license(?![a-zA-Z])', 'paid-license issuance constant in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'\bLicenseTier\b', 'commercial license-tier enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'\bCommercialTier\b', 'commercial-tier classification enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'\bPricingTier\b', 'pricing-tier classification enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Two rules so license_id / LICENSE_ID (SPDX) is never caught.
+    (r'(?<![a-zA-Z])licen[cs]ee_?(?:id|type|key)(?![a-zA-Z])', 'commercial licensee identifier/type/key in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])licen[cs]e_(?:type|key)(?![a-zA-Z])', 'commercial license type/key in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'/v2/licen[cs]es', 'commercial license REST endpoint reference in Core (MANIFESTO §4) — belongs in Exchange containment'),
+    (r'(?<![a-zA-Z])(?:paid_licen[cs]e|is_paid)(?![a-zA-Z])', 'paid-license issuance constant in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'\b(?:LicenseTier|CommercialTier|PricingTier|TierEnum)\b', 'commercial/pricing-tier enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])commercial_tier(?![a-zA-Z])', 'commercial-tier variable in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])license_validate(?![a-zA-Z])', 'commercial license validation function in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])issue_\w*licen[cs]e(?![a-zA-Z])', 'license issuance function in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'add_parser\s*\(\s*["\']license["\']', 'license command re-registration in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])(?:commercial_)?tiers?\s*=\s*[{\[]', 'commercial tier mapping in Core (MANIFESTO §4) — belongs in SevenOfNine'),
 ]
 
 # Case-sensitive patterns — tier enum member assignments use uppercase by convention;

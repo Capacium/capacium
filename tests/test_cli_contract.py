@@ -304,3 +304,130 @@ class TestCommercialLicenseAbsenceC3:
         """``cap license list`` exits non-zero."""
         result = _cap("license", "list", "--licensee", "user1")
         assert result.returncode != 0
+
+
+# ── CAP117F-CORE-001 criterion 3 (F4): machine-readable JSON contract tests ──
+
+# Terms that must not appear in any JSON payload.
+_JSON_FORBIDDEN_KEYS = [
+    "license",       # as top-level commercial key (not SPDX metadata)
+    "licensee",
+    "licensee_id",
+    "license_type",
+    "license_key",
+    "license_token",
+    "tier",
+    "issue",         # as license subcommand key
+    "revoke",
+    "validate",      # as license subcommand key
+    "pricing",
+    "entitlement",
+    "checkout",
+    "commerce",
+]
+_JSON_FORBIDDEN_VALUES = [
+    "free",
+    "trial",
+    "standard",
+    "enterprise",
+]
+
+
+def _assert_no_commercial_keys(payload, source_label: str):
+    """Recursively check that no commercial keys or tier values appear."""
+    if isinstance(payload, dict):
+        for key in payload:
+            assert key not in _JSON_FORBIDDEN_KEYS, (
+                f"Commercial key '{key}' found in {source_label}"
+            )
+        for value in payload.values():
+            _assert_no_commercial_keys(value, source_label)
+    elif isinstance(payload, list):
+        for item in payload:
+            _assert_no_commercial_keys(item, source_label)
+    elif isinstance(payload, str):
+        # Check for tier values in string content
+        for fv in _JSON_FORBIDDEN_VALUES:
+            assert fv not in payload.lower(), (
+                f"Commercial tier value '{fv}' found in string in {source_label}"
+            )
+
+
+class TestJsonContractC4:
+    """Criterion 3/4: machine-readable JSON contract — every --json emitting
+    command must produce valid JSON free of commercial-licence keys and
+    commercial-tier values."""
+
+    def test_list_json_no_commercial_keys(self, tmp_path):
+        """``cap list --json`` contains no commercial keys or tier values."""
+        import json
+        result = _cap("list", "--json", env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, f"cap list --json failed: {result.stderr}"
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap list --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap list --json")
+
+    def test_search_json_no_commercial_keys(self, tmp_path):
+        """``cap search --json`` contains no commercial keys or tier values."""
+        import json
+        result = _cap("search", "--json", env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, f"cap search --json failed: {result.stderr}"
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap search --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap search --json")
+
+    def test_validate_json_no_commercial_keys(self, tmp_path):
+        """``cap validate --json`` against a minimal manifest contains no
+        commercial keys or tier values."""
+        import json
+        manifest = tmp_path / "capability.yaml"
+        manifest.write_text("""\
+owner: acme
+name: test-cap
+kind: skill
+version: 1.0.0
+description: A test capability
+""")
+        result = _cap("validate", str(manifest), "--json",
+                       env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, f"cap validate --json failed: {result.stderr}"
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap validate --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap validate --json")
+
+    def test_help_subcommands_show_json_flag(self):
+        """Key subcommand help texts advertise --json on the commands that
+        emit machine-readable output."""
+        for cmd in ("list", "search", "validate"):
+            result = _cap(cmd, "--help")
+            assert "--json" in result.stdout, (
+                f"cap {cmd} --help must mention --json flag"
+            )
+
+    def test_json_commands_return_valid_json(self, tmp_path):
+        """JSON-emitting commands return parseable JSON with an isolated
+        empty home."""
+        import json
+        # Commands that actually accept --json in Core
+        json_commands = {
+            "list": [],
+            "search": [],
+        }
+        for cmd, extra in json_commands.items():
+            result = _cap(cmd, *extra, "--json", env={"HOME": str(tmp_path)})
+            assert result.returncode == 0, (
+                f"cap {cmd} --json failed (rc={result.returncode}): {result.stderr}"
+            )
+            try:
+                json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                pytest.fail(
+                    f"cap {cmd} --json output is not valid JSON: {e}\n"
+                    f"STDOUT: {result.stdout[:500]}"
+                )

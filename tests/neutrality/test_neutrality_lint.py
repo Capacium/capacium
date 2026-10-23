@@ -268,6 +268,137 @@ app.mount("/v2/licenses", license_router)
         assert result.returncode != 0, "Router mount of /v2/licenses must be rejected"
         assert "/v2/licenses" in result.stdout
 
+    # ── Reviewer F2 gap probes — broadened rules ──
+
+    def test_licencee_id_british_spelling_rejected(self):
+        content = """
+def check():
+    return {"licencee_id": "cust_abc123"}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "licencee_id (British) must be rejected by broadened rule"
+        assert "licencee_id" in result.stdout.lower()
+
+    def test_LICENCE_TYPE_uppercase_rejected(self):
+        content = """
+LICENCE_TYPE = "commercial"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "LICENCE_TYPE (uppercase British) must be rejected by broadened rule"
+        assert "LICENCE_TYPE" in result.stdout
+
+    def test_v2_licences_british_path_rejected(self):
+        content = '''
+def fetch(token):
+    return requests.get("/v2/licences/validate", headers={"Authorization": f"Bearer {token}"})
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "/v2/licences (British) must be rejected by broadened rule"
+        assert "/v2/licences" in result.stdout
+
+    def test_license_key_rejected(self):
+        content = """
+config = {"license_key": "KEY-1234-ABCD"}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "license_key must be rejected by broadened rule"
+        assert "license_key" in result.stdout.lower()
+
+    def test_is_paid_rejected(self):
+        content = """
+def check(cap):
+    return cap.is_paid
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "is_paid must be rejected by broadened rule"
+        assert "is_paid" in result.stdout
+
+    def test_TierEnum_rejected(self):
+        content = """
+class TierEnum(Enum):
+    FREE = 0
+    PAID = 1
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "TierEnum must be rejected by broadened rule"
+        assert "TierEnum" in result.stdout
+
+    def test_commercial_tier_variable_rejected(self):
+        content = """
+commercial_tier = "enterprise"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "commercial_tier variable must be rejected"
+        assert "commercial_tier" in result.stdout.lower()
+
+    def test_license_validate_function_rejected(self):
+        content = """
+def license_validate(token):
+    return requests.post("/v2/licenses/validate", json={"token": token})
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "license_validate function must be rejected"
+        assert "license_validate" in result.stdout.lower()
+
+    def test_add_parser_license_rejected(self):
+        content = '''
+subparsers = parser.add_subparsers(dest="command")
+license_parser = subparsers.add_parser("license", help="Manage commercial licenses")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "add_parser('license') must be rejected"
+        assert "license" in result.stdout.lower()
+        assert "add_parser" in result.stdout.lower()
+
+    def test_issue_paid_capability_license_rejected(self):
+        content = '''
+def issue_paid_capability_license(capability_id, licensee):
+    """Issue a paid commercial license for a capability."""
+    return {"license": {"id": "lic-123", "tier": "enterprise"}}
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "issue_paid_capability_license must be rejected"
+        assert "issue_paid_capability_license" in result.stdout.lower()
+
+    def test_issue_license_function_rejected(self):
+        content = '''
+def issue_license(capability_id, licensee, tier="standard"):
+    return {"license": {"id": "lic-456", "tier": tier}}
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "issue_license must be rejected"
+        assert "issue_license" in result.stdout.lower()
+
+    def test_tiers_dict_mapping_rejected(self):
+        content = """
+TIERS = {"free": 0, "trial": 1, "standard": 2, "enterprise": 3}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "TIERS dict mapping must be rejected"
+        assert "TIERS" in result.stdout
+
+    def test_commercial_tiers_list_rejected(self):
+        content = """
+COMMERCIAL_TIERS = ["free", "trial", "standard", "enterprise"]
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "COMMERCIAL_TIERS list must be rejected"
+        assert "COMMERCIAL_TIERS" in result.stdout
+
+    def test_license_key_dataclass_rejected(self):
+        content = """
+@dataclass
+class LicenseKey:
+    id: str
+    tier: str = "standard"
+
+def issue_license(cap_id):
+    return LicenseKey(id="lic-789", tier="enterprise")
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "LicenseKey dataclass with issue_license must be rejected"
+        assert "issue_license" in result.stdout.lower()
+
 
 # ── CAP117F-CORE-001 criterion 6: positive controls ──
 
