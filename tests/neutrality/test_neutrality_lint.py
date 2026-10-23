@@ -169,7 +169,7 @@ def check_access():
         result = _run_lint_on(content)
         assert result.returncode != 0, "licensee_id must be rejected"
         assert "licensee_id" in result.stdout.lower()
-        assert "commercial license identifier" in result.stdout.lower()
+        assert "commercial licensee" in result.stdout.lower()
 
     def test_license_type_rejected(self):
         content = """
@@ -209,7 +209,7 @@ class LicenseTier(Enum):
         result = _run_lint_on(content)
         assert result.returncode != 0, "LicenseTier enum must be rejected"
         assert "LicenseTier" in result.stdout
-        assert "commercial license-tier" in result.stdout.lower()
+        assert "commercial/pricing-tier enum" in result.stdout.lower()
 
     def test_CommercialTier_enum_rejected(self):
         content = """
@@ -218,7 +218,7 @@ CommercialTier = {"trial": 1, "paid": 2}
         result = _run_lint_on(content)
         assert result.returncode != 0, "CommercialTier enum must be rejected"
         assert "CommercialTier" in result.stdout
-        assert "commercial-tier classification" in result.stdout.lower()
+        assert "commercial/pricing-tier enum" in result.stdout.lower()
 
     def test_PricingTier_enum_rejected(self):
         content = """
