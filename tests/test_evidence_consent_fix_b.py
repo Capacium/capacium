@@ -248,8 +248,8 @@ def test_c6_classification_is_deterministic():
     from src.capacium.trust import IngestCondition, classify_ingest
 
     args = dict(existing_digest="sha256:" + "a" * 64, incoming_digest="sha256:" + "b" * 64)
-    first = classify_ingest(IngestCondition.KONFLIKT, **args)
-    second = classify_ingest(IngestCondition.KONFLIKT, **args)
+    first = classify_ingest(IngestCondition.CONFLICT, **args)
+    second = classify_ingest(IngestCondition.CONFLICT, **args)
     assert first == second
     assert first.to_dict() == second.to_dict()
 
@@ -263,15 +263,15 @@ def _outcome_for(condition_name, **kwargs):
 def test_c6_conditions_map_to_their_documented_outcomes():
     """Each observed condition lands on the outcome the criterion names."""
     assert _outcome_for(
-        "KONFLIKT", existing_digest="sha256:" + "a" * 64, incoming_digest="sha256:" + "b" * 64
+        "CONFLICT", existing_digest="sha256:" + "a" * 64, incoming_digest="sha256:" + "b" * 64
     ) == "conflict"
-    assert _outcome_for("DOPPELT", incoming_digest="sha256:" + "a" * 64) == "duplicate"
-    assert _outcome_for("UMGEZOGENER_VERWEIS") == "moving_reference"
-    assert _outcome_for("FEHLENDE_EVIDENZ") == "unavailable_evidence"
-    assert _outcome_for("LIZENZ_EINSCHRAENKUNG") == "licence_restriction"
-    assert _outcome_for("HOSTILE_METADATEN") == "malicious_metadata"
-    assert _outcome_for("GERINGE_KONFIDENZ") == "quarantined"
-    assert _outcome_for("ABSTIMMUNG_VORBEHALTEN") == "accepted"
+    assert _outcome_for("DUPLICATE", incoming_digest="sha256:" + "a" * 64) == "duplicate"
+    assert _outcome_for("MOVING_REFERENCE") == "moving_reference"
+    assert _outcome_for("MISSING_EVIDENCE") == "unavailable_evidence"
+    assert _outcome_for("LICENCE_RESTRICTION") == "licence_restriction"
+    assert _outcome_for("HOSTILE_METADATA") == "malicious_metadata"
+    assert _outcome_for("LOW_CONFIDENCE") == "quarantined"
+    assert _outcome_for("DECISION_RESERVED") == "accepted"
 
 
 def test_c6_conflict_without_digests_fails_closed():
@@ -279,7 +279,7 @@ def test_c6_conflict_without_digests_fails_closed():
     from src.capacium.trust import IngestCondition, classify_ingest
 
     with pytest.raises(ValueError, match="existing_digest"):
-        classify_ingest(IngestCondition.KONFLIKT, incoming_digest="sha256:" + "b" * 64)
+        classify_ingest(IngestCondition.CONFLICT, incoming_digest="sha256:" + "b" * 64)
 
 
 # ---------------------------------------------------------------------------

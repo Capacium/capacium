@@ -365,38 +365,38 @@ class IngestCondition(str, Enum):
     disposition deterministic: the same condition always maps to the same
     outcome, independent of who reports it.
     """
-    DOPPELT = "doppelt"                              # same digest already ingested
-    KONFLIKT = "konflikt"                            # same coordinates, different digest
-    UMGEZOGENER_VERWEIS = "umgezogener_verweis"      # branch/tag instead of a fixed commit
-    FEHLENDE_EVIDENZ = "fehlende_evidenz"            # evidence source unavailable
-    LIZENZ_EINSCHRAENKUNG = "lizenz_einschraenkung"  # licence forbids redistribution
-    HOSTILE_METADATEN = "hostile_metadaten"          # metadata carries an executable directive
-    GERINGE_KONFIDENZ = "geringe_konfidenz"          # corroboration below threshold
-    ABSTIMMUNG_VORBEHALTEN = "abstimmung_vorbehalten"  # nothing observed, nothing decided
+    DUPLICATE = "duplicate"                          # same digest already ingested
+    CONFLICT = "conflict"                            # same coordinates, different digest
+    MOVING_REFERENCE = "moving_reference"            # branch/tag instead of a fixed commit
+    MISSING_EVIDENCE = "missing_evidence"            # evidence source unavailable
+    LICENCE_RESTRICTION = "licence_restriction"      # licence forbids redistribution
+    HOSTILE_METADATA = "hostile_metadata"            # metadata carries an executable directive
+    LOW_CONFIDENCE = "low_confidence"                # corroboration below threshold
+    DECISION_RESERVED = "decision_reserved"          # nothing observed, nothing decided
 
 
 #: Fixed condition -> outcome mapping. Every IngestCondition appears exactly
 #: once, so an unknown condition cannot fall through to a permissive default.
 _INGEST_OUTCOMES: dict[IngestCondition, IngestOutcome] = {
-    IngestCondition.DOPPELT: IngestOutcome.DUPLICATE,
-    IngestCondition.KONFLIKT: IngestOutcome.CONFLICT,
-    IngestCondition.UMGEZOGENER_VERWEIS: IngestOutcome.MOVING_REFERENCE,
-    IngestCondition.FEHLENDE_EVIDENZ: IngestOutcome.UNAVAILABLE_EVIDENCE,
-    IngestCondition.LIZENZ_EINSCHRAENKUNG: IngestOutcome.LICENCE_RESTRICTION,
-    IngestCondition.HOSTILE_METADATEN: IngestOutcome.MALICIOUS_METADATA,
-    IngestCondition.GERINGE_KONFIDENZ: IngestOutcome.QUARANTINED,
-    IngestCondition.ABSTIMMUNG_VORBEHALTEN: IngestOutcome.ACCEPTED,
+    IngestCondition.DUPLICATE: IngestOutcome.DUPLICATE,
+    IngestCondition.CONFLICT: IngestOutcome.CONFLICT,
+    IngestCondition.MOVING_REFERENCE: IngestOutcome.MOVING_REFERENCE,
+    IngestCondition.MISSING_EVIDENCE: IngestOutcome.UNAVAILABLE_EVIDENCE,
+    IngestCondition.LICENCE_RESTRICTION: IngestOutcome.LICENCE_RESTRICTION,
+    IngestCondition.HOSTILE_METADATA: IngestOutcome.MALICIOUS_METADATA,
+    IngestCondition.LOW_CONFIDENCE: IngestOutcome.QUARANTINED,
+    IngestCondition.DECISION_RESERVED: IngestOutcome.ACCEPTED,
 }
 
 _INGEST_REASONS: dict[IngestCondition, str] = {
-    IngestCondition.DOPPELT: "already-ingested",
-    IngestCondition.KONFLIKT: "fingerprint-mismatch",
-    IngestCondition.UMGEZOGENER_VERWEIS: "unpinned-reference",
-    IngestCondition.FEHLENDE_EVIDENZ: "evidence-unavailable",
-    IngestCondition.LIZENZ_EINSCHRAENKUNG: "no-redistribution",
-    IngestCondition.HOSTILE_METADATEN: "hostile-metadata",
-    IngestCondition.GERINGE_KONFIDENZ: "low-confidence",
-    IngestCondition.ABSTIMMUNG_VORBEHALTEN: "validated",
+    IngestCondition.DUPLICATE: "already-ingested",
+    IngestCondition.CONFLICT: "fingerprint-mismatch",
+    IngestCondition.MOVING_REFERENCE: "unpinned-reference",
+    IngestCondition.MISSING_EVIDENCE: "evidence-unavailable",
+    IngestCondition.LICENCE_RESTRICTION: "no-redistribution",
+    IngestCondition.HOSTILE_METADATA: "hostile-metadata",
+    IngestCondition.LOW_CONFIDENCE: "low-confidence",
+    IngestCondition.DECISION_RESERVED: "validated",
 }
 
 
@@ -421,14 +421,14 @@ def classify_ingest(
 
     detail: Optional[str] = None
 
-    if condition is IngestCondition.KONFLIKT:
+    if condition is IngestCondition.CONFLICT:
         if not existing_digest or not incoming_digest:
             raise ValueError(
                 "classify_ingest: a conflict requires both existing_digest "
                 "and incoming_digest"
             )
         detail = f"existing {existing_digest} != incoming {incoming_digest}"
-    elif condition is IngestCondition.DOPPELT:
+    elif condition is IngestCondition.DUPLICATE:
         if not incoming_digest:
             raise ValueError("classify_ingest: a duplicate requires incoming_digest")
         detail = f"{incoming_digest} already ingested"
