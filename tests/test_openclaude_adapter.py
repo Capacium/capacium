@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -989,6 +990,185 @@ class TestOpenClaudePlatformFixtures:
         result = adapter.status()
         assert isinstance(result, HostStatusResult)
         assert result.framework == "openclaude"
+
+
+# ── CAP117F-OPENCLAUDE-004: declared pin and executable ownership ──────
+
+_PIN_PATH = Path(__file__).resolve().parent / "fixtures" / "openclaude-pin.json"
+
+
+def _load_declared_pin() -> dict:
+    """Load the declared OpenClaude release pin contract."""
+    return json.loads(_PIN_PATH.read_text())
+
+
+def _npm_available() -> bool:
+    return shutil.which("npm") is not None and shutil.which("node") is not None
+
+
+def _identity_violations(
+    executable: Path, package_root: Path,
+) -> list[str]:
+    """Return reasons an executable fails official-package identity.
+
+    An empty list means the executable resolves inside ``package_root``.
+    """
+    violations: list[str] = []
+    resolved = Path(os.path.realpath(executable))
+    root = Path(os.path.realpath(package_root))
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        violations.append(
+            f"executable {resolved} is outside package root {root}"
+        )
+    parts = [part.lower() for part in resolved.parts]
+    if "@gitlawb" in parts:
+        violations.append(f"executable {resolved} belongs to @gitlawb scope")
+    return violations
+
+
+def _record_isolated_install(root: Path, pin: dict) -> dict:
+    """Install the pinned package into ``root`` and record its identity.
+
+    The install is isolated: HOME, npm cache, user config and the package
+    root all live under ``root``. Nothing is installed globally.
+    """
+    home = root / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env.update({
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "npm_config_cache": str(root / "npm-cache"),
+        "npm_config_userconfig": str(home / ".npmrc"),
+        "npm_config_registry": pin["registry"],
+        "npm_config_update_notifier": "false",
+    })
+    spec = f"{pin['package']}@{pin['version']}"
+    result = subprocess.run(
+        [
+            "npm", "install", spec,
+            "--registry", pin["registry"],
+            "--no-audit", "--no-fund", "--save-exact", "--ignore-scripts",
+        ],
+        cwd=root, capture_output=True, text=True, env=env, timeout=300,
+    )
+    assert result.returncode == 0, (
+        f"npm install {spec} failed ({result.returncode}): "
+        f"{(result.stdout + result.stderr)[-2000:]}"
+    )
+
+    lock = json.loads((root / "package-lock.json").read_text())
+    entry = lock["packages"]["node_modules/" + pin["package"]]
+    return {
+        "package": pin["package"],
+        "version": entry["version"],
+        "resolved": entry["resolved"],
+        "integrity": entry["integrity"],
+        "package_root": root / "node_modules" / pin["package"],
+        "bin": root / "node_modules" / ".bin" / pin["binary"],
+    }
+
+
+def _nearest_gitlawb_install() -> Path | None:
+    """Locate an obsolete @gitlawb/openclaude installation, if present."""
+    found = shutil.which("openclaude")
+    if found is None:
+        return None
+    resolved = Path(os.path.realpath(found))
+    if "@gitlawb" not in [part.lower() for part in resolved.parts]:
+        return None
+    return resolved
+
+
+class TestOpenClaudeDeclaredPin:
+    """Criterion 1: the declared release pin is exactly the official one."""
+
+    def test_declared_pin_exists_and_is_official_scope(self):
+        pin = _load_declared_pin()
+        assert pin["package"] == "@twigpine/openclaude"
+        assert pin["version"] == "0.32.0"
+        assert pin["binary"] == "openclaude"
+
+    def test_declared_pin_records_provenance(self):
+        pin = _load_declared_pin()
+        assert pin["registry"] == "https://registry.npmjs.org/"
+        assert pin["integrity"].startswith("sha512-")
+        assert pin["tarball"] == (
+            "https://registry.npmjs.org/@twigpine/openclaude/-/openclaude-0.32.0.tgz"
+        )
+
+    def test_declared_pin_names_obsolete_negative_control(self):
+        pin = _load_declared_pin()
+        assert "@gitlawb/openclaude" in pin["obsolete_scopes"]
+        assert "0.31.0" in pin["obsolete_versions"]
+
+
+@pytest.mark.skipif(
+    not _npm_available(), reason="npm/node unavailable for isolated install",
+)
+class TestOpenClaudeIsolatedInstall:
+    """Criteria 2 and 3: a clean isolated install records identity before
+    any adapter smoke, and the executable resolves under that package root.
+    """
+
+    @pytest.fixture(scope="class")
+    def install_record(self, tmp_path_factory):
+        pin = _load_declared_pin()
+        root = tmp_path_factory.mktemp("openclaude-install")
+        return _record_isolated_install(root, pin)
+
+    def test_install_records_name_version_registry_and_integrity(
+        self, install_record,
+    ):
+        pin = _load_declared_pin()
+        assert install_record["package"] == pin["package"]
+        assert install_record["version"] == pin["version"]
+        assert install_record["resolved"] == pin["tarball"]
+        assert install_record["integrity"] == pin["integrity"]
+
+    def test_installed_package_json_matches_declared_pin(self, install_record):
+        pin = _load_declared_pin()
+        package_root = install_record["package_root"]
+        package_json = json.loads((package_root / "package.json").read_text())
+        assert package_json["name"] == pin["package"]
+        assert package_json["version"] == pin["version"]
+
+    def test_resolved_executable_lives_under_package_root(self, install_record):
+        assert install_record["bin"].exists() or install_record["bin"].is_symlink()
+        violations = _identity_violations(
+            install_record["bin"], install_record["package_root"],
+        )
+        assert violations == []
+
+    def test_installed_binary_reports_qualified_version(self, install_record):
+        result = subprocess.run(
+            [str(install_record["bin"]), "--version"],
+            capture_output=True, text=True, timeout=60,
+        )
+        combined = (result.stdout + result.stderr).strip()
+        assert result.returncode == 0, combined
+        assert _load_declared_pin()["version"] in combined
+
+
+class TestOpenClaudeObsoleteScopeNegativeControl:
+    """Criterion 3 negative control: an obsolete @gitlawb installation can
+    never satisfy the identity gate.
+    """
+
+    def test_obsolete_gitlawb_install_is_rejected(self, tmp_path):
+        obsolete = _nearest_gitlawb_install()
+        if obsolete is None:
+            pytest.skip("@gitlawb/openclaude negative control not installed")
+
+        official_root = tmp_path / "official"
+        official_root.mkdir()
+        violations = _identity_violations(obsolete, official_root)
+        assert violations, (
+            f"obsolete install {obsolete} unexpectedly passed identity check"
+        )
+        assert any("@gitlawb" in reason for reason in violations)
 
 
 # ── Criterion 6: Real OpenClaude smoke path ─────────────────────────────
