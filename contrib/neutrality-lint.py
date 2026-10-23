@@ -24,6 +24,22 @@ PROHIBITED_TERMS = [
     (r'\bVALID_PRICING_MODELS\b', 'pricing taxonomy in Core (MANIFESTO §4) — must be owner-controlled'),
     (r'\bprice_usd\b', 'price enforcement in Core (MANIFESTO §4)'),
     (r'\bVALID_TRIGGER_EVENTS\b', 'trigger event taxonomy in Core — must be owner-controlled'),
+    # Commercial license boundary — CAP117F-CORE-001 criterion 4 (MANIFESTO §4)
+    # Snake_case terms use (?<![a-zA-Z])…(?![a-zA-Z]) so they match within
+    # larger identifiers like LICENSE_TYPE_MAP or customer_licensee_id.
+    (r'(?<![a-zA-Z])licensee_id(?![a-zA-Z])', 'commercial license identifier in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'(?<![a-zA-Z])license_type(?![a-zA-Z])', 'commercial license type classification in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'/v2/licenses', 'commercial license REST endpoint reference in Core (MANIFESTO §4) — belongs in Exchange containment'),
+    (r'(?<![a-zA-Z])paid_license(?![a-zA-Z])', 'paid-license issuance constant in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'\bLicenseTier\b', 'commercial license-tier enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'\bCommercialTier\b', 'commercial-tier classification enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    (r'\bPricingTier\b', 'pricing-tier classification enum in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+]
+
+# Case-sensitive patterns — tier enum member assignments use uppercase by convention;
+# case-insensitive matching would false-positive on ordinary English "free"/"standard".
+PROHIBITED_TERMS_CASE_SENSITIVE = [
+    (r'\b(FREE|TRIAL|STANDARD|ENTERPRISE)\s*=', 'commercial-tier enum member assignment in Core (MANIFESTO §4) — belongs in SevenOfNine'),
 ]
 
 PROHIBITED_IMPORTS = [
@@ -87,6 +103,12 @@ def lint_file(path: Path) -> list[str]:
 
     for pattern, reason in PROHIBITED_TERMS:
         matches = re.findall(pattern, content, re.IGNORECASE)
+        for m in matches:
+            errors.append(
+                f"PROHIBITED: '{m}' in {_display_path(path)} — {reason}"
+            )
+    for pattern, reason in PROHIBITED_TERMS_CASE_SENSITIVE:
+        matches = re.findall(pattern, content)
         for m in matches:
             errors.append(
                 f"PROHIBITED: '{m}' in {_display_path(path)} — {reason}"

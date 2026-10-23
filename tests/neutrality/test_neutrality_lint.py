@@ -153,61 +153,254 @@ result = ED(ok=True)
         assert "Elementeer" in result.stdout
 
 
-class TestPositiveFixtures:
-    def test_clean_python_passes(self):
+# ── CAP117F-CORE-001 criterion 5: negative controls for commercial license boundary ──
+
+
+class TestCommercialLicenseNegativeControls:
+    """Criterion 5: each prohibited commercial pattern injected into a temporary
+    Core file must produce a non-zero exit and a stable diagnostic naming the
+    violated boundary."""
+
+    def test_licensee_id_rejected(self):
         content = """
-def hello():
-    return "capacium"
+def check_access():
+    return {"licensee_id": "cust_abc123"}
 """
         result = _run_lint_on(content)
-        assert result.returncode == 0, f"Clean file should pass: {result.stdout}"
+        assert result.returncode != 0, "licensee_id must be rejected"
+        assert "licensee_id" in result.stdout.lower()
+        assert "commercial license identifier" in result.stdout.lower()
 
-    def test_known_benign_literals(self):
+    def test_license_type_rejected(self):
         content = """
-# These look like prohibited terms but should NOT match
-def process_item(item):
-    pass
-
-class Kind(Enum):
-    SKILL = "skill"
-    BUNDLE = "bundle"
+LICENSE_TYPE_MAP = {"pro": "commercial"}
 """
         result = _run_lint_on(content)
-        assert result.returncode == 0, f"Benign file should pass: {result.stdout}"
+        assert result.returncode != 0, "license_type must be rejected"
+        assert "license_type" in result.stdout.lower()
+        assert "commercial license type" in result.stdout.lower()
 
-    def test_descriptive_docstring_passes(self):
-        content = '"""Does NOT contain entitlement, permit, deny decisions."""\n'
-        result = _run_lint_on(content)
-        assert result.returncode == 0, f"Descriptive docstring should pass: {result.stdout}"
-
-    def test_trust_boundary_docstring_passes(self):
+    def test_v2_licenses_path_rejected(self):
         content = '''
-class EvidenceVerificationResult:
-    """Core boundary result.
-
-    Contains ONLY verification facts. Does NOT contain:
-    - permit/deny decisions
-    - entitlement or authorization claims
-    - commercial actions
-    - lifecycle transitions
-    """
-    status: str = "VALID"
+def fetch_license(token):
+    return requests.get("/v2/licenses/validate", headers={"Authorization": f"Bearer {token}"})
 '''
         result = _run_lint_on(content)
-        assert result.returncode == 0, f"Trust boundary docstring should pass: {result.stdout}"
+        assert result.returncode != 0, "/v2/licenses must be rejected"
+        assert "/v2/licenses" in result.stdout
+        assert "commercial" in result.stdout.lower()
 
-    def test_legacy_reference_docstring_passes(self):
+    def test_paid_license_rejected(self):
+        content = """
+class CapabilityLicense:
+    status = "paid_license"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "paid_license must be rejected"
+        assert "paid_license" in result.stdout
+        assert "paid-license" in result.stdout.lower()
+
+    def test_LicenseTier_enum_rejected(self):
+        content = """
+class LicenseTier(Enum):
+    FREE = "free"
+    PRO = "pro"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "LicenseTier enum must be rejected"
+        assert "LicenseTier" in result.stdout
+        assert "commercial license-tier" in result.stdout.lower()
+
+    def test_CommercialTier_enum_rejected(self):
+        content = """
+CommercialTier = {"trial": 1, "paid": 2}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "CommercialTier enum must be rejected"
+        assert "CommercialTier" in result.stdout
+        assert "commercial-tier classification" in result.stdout.lower()
+
+    def test_PricingTier_enum_rejected(self):
+        content = """
+class PricingTier(IntEnum):
+    FREE = 0
+    STANDARD = 1
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "PricingTier enum must be rejected"
+        assert "PricingTier" in result.stdout
+        assert "pricing-tier" in result.stdout.lower()
+
+    COMMERCIAL_TIER_ASSIGNMENTS = [
+        "FREE = 'free'",
+        "TRIAL = 'trial'",
+        "STANDARD = 'standard'",
+        "ENTERPRISE = 'enterprise'",
+    ]
+
+    @pytest.mark.parametrize("evil_line", COMMERCIAL_TIER_ASSIGNMENTS)
+    def test_commercial_tier_enum_member_rejected(self, evil_line):
+        content = f"\nclass LicensePlan:\n    {evil_line}\n"
+        result = _run_lint_on(content)
+        assert result.returncode != 0, f"Commercial tier assignment must be rejected: {evil_line}"
+        assert "commercial-tier enum member" in result.stdout.lower()
+        assert evil_line.split()[0] in result.stdout
+
+    def test_licensee_id_in_dataclass_rejected(self):
+        content = """
+@dataclass
+class LicenseRecord:
+    licensee_id: str
+    license_type: str
+    tier: str = "paid_license"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, "Combined commercial fields must be rejected"
+        assert "licensee_id" in result.stdout.lower()
+        assert "license_type" in result.stdout.lower()
+        assert "paid_license" in result.stdout.lower()
+
+    def test_v2_licenses_in_router_mount_rejected(self):
         content = '''
-class LegacyAdapter:
-    """Reads R4 legacy evidence.
-
-    Does NOT interpret entitlement decisions or commercial actions.
-    Preserves opaque bytes for migration only.
-    """
-    pass
+app.mount("/v2/licenses", license_router)
 '''
         result = _run_lint_on(content)
-        assert result.returncode == 0, f"Legacy reference docstring should pass: {result.stdout}"
+        assert result.returncode != 0, "Router mount of /v2/licenses must be rejected"
+        assert "/v2/licenses" in result.stdout
+
+
+# ── CAP117F-CORE-001 criterion 6: positive controls ──
+
+
+class TestLicenseBoundaryPositiveControls:
+    """Criterion 6: SPDX identifiers, manifest package-licence fields, dependency
+    licence metadata, copyright notices and the repository LICENSE file remain
+    accepted by the neutrality lint."""
+
+    def test_spdx_mit_passes(self):
+        content = '''
+"""MIT-licensed utility module."""
+license = "MIT"
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"SPDX MIT must pass: {result.stdout}"
+
+    def test_spdx_apache2_passes(self):
+        content = '''
+"""Apache-2.0 licensed."""
+LICENSE_ID = "Apache-2.0"
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"SPDX Apache-2.0 must pass: {result.stdout}"
+
+    def test_spdx_bsd_passes(self):
+        content = """
+LICENSE = "BSD-3-Clause"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"SPDX BSD-3-Clause must pass: {result.stdout}"
+
+    SPDX_IDENTIFIERS = [
+        "MIT",
+        "Apache-2.0",
+        "BSD-3-Clause",
+        "BSD-2-Clause",
+        "GPL-3.0-only",
+        "GPL-3.0-or-later",
+        "LGPL-3.0-only",
+        "AGPL-3.0-only",
+        "MPL-2.0",
+        "ISC",
+        "Unlicense",
+        "CC0-1.0",
+    ]
+
+    @pytest.mark.parametrize("spdx_id", SPDX_IDENTIFIERS)
+    def test_all_common_spdx_identifiers_pass(self, spdx_id):
+        content = f'\nlicense = "{spdx_id}"\n'
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"SPDX identifier '{spdx_id}' must pass: {result.stdout}"
+        )
+
+    def test_manifest_package_license_field_passes(self):
+        content = '''
+@dataclass
+class Manifest:
+    """Capacium capability manifest."""
+    kind: str = ""
+    name: str = ""
+    license: str = ""  # package-level SPDX identifier
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"Manifest license field must pass: {result.stdout}"
+        )
+
+    def test_dependency_license_metadata_passes(self):
+        content = """
+dep = {
+    "name": "requests",
+    "version": "2.31.0",
+    "license": "Apache-2.0",
+    "license_text": "...",
+    "license_url": "https://...",
+}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"Dependency license metadata must pass: {result.stdout}"
+        )
+
+    def test_copyright_notice_passes(self):
+        content = '''
+# Copyright (c) 2026 Capacium Contributors
+# SPDX-License-Identifier: Apache-2.0
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"Copyright notice must pass: {result.stdout}"
+        )
+
+    def test_license_file_reference_passes(self):
+        content = '''
+"""See LICENSE file at repository root for full license text."""
+LICENSE_PATH = Path(__file__).parent.parent / "LICENSE"
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"LICENSE file reference must pass: {result.stdout}"
+        )
+
+    def test_license_in_registry_detail_passes(self):
+        content = """
+detail = {
+    "license": r.get("license", ""),
+    "license_url": r.get("license_url"),
+}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"Registry license detail fields must pass: {result.stdout}"
+        )
+
+    def test_spdx_validation_message_passes(self):
+        content = '''
+raise ManifestError("Add SPDX identifier e.g. license: MIT")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"SPDX validation message must pass: {result.stdout}"
+        )
+
+    def test_license_init_prompt_passes(self):
+        content = '''
+manifest.license = _prompt_with_default("License", "Apache-2.0").strip()
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            f"License init prompt must pass: {result.stdout}"
+        )
 
     def test_actual_core_passes(self):
         result = subprocess.run(
