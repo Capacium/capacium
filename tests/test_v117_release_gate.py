@@ -3008,9 +3008,16 @@ class TestCriterion1ManifestAndVerdict:
             s != "pass" and g != "distribution"
             for g, s in statuses.items()
         )
-        if non_dist_failures:
+        # Gate 8 pre_publication may be fail even when distribution is pending
+        # (criterion 5: version-source mismatch). The sub-check receipts
+        # determine the actual Gate 8 halves.
+        gate_8_pre = (verdict.get("gate_8") or {}).get("pre_publication") or {}
+        gate_8_pre_fail = gate_8_pre.get("status") == "fail"
+
+        if non_dist_failures or gate_8_pre_fail:
             assert verdict["release"] == "BLOCKED", (
-                "a non-distribution gate that is not pass must block the release"
+                "a non-distribution gate that is not pass, or a failing Gate 8 "
+                "pre_publication half, must block the release"
             )
             assert verdict["blocking_gates"], "a blocked release must name its blockers"
             for gate in verdict["blocking_gates"]:
