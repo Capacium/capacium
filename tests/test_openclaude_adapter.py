@@ -8,13 +8,16 @@ Criterion 3: cap host, cap list, cap info, cap reconcile, cap repair and
              cap doctor report OpenClaude through the shared state and
              finding contracts.
 
-CAP117F-OPENCLAUDE-004 declares a single qualified distribution identity
-(``@twigpine/openclaude@0.32.0``) in ``fixtures/openclaude-pin.json``. The
-identity gate below rejects any other package, version, registry URL,
-integrity or executable ownership BEFORE the adapter mutates host state,
-as does a pin declaration that itself diverges from the official identity.
-The qualified lifecycle exercises Capacium's adapter paths rather than
-``which openclaude`` and ``openclaude --version`` alone.
+CAP117F-OPENCLAUDE-004 declares exactly one release pin,
+``@twigpine/openclaude@0.32.0``, in ``fixtures/openclaude-pin.json``. That
+file records the *declaration*. Package identity becomes evidence only when
+an isolated install matches the declaration field by field (package name,
+exact version, registry tarball URL, integrity) and the resolved executable
+is proven to live under that package root. The identity gate below rejects
+any other package, version, registry URL, integrity or executable ownership
+BEFORE the adapter mutates host state, as does a pin declaration that itself
+diverges. The qualified lifecycle exercises Capacium's adapter paths rather
+than ``which openclaude`` and ``openclaude --version`` alone.
 
 Criterion 4: ``TestOpenClaudeIdentityGate`` proves each mismatch aborts
              before the adapter writes a skill symlink or MCP config.
@@ -23,12 +26,24 @@ Criterion 5: ``TestOpenClaudeQualifiedLifecycle`` runs
              against the isolated pinned binary and preserves foreign
              config entries.
 Criterion 6: those lifecycle tests drive adapter paths, not ``which``.
-Criterion 7: ``TestOpenClaudeHostClassifiedSmoke`` classifies a real-binary
-             smoke by host and availability instead of assuming identity.
-Criterion 9: a global ``@gitlawb`` install is a negative control only.
+Criterion 7: ``TestOpenClaudeHostClassifiedSmoke`` and
+             ``TestOpenClaudeRealSmokeClassification`` classify a real-binary
+             smoke by host and availability instead of assuming identity;
+             a smoke that cannot run reports ``not-runnable`` with a reason.
+
+Claim boundary (criterion 8): the declaration lives in the pin fixture. A
+test whose name claims qualified/official/verified/proven must carry the
+matching identity check, and a ``--version`` assertion claims a version
+string only. ``TestOpenClaudeEvidenceClaims`` enforces that boundary, so no
+test asserts a package identity it did not verify. The npm invocations are
+always the exact ``package@version`` from the fixture, never ``latest``.
+
+Criterion 9: a global ``@gitlawb/openclaude@0.31.0`` install is a negative
+             control only and never satisfies the release gate.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import platform
@@ -1148,6 +1163,23 @@ def _require_qualified_identity(record: dict, pin: dict) -> None:
         raise OpenClaudePinViolation("; ".join(violations))
 
 
+def _release_gate_verdict(record: dict, pin: dict) -> dict:
+    """Return the gate verdict and the evidence it is entitled to cite.
+
+    ``evidence`` is ``None`` unless the record is qualified, so a rejected
+    install can never be quoted as release evidence.
+    """
+    violations = _pin_violations(record, pin)
+    qualified = not violations
+    return {
+        "qualified": qualified,
+        "violations": violations,
+        "evidence": (
+            f"{record['package']}@{record['version']}" if qualified else None
+        ),
+    }
+
+
 def _owning_package_metadata(executable: Path) -> tuple[Path | None, dict | None]:
     """Return the nearest package root and its ``package.json`` metadata."""
     resolved = Path(os.path.realpath(executable))
@@ -1219,13 +1251,15 @@ def pinned_on_path(pinned_install, monkeypatch) -> Path:
 class TestOpenClaudeDeclaredPin:
     """Criterion 1: the declared release pin is exactly the official one."""
 
-    def test_declared_pin_exists_and_is_official_scope(self):
+    def test_declared_pin_declares_expected_scope(self):
+        """The fixture states the declared scope; proof is a separate check."""
         pin = _load_declared_pin()
         assert pin["package"] == "@twigpine/openclaude"
         assert pin["version"] == "0.32.0"
         assert pin["binary"] == "openclaude"
 
-    def test_declared_pin_records_provenance(self):
+    def test_declared_pin_records_source_metadata(self):
+        """Registry, tarball and checksum are declared, not inferred."""
         pin = _load_declared_pin()
         assert pin["registry"] == "https://registry.npmjs.org/"
         assert pin["integrity"].startswith("sha512-")
@@ -1275,7 +1309,15 @@ class TestOpenClaudeIsolatedInstall:
         )
         assert violations == []
 
-    def test_installed_binary_reports_qualified_version(self, install_record):
+    def test_installed_binary_version_string_contains_declared_version(
+        self, install_record,
+    ):
+        """The binary prints the declared version string.
+
+        This is a narrow claim about output text, not package identity:
+        identity is established by ``_pin_violations`` and executable
+        ownership, never by parsing ``--version``.
+        """
         result = subprocess.run(
             [str(install_record["bin"]), "--version"],
             capture_output=True, text=True, timeout=60,
@@ -1452,10 +1494,14 @@ class TestOpenClaudeIdentityGate:
             record, "outside package root", tmp_home, tmp_path,
         )
 
-    def test_unproven_executable_ownership_fails_before_mutation(
+    def test_missing_executable_ownership_fails_before_mutation(
         self, tmp_home, tmp_path,
     ):
-        """A record that omits where the binary lives cannot prove ownership."""
+        """A record that omits where the binary lives fails closed.
+
+        Ownership is evidence only when the executable path and package
+        root are both present and one contains the other.
+        """
         pin = _load_declared_pin()
         record = _qualified_record(pin, tmp_path / "install")
         del record["package_root"]
@@ -1767,3 +1813,81 @@ class TestOpenClaudeRealSmokeClassification:
 
     def test_real_smoke_hosts_cover_the_platform_fixture_matrix(self):
         assert _REAL_SMOKE_HOSTS == tuple(_PLATFORM_VALUES)
+
+
+# ── Criterion 8: claimed evidence matches what was verified ─────────────
+
+_EVIDENCE_WORDS = ("qualified", "official", "verified", "proven")
+
+_IDENTITY_EVIDENCE_TOKENS = (
+    "_pin_violations(",
+    "_require_qualified_identity(",
+    "_identity_violations(",
+    "_owning_package_metadata(",
+    "install_record[",
+)
+
+
+def _assertion_claiming_test_names() -> list[str]:
+    """Return test names that claim identity evidence without a check."""
+    source = Path(__file__).read_text()
+    tree = ast.parse(source)
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test_"):
+            continue
+        if not any(word in node.name for word in _EVIDENCE_WORDS):
+            continue
+        body = ast.get_source_segment(source, node) or ""
+        if not any(token in body for token in _IDENTITY_EVIDENCE_TOKENS):
+            offenders.append(node.name)
+    return offenders
+
+
+class TestOpenClaudeEvidenceClaims:
+    """Criterion 8: test names, docstrings and evidence claim only the
+    identity that the test actually verified.
+    """
+
+    def test_module_states_the_declaration_and_claim_boundary(self):
+        """The module docstring separates the declared pin from proof."""
+        docstring = ast.get_docstring(ast.parse(Path(__file__).read_text()))
+        assert docstring is not None
+        normalized = " ".join(docstring.split())
+        assert "Claim boundary" in normalized
+        assert "declaration" in normalized
+        assert "version string" in normalized
+
+    def test_evidence_claiming_test_names_carry_identity_checks(self):
+        """A name that says qualified/official/verified/proven must carry
+        the matching identity check in its body."""
+        assert _assertion_claiming_test_names() == []
+
+    def test_install_spec_is_pinned_never_latest(self):
+        """The suite installs the exact declared version, never a range or
+        an unpinned dist-tag that could drift after the pin was reviewed."""
+        source = Path(__file__).read_text()
+        tree = ast.parse(source)
+        install = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_record_isolated_install"
+        )
+        body = ast.get_source_segment(source, install) or ""
+        assert 'spec = f"{pin[\'package\']}@{pin[\'version\']}"' in body
+        assert "latest" not in body
+        pin = _load_declared_pin()
+        assert pin["change_policy"]
+
+    def test_version_smoke_documents_its_narrow_claim(self):
+        """The ``--version`` smoke claims a version string, not identity."""
+        docstring = (
+            TestOpenClaudeIsolatedInstall
+            .test_installed_binary_version_string_contains_declared_version
+            .__doc__
+        )
+        assert docstring is not None
+        assert "version string" in docstring
+        assert "identity" in docstring
