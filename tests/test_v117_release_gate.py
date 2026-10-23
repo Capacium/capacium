@@ -839,19 +839,19 @@ class TestCriterion2PlatformFixtures:
 
         monkeypatch.setattr(platform, "system", lambda: system)
         assert classify_ingest(
-            IngestCondition.GERINGE_KONFIDENZ
+            IngestCondition.LOW_CONFIDENCE
         ).outcome is IngestOutcome.QUARANTINED
         assert classify_ingest(
-            IngestCondition.HOSTILE_METADATEN
+            IngestCondition.HOSTILE_METADATA
         ).outcome is IngestOutcome.MALICIOUS_METADATA
         conflict = classify_ingest(
-            IngestCondition.KONFLIKT,
+            IngestCondition.CONFLICT,
             existing_digest="sha256:" + "1" * 64,
             incoming_digest="sha256:" + "2" * 64,
         )
         assert conflict.outcome is IngestOutcome.CONFLICT
         with pytest.raises(ValueError):
-            classify_ingest(IngestCondition.KONFLIKT)
+            classify_ingest(IngestCondition.CONFLICT)
 
 
 # ──────────────────────────────────────────────────────────────────────────

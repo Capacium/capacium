@@ -266,13 +266,13 @@ def _install_disposition(existing_before, fingerprint: str):
 
     incoming = "sha256:" + fingerprint
     if existing_before is None:
-        return classify_ingest(IngestCondition.ABSTIMMUNG_VORBEHALTEN)
+        return classify_ingest(IngestCondition.DECISION_RESERVED)
 
     existing = "sha256:" + existing_before.fingerprint
     if existing == incoming:
-        return classify_ingest(IngestCondition.DOPPELT, incoming_digest=incoming)
+        return classify_ingest(IngestCondition.DUPLICATE, incoming_digest=incoming)
     return classify_ingest(
-        IngestCondition.KONFLIKT,
+        IngestCondition.CONFLICT,
         existing_digest=existing,
         incoming_digest=incoming,
     )
