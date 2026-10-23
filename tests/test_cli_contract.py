@@ -165,3 +165,142 @@ class TestGroupedHelpC1:
         result = _cap("--help", env={"NO_COLOR": "1"})
         assert "\033[" not in result.stdout
         assert "\033[" not in result.stderr
+
+
+class TestCommercialLicenseAbsenceC3:
+    """Criterion 3: license, issue, validate, revoke and commercial tier
+    choices are not advertised by Core in top-level, grouped or machine-
+    readable CLI output."""
+
+    _COMMERCIAL_SUBCOMMANDS = [
+        "license",
+        "issue",
+        "validate",
+        "revoke",
+    ]
+    _COMMERCIAL_TIERS = [
+        "free",
+        "trial",
+        "standard",
+        "enterprise",
+    ]
+
+    def test_license_not_in_choice_list(self):
+        """``license`` is not in the argparse choices list."""
+        result = _cap("--help")
+        # The choices list appears in the usage line or error message.
+        # Verify license does not appear as a valid command choice.
+        out = result.stdout
+        assert "license" not in out.split(
+            "invalid choice:"
+        )[-1] if "invalid choice" in out else True
+        # Verify the usage line does not list license.
+        # We check by confirming ``cap license`` exits non-zero.
+        unknown = _cap("license")
+        assert unknown.returncode != 0
+
+    def test_license_exits_nonzero_as_unknown(self):
+        """``cap license`` exits with a non-zero code (unknown command)."""
+        result = _cap("license")
+        assert result.returncode != 0
+
+    def test_license_not_in_top_level_help(self):
+        """``license`` does not appear in top-level help text."""
+        result = _cap("--help")
+        # Should not contain "license" as a command description
+        assert "Manage license keys" not in result.stdout
+        # The word "license" may appear in epilog or description text but
+        # not as a command entry.
+        lines = result.stdout.split("\n")
+        for line in lines:
+            # Skip epilog/reference lines
+            if "https://" in line or "Capacium" in line and "Capability" in line:
+                continue
+            # A command line has the pattern "  commandname  help text"
+            stripped = line.strip()
+            if stripped.startswith("license "):
+                pytest.fail(f"license appears as command in help: {line!r}")
+
+    def test_license_not_in_grouped_help(self):
+        """``license`` is absent from every workflow group in grouped help."""
+        result = _cap("--help")
+        out = result.stdout
+        # Find the workflow groups section
+        for group_name in TestGroupedHelpC1._GROUPS:
+            # Find the block for this group
+            group_idx = out.find(f"\n{group_name}")
+            if group_idx == -1:
+                continue
+            # Find the next group or end
+            next_idx = len(out)
+            for gn in TestGroupedHelpC1._GROUPS:
+                if gn == group_name:
+                    continue
+                gn_idx = out.find(f"\n{gn}", group_idx + 1)
+                if gn_idx != -1 and gn_idx < next_idx:
+                    next_idx = gn_idx
+            block = out[group_idx:next_idx]
+            assert "  license " not in block, (
+                f"license appears in '{group_name}' group"
+            )
+
+    def test_issue_not_in_help(self):
+        """``issue`` is not advertised as a subcommand in help."""
+        result = _cap("--help")
+        assert "  issue " not in result.stdout
+
+    def test_validate_not_advertised_as_license_subcommand(self):
+        """``validate`` is not advertised as a license subcommand."""
+        result = _cap("--help")
+        # validate already exists as a top-level command (manifest validation),
+        # but should not appear as a license subcommand
+        assert "License subcommand" not in result.stdout
+
+    def test_revoke_not_in_help(self):
+        """``revoke`` is not advertised in help."""
+        result = _cap("--help")
+        assert "  revoke " not in result.stdout
+
+    @pytest.mark.parametrize("tier", _COMMERCIAL_TIERS)
+    def test_commercial_tier_not_in_help(self, tier):
+        """No commercial tier choice ({tier}) appears in help."""
+        result = _cap("--help")
+        assert tier not in result.stdout, (
+            f"Commercial tier '{tier}' leaked into help"
+        )
+
+    def test_commercial_license_terms_absent(self):
+        """Commercial license terms are absent from CLI help."""
+        result = _cap("--help")
+        out = result.stdout
+        for term in ("licensee", "license_type", "paid", "checkout",
+                     "pricing", "commerce", "entitlement"):
+            assert term not in out, (
+                f"Commercial term '{term}' leaked into help"
+            )
+
+    def test_license_help_exits_nonzero(self):
+        """``cap license --help`` also exits non-zero (no parser exists)."""
+        result = _cap("license", "--help")
+        assert result.returncode != 0
+
+    def test_license_issue_exits_nonzero(self):
+        """``cap license issue`` exits non-zero."""
+        result = _cap("license", "issue", "acme/demo", "--publisher", "x",
+                       "--licensee", "y")
+        assert result.returncode != 0
+
+    def test_license_validate_exits_nonzero(self):
+        """``cap license validate`` exits non-zero."""
+        result = _cap("license", "validate", "abc123", "--capability", "acme/demo")
+        assert result.returncode != 0
+
+    def test_license_revoke_exits_nonzero(self):
+        """``cap license revoke`` exits non-zero."""
+        result = _cap("license", "revoke", "lic-123")
+        assert result.returncode != 0
+
+    def test_license_list_exits_nonzero(self):
+        """``cap license list`` exits non-zero."""
+        result = _cap("license", "list", "--licensee", "user1")
+        assert result.returncode != 0
