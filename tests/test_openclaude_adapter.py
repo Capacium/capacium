@@ -1180,13 +1180,17 @@ def _run_qualified_lifecycle(
 def pinned_install(tmp_path_factory) -> dict:
     """Isolated install of the declared pin, shared by pin-aware tests.
 
-    Skips, with an explicit reason, when the host lacks npm/node. This is
-    the only source of executable evidence for the release gate.
+    Skips, with the explicit host/availability verdict, when the smoke
+    cannot run. This is the only source of executable evidence for the
+    release gate.
     """
-    if not _npm_available():
+    classification = _classify_real_binary_smoke(
+        platform.system(), _npm_available(),
+    )
+    if classification["state"] != "runnable":
         pytest.skip(
-            "npm/node unavailable: pinned real-binary smoke classified as "
-            "not runnable on this host"
+            "pinned real-binary smoke classified not-runnable: "
+            f"{classification['reason']}"
         )
     pin = _load_declared_pin()
     root = tmp_path_factory.mktemp("openclaude-pinned-install")
@@ -1613,6 +1617,43 @@ class TestOpenClaudeQualifiedLifecycle:
 
 # ── Criterion 7: host-classified real smoke (identity-aware) ────────────
 
+_REAL_SMOKE_HOSTS = tuple(_PLATFORM_VALUES)
+
+
+def _classify_real_binary_smoke(host_system: str, npm_available: bool) -> dict:
+    """Classify the real-binary smoke by host and availability.
+
+    The verdict is explicit: a smoke that cannot run reports
+    ``not-runnable`` with a reason and never masquerades as evidence.
+    """
+    finding = {
+        "host_system": host_system,
+        "npm_available": npm_available,
+    }
+    if host_system not in _REAL_SMOKE_HOSTS:
+        return {
+            **finding,
+            "state": "not-runnable",
+            "reason": (
+                f"unsupported host {host_system!r}: fixture matrix covers "
+                f"{list(_REAL_SMOKE_HOSTS)}"
+            ),
+        }
+    if not npm_available:
+        return {
+            **finding,
+            "state": "not-runnable",
+            "reason": (
+                "npm/node unavailable: the isolated pinned install cannot run"
+            ),
+        }
+    return {
+        **finding,
+        "state": "runnable",
+        "reason": f"npm available on {host_system}: pinned install is runnable",
+    }
+
+
 class TestOpenClaudeHostClassifiedSmoke:
     """Criterion 7: a real-binary smoke is classified by host and
     availability instead of assuming a package identity.
@@ -1681,3 +1722,48 @@ class TestOpenClaudeHostClassifiedSmoke:
             f"{result.returncode}: {combined}"
         )
         assert _load_declared_pin()["version"] in combined
+
+
+# ── Criterion 7: explicit host and availability classification ──────────
+
+class TestOpenClaudeRealSmokeClassification:
+    """Criterion 7: the real-binary smoke is classified by host and
+    availability, so a smoke that does not run is an explicit verdict with
+    a reason instead of silently vanishing from the suite.
+    """
+
+    @pytest.mark.parametrize("host_system", ["Darwin", "Linux", "Windows"])
+    def test_supported_host_with_npm_is_runnable(self, host_system):
+        classification = _classify_real_binary_smoke(host_system, True)
+        assert classification["state"] == "runnable"
+        assert classification["host_system"] == host_system
+        assert classification["npm_available"] is True
+        assert classification["reason"]
+
+    @pytest.mark.parametrize("host_system", ["Darwin", "Linux", "Windows"])
+    def test_supported_host_without_npm_is_not_runnable(self, host_system):
+        classification = _classify_real_binary_smoke(host_system, False)
+        assert classification["state"] == "not-runnable"
+        assert classification["host_system"] == host_system
+        assert classification["npm_available"] is False
+        assert "npm" in classification["reason"]
+
+    def test_unknown_host_is_not_runnable_even_with_npm(self):
+        classification = _classify_real_binary_smoke("Plan9", True)
+        assert classification["state"] == "not-runnable"
+        assert "unsupported host" in classification["reason"]
+
+    def test_current_host_classification_matches_availability(self):
+        host_system = platform.system()
+        npm_available = _npm_available()
+        classification = _classify_real_binary_smoke(host_system, npm_available)
+        expected = (
+            "runnable" if npm_available and host_system in _REAL_SMOKE_HOSTS
+            else "not-runnable"
+        )
+        assert classification["state"] == expected
+        assert classification["host_system"] == host_system
+        assert classification["npm_available"] is npm_available
+
+    def test_real_smoke_hosts_cover_the_platform_fixture_matrix(self):
+        assert _REAL_SMOKE_HOSTS == tuple(_PLATFORM_VALUES)
