@@ -568,7 +568,7 @@ def license_revoke(license_id):
             "Composite reintroduction must be rejected"
         )
         assert len(result.stdout) > 0, (
-            f"Composite reintroduction must produce lint errors, got empty stdout"
+            "Composite reintroduction must produce lint errors, got empty stdout"
         )
 
     def test_tier_map_dict_rejected(self):

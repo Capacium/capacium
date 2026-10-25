@@ -363,7 +363,6 @@ def _discover_json_commands():
     """
     import ast
     cli_py = Path(__file__).resolve().parent.parent / "src" / "capacium" / "cli.py"
-    source_lines = cli_py.read_text().splitlines()
     tree = ast.parse(cli_py.read_text())
 
     # Collect all AST nodes with line numbers for document-order processing.
