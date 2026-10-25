@@ -478,6 +478,38 @@ description: A test capability
             pytest.fail(f"cap reconcile --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap reconcile --json")
 
+    def test_update_json_no_commercial_keys(self, tmp_path):
+        """``cap update --json`` against a nonexistent capability still emits
+        valid JSON free of commercial keys or tier values."""
+        import json
+        result = _cap("update", "--json", "nonexistent/cap99999",
+                       env={"HOME": str(tmp_path)})
+        # Non-zero exit is expected (cap not found), but stdout must be JSON.
+        assert result.returncode != 0, (
+            "cap update --json should fail for nonexistent cap"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap update --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap update --json (error payload)")
+
+    def test_remove_json_no_commercial_keys(self, tmp_path):
+        """``cap remove --json`` against a nonexistent capability still emits
+        valid JSON free of commercial keys or tier values."""
+        import json
+        result = _cap("remove", "--json", "nonexistent/cap99999",
+                       env={"HOME": str(tmp_path)})
+        # Non-zero exit is expected (cap not found), but stdout must be JSON.
+        assert result.returncode != 0, (
+            "cap remove --json should fail for nonexistent cap"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap remove --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap remove --json (error payload)")
+
     def test_help_subcommands_show_json_flag(self):
         """Key subcommand help texts advertise --json on the commands that
         emit machine-readable output."""
@@ -485,6 +517,8 @@ description: A test capability
             ("list",),
             ("search",),
             ("validate",),
+            ("update",),
+            ("remove",),
             ("config", "fingerprint"),
             ("host", "status"),
             ("reconcile",),
