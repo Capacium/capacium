@@ -403,6 +403,63 @@ def issue_license(cap_id):
 # ── CAP117F-CORE-001 criterion 6: positive controls ──
 
 
+class TestPositiveFixtures:
+    def test_clean_python_passes(self):
+        content = """
+def hello():
+    return "capacium"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Clean file should pass: {result.stdout}"
+
+    def test_known_benign_literals(self):
+        content = """
+# These look like prohibited terms but should NOT match
+def process_item(item):
+    pass
+
+class Kind(Enum):
+    SKILL = "skill"
+    BUNDLE = "bundle"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Benign file should pass: {result.stdout}"
+
+    def test_descriptive_docstring_passes(self):
+        content = '"""Does NOT contain entitlement, permit, deny decisions."""\n'
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Descriptive docstring should pass: {result.stdout}"
+
+    def test_trust_boundary_docstring_passes(self):
+        content = '''
+class EvidenceVerificationResult:
+    """Core boundary result.
+
+    Contains ONLY verification facts. Does NOT contain:
+    - permit/deny decisions
+    - entitlement or authorization claims
+    - commercial actions
+    - lifecycle transitions
+    """
+    status: str = "VALID"
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Trust boundary docstring should pass: {result.stdout}"
+
+    def test_legacy_reference_docstring_passes(self):
+        content = '''
+class LegacyAdapter:
+    """Reads R4 legacy evidence.
+
+    Does NOT interpret entitlement decisions or commercial actions.
+    Preserves opaque bytes for migration only.
+    """
+    pass
+'''
+        result = _run_lint_on(content)
+        assert result.returncode == 0, f"Legacy reference docstring should pass: {result.stdout}"
+
+
 class TestLicenseBoundaryPositiveControls:
     """Criterion 6: SPDX identifiers, manifest package-licence fields, dependency
     licence metadata, copyright notices and the repository LICENSE file remain

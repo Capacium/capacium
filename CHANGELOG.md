@@ -14,16 +14,6 @@
   endpoint references and tier enums, while continuing to accept SPDX
   identifiers, manifest package-licence fields and copyright notices.
 
-### Fixed
-
-- **Release state machine corrected.** Gate 8 no longer emits BLOCKED or rename
-  instructions when only post-publication checks are pending. PREPARED is
-  emitted when all pre-publication gates pass and post-publication checks are
-  explicitly pending; READY/RELEASED requires all fourteen gates to pass.
-- **OpenClaude identity qualification.** The release gate now proves the
-  installed binary belongs to the official `@twigpine/openclaude@0.32.0`
-  package rather than accepting any binary named `openclaude`.
-
 ## [1.1.6] - 2026-09-28
 
 ### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)
