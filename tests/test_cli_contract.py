@@ -417,13 +417,83 @@ description: A test capability
             pytest.fail(f"cap validate --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap validate --json")
 
+    def test_config_fingerprint_json_no_commercial_keys(self, tmp_path):
+        """``cap config fingerprint --json`` contains no commercial keys or
+        tier values."""
+        import json
+        result = _cap("config", "fingerprint", "--json",
+                       env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap config fingerprint --json failed: {result.stderr}"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap config fingerprint --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap config fingerprint --json")
+
+    def test_host_status_json_no_commercial_keys(self, tmp_path):
+        """``cap host status --json`` contains no commercial keys or tier
+        values."""
+        import json
+        result = _cap("host", "status", "--json",
+                       env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap host status --json failed: {result.stderr}"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap host status --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap host status --json")
+
+    def test_clean_test_artifacts_json_no_commercial_keys(self, tmp_path):
+        """``cap clean-test-artifacts --json`` contains no commercial keys
+        or tier values."""
+        import json
+        result = _cap("clean-test-artifacts", "--json",
+                       env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap clean-test-artifacts --json failed: {result.stderr}"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(
+                f"cap clean-test-artifacts --json output is not valid JSON: {e}"
+            )
+        _assert_no_commercial_keys(data, "cap clean-test-artifacts --json")
+
+    def test_reconcile_json_no_commercial_keys(self, tmp_path):
+        """``cap reconcile --json`` contains no commercial keys or tier
+        values."""
+        import json
+        result = _cap("reconcile", "--json", env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap reconcile --json failed: {result.stderr}"
+        )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap reconcile --json output is not valid JSON: {e}")
+        _assert_no_commercial_keys(data, "cap reconcile --json")
+
     def test_help_subcommands_show_json_flag(self):
         """Key subcommand help texts advertise --json on the commands that
         emit machine-readable output."""
-        for cmd in ("list", "search", "validate"):
-            result = _cap(cmd, "--help")
+        for cmd in (
+            ("list",),
+            ("search",),
+            ("validate",),
+            ("config", "fingerprint"),
+            ("host", "status"),
+            ("reconcile",),
+            ("clean-test-artifacts",),
+        ):
+            result = _cap(*cmd, "--help")
+            label = " ".join(cmd)
             assert "--json" in result.stdout, (
-                f"cap {cmd} --help must mention --json flag"
+                f"cap {label} --help must mention --json flag"
             )
 
     def test_json_commands_return_valid_json(self, tmp_path):
@@ -438,6 +508,8 @@ description: A test capability
         # Commands that deterministically produce JSON with --json
         json_commands = {
             "list": [],
+            "config": ["fingerprint"],
+            "clean-test-artifacts": [],
         }
         for cmd, extra in json_commands.items():
             result = _cap(cmd, *extra, "--json", env={"HOME": str(tmp_path)})
