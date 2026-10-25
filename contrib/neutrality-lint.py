@@ -25,8 +25,10 @@ PROHIBITED_TERMS = [
     (r'\bprice_usd\b', 'price enforcement in Core (MANIFESTO §4)'),
     (r'\bVALID_TRIGGER_EVENTS\b', 'trigger event taxonomy in Core — must be owner-controlled'),
     # Commercial license boundary — CAP117F-CORE-001 criteria 4-5 (MANIFESTO §4)
-    # Broader families (review F2): British spelling, alternative identifiers,
-    # issue-license functions, parser re-registration and tier mappings.
+    # Fix C (R4-F1): value-set and shape-based matching — catch the prohibited
+    # tier values (free/trial/standard/enterprise) in structured positions
+    # regardless of class or variable name, plus license_*/licence_* callables
+    # in both word orders and British/American spellings.
     # Snake_case terms use (?<![a-zA-Z])…(?![a-zA-Z]) so they match within
     # larger identifiers like LICENSE_TYPE_MAP or customer_licensee_id.
     # Two rules so license_id / LICENSE_ID (SPDX) is never caught.
@@ -38,8 +40,16 @@ PROHIBITED_TERMS = [
     (r'(?<![a-zA-Z])commercial_tier(?![a-zA-Z])', 'commercial-tier variable in Core (MANIFESTO §4) — belongs in SevenOfNine'),
     (r'(?<![a-zA-Z])license_validate(?![a-zA-Z])', 'commercial license validation function in Core (MANIFESTO §4) — belongs in SevenOfNine'),
     (r'(?<![a-zA-Z])issue_\w*licen[cs]e(?![a-zA-Z])', 'license issuance function in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'add_parser\s*\(\s*["\']license["\']', 'license command re-registration in Core (MANIFESTO §4) — belongs in SevenOfNine'),
-    (r'(?<![a-zA-Z])(?:commercial_)?tiers?\s*=\s*[{\[]', 'commercial tier mapping in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Fix C: catch license_* commercial verbs in reverse word order (license_issue, license_revoke, license_list)
+    (r'(?<![a-zA-Z])licen[cs]e_(?:issue|revoke|list|check|verify|create|generate|grant|deny|manage)(?![a-zA-Z])', 'commercial license operation function in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Fix C: catch add_parser with British spelling (licence)
+    (r'add_parser\s*\(\s*["\']licen[cs]e["\']', 'license command re-registration in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Fix C: catch argparse choices containing commercial tier values (the deleted CLI surface verbatim)
+    (r'choices\s*=\s*\[[\s\S]*?(?:free|trial|standard|enterprise)[\s\S]*?\]', 'commercial tier values in argparse choices (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Fix C: catch tier tuple/list/dict literals regardless of variable name casing
+    (r'(?<![a-zA-Z])(?:commercial_)?(?i:tiers?|TIER_NAMES|VALID_TIERS|COMMERCIAL_TIERS|TIER_MAP)\s*=\s*[{\[\(][\s\S]*?(?:free|trial|standard|enterprise)[\s\S]*?[}\]\)]', 'commercial tier value set in Core (MANIFESTO §4) — belongs in SevenOfNine'),
+    # Fix C: catch lowercase tier enum member assignments in any class context
+    (r'(?<![a-zA-Z_])(?:free|trial|standard|enterprise)\s*=\s*["\']', 'commercial-tier enum member in Core (MANIFESTO §4) — belongs in SevenOfNine'),
 ]
 
 # Case-sensitive patterns — tier enum member assignments use uppercase by convention;

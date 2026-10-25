@@ -399,6 +399,188 @@ def issue_license(cap_id):
         assert result.returncode != 0, "LicenseKey dataclass with issue_license must be rejected"
         assert "issue_license" in result.stdout.lower()
 
+    # ── Fix C (R4-F1): regression cases for each evaded shape ──
+
+    def test_argparse_choices_multiline_rejected(self):
+        content = '''
+def build_parser():
+    p.add_argument(
+        "--type",
+        choices=["free", "trial", "standard", "enterprise"],
+    )
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "argparse choices with tier values (multiline) must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
+    def test_argparse_choices_single_line_rejected(self):
+        content = '''
+p.add_argument("--type", choices=["free","trial","standard","enterprise"])
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "argparse choices with tier values (single-line) must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
+    def test_tiers_tuple_rejected(self):
+        content = '''
+TIERS = ("free", "trial", "standard", "enterprise")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "TIERS tuple with tier values must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
+    def test_commercial_tiers_tuple_rejected(self):
+        content = '''
+COMMERCIAL_TIERS = ("free", "trial", "standard", "enterprise")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "COMMERCIAL_TIERS tuple must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
+    def test_valid_tiers_tuple_rejected(self):
+        content = '''
+VALID_TIERS = ("free", "trial", "standard", "enterprise")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "VALID_TIERS tuple must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
+    def test_tier_enum_lowercase_members_rejected(self):
+        content = """
+from enum import Enum
+
+class Tier(Enum):
+    free = "free"
+    trial = "trial"
+    standard = "standard"
+    enterprise = "enterprise"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "Tier Enum with lowercase commercial members must be rejected"
+        )
+        assert "commercial-tier enum" in result.stdout.lower()
+
+    def test_plan_tier_enum_lowercase_members_rejected(self):
+        content = """
+from enum import Enum
+
+class PlanTier(Enum):
+    free = "free"
+    trial = "trial"
+    standard = "standard"
+    enterprise = "enterprise"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "PlanTier Enum with lowercase commercial members must be rejected"
+        )
+        assert "commercial-tier enum" in result.stdout.lower()
+
+    def test_license_issue_function_rejected(self):
+        content = '''
+def license_issue(capability_id, licensee, tier="standard"):
+    """Issue a commercial license."""
+    return {"license_key": "KEY-123", "tier": tier}
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "license_issue function must be rejected"
+        )
+        assert "license_issue" in result.stdout.lower()
+
+    def test_license_revoke_function_rejected(self):
+        content = '''
+def license_revoke(license_id):
+    """Revoke a commercial license."""
+    return {"status": "revoked"}
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "license_revoke function must be rejected"
+        )
+        assert "license_revoke" in result.stdout.lower()
+
+    def test_license_list_function_rejected(self):
+        content = '''
+def license_list(licensee_id=None):
+    """List commercial licenses for a licensee."""
+    return [{"id": "lic-001", "tier": "standard"}]
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "license_list function must be rejected"
+        )
+        assert "license_list" in result.stdout.lower()
+
+    def test_add_parser_licence_british_rejected(self):
+        content = '''
+subparsers = parser.add_subparsers(dest="command")
+licence_parser = subparsers.add_parser("licence", help="Manage commercial licences")
+'''
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "add_parser('licence') British spelling must be rejected"
+        )
+        assert "licence" in result.stdout.lower()
+
+    def test_composite_reintroduction_rejected(self):
+        content = """
+from enum import Enum
+from dataclasses import dataclass
+
+class PlanTier(Enum):
+    free = "free"
+    trial = "trial"
+    standard = "standard"
+    enterprise = "enterprise"
+
+TIER_MAP = {
+    PlanTier.free: 0,
+    PlanTier.trial: 1,
+    PlanTier.standard: 2,
+    PlanTier.enterprise: 3,
+}
+
+@dataclass
+class Customer:
+    licensee_id: str
+    tier: PlanTier = PlanTier.free
+
+def license_issue(cap_id, customer):
+    return {"license_key": "KEY-001", "tier": customer.tier}
+
+def license_revoke(license_id):
+    return {"status": "revoked"}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "Composite reintroduction must be rejected"
+        )
+        assert len(result.stdout) > 0, (
+            f"Composite reintroduction must produce lint errors, got empty stdout"
+        )
+
+    def test_tier_map_dict_rejected(self):
+        content = """
+TIER_MAP = {"free": 0, "trial": 1, "standard": 2, "enterprise": 3}
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "TIER_MAP dict with tier values must be rejected"
+        )
+        assert "commercial tier" in result.stdout.lower()
+
 
 # ── CAP117F-CORE-001 criterion 6: positive controls ──
 
