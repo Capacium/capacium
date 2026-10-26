@@ -1695,11 +1695,11 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
         for name in ("criterion3_reproducible_build", "criterion3_version_sources"):
             receipt = sub_check_receipts.get(name)
             if receipt is None:
-                pre_has_counted_fail = True
+                pre_status = "pending"
                 pre_reason_parts.append(f"{name}: receipt absent from this run")
                 continue
             if _is_stale_receipt(receipt, _RUN_ID):
-                pre_has_counted_fail = True
+                pre_status = "pending"
                 pre_reason_parts.append(f"{name}: missing or stale (not current evidence)")
                 continue
             raw = receipt.get("status", "pending")
@@ -2078,6 +2078,192 @@ def _is_stale_receipt(receipt: dict | None, current_run_id: str) -> bool:
 _NON_DIST_GATES = tuple(g for g in ALL_GATES if g != "distribution")
 
 
+def _oracle_verdict(statuses, *, gate_8_override=None,
+                    sub_check_receipts=None,
+                    accepted_main_sha=None, tag_target=None, artifacts=None):
+    """Oracle for the release verdict written purely from the specification.
+
+    This function is the *independent* reference — it does not call
+    ``_verdict`` or ``_gate_8_sub_results``.  Every matrix row that is
+    generated from the dimensions below (aggregate, pre receipts, post
+    receipts, metadata) takes its expected value from this oracle, so the
+    matrix cannot drift to match a defective implementation.
+
+    The rules (from verdict-split-GATE-003-r1.md, Review 4 controller decision):
+
+    * A receipt counts only when its ``run_id`` matches ``_RUN_ID`` AND its
+      status is in ``{pass, fail, pending}``.  Any other value raises
+      ValueError.
+    * A missing, stale, unbound or out-of-vocabulary pre receipt never yields
+      pass: pre is then pending (→ BLOCKED).  A counted fail receipt wins over
+      pending.
+    * A missing post receipt yields post=pending (→ PREPARED at most, never
+      READY).  A stale/unbound post receipt yields post=fail (→ BLOCKED).
+      A counted fail wins over pending.
+    * BLOCKED iff any non-distribution gate is not pass, or pre != pass, or
+      post == fail, or a post receipt is stale/unbound.
+    * PREPARED iff all non-distribution gates pass AND pre == pass AND post is
+      pending AND the distribution aggregate is in {pass, pending}.
+    * READY iff all non-distribution gates pass AND pre == pass AND post ==
+      pass from a current run-bound receipt AND distribution aggregate == pass
+      AND accepted_main_sha is a non-empty 40-hex string AND tag_target ==
+      accepted_main_sha AND artifacts sdist+wheel digests are present.
+    * A non-distribution gate or the distribution aggregate with None or
+      out-of-vocabulary status raises ValueError.
+    * The gate_8_override path obeys the same rules for pre_publication and
+      post_publication statuses (validated and treated exactly as if derived).
+    """
+    _VALID = frozenset(("pass", "fail", "pending"))
+
+    # ── Validate gate_8_override halves ──
+    if gate_8_override is not None:
+        for half_name in ("pre_publication", "post_publication"):
+            s = gate_8_override[half_name].get("status")
+            if s not in _VALID:
+                raise ValueError(
+                    f"Gate 8 {half_name} has invalid status {s!r}; "
+                    f"must be one of pass, fail, pending"
+                )
+        pre_status = gate_8_override["pre_publication"]["status"]
+        post_status = gate_8_override["post_publication"]["status"]
+        pre_reason = gate_8_override["pre_publication"].get("reason", "")
+        post_reason = gate_8_override["post_publication"].get("reason", "")
+    else:
+        # ── Derive pre_publication half from sub_check_receipts ──
+        if sub_check_receipts is None:
+            pre_status = "pass"
+            pre_reason = "pre-publication checks passed; build reproducible, version sources agree"
+        else:
+            pre_status = "pass"
+            pre_reason_parts = []
+            pre_has_counted_fail = False
+            for name in ("criterion3_reproducible_build", "criterion3_version_sources"):
+                receipt = sub_check_receipts.get(name)
+                if receipt is None:
+                    pre_status = "pending"
+                    pre_reason_parts.append(f"{name}: receipt absent from this run")
+                    continue
+                if receipt.get("run_id") != _RUN_ID or "run_id" not in receipt:
+                    pre_status = "pending"
+                    pre_reason_parts.append(f"{name}: missing or stale (not current evidence)")
+                    continue
+                raw = receipt.get("status", "pending")
+                if raw not in _VALID:
+                    raise ValueError(
+                        f"{name} receipt has invalid status {raw!r}; "
+                        f"must be one of pass, fail, pending"
+                    )
+                if raw == "fail":
+                    pre_has_counted_fail = True
+                    pre_reason_parts.append(f"{name}: failed")
+                elif raw == "pending":
+                    pre_status = "pending"
+                    pre_reason_parts.append(f"{name}: pending")
+            if pre_has_counted_fail:
+                pre_status = "fail"
+            pre_reason = (
+                "pre-publication check(s): " + "; ".join(pre_reason_parts)
+                if pre_reason_parts
+                else "pre-publication checks passed; build reproducible, version sources agree"
+            )
+
+        # ── Derive post_publication half from sub_check_receipts ──
+        if sub_check_receipts is None:
+            post_status = "pending"
+            post_reason = NOT_RUN_REQUIRES_RELEASECHAIN
+        else:
+            post_receipt = sub_check_receipts.get("criterion3_post_publication")
+            if post_receipt is None:
+                post_status = "pending"
+                post_reason = NOT_RUN_REQUIRES_RELEASECHAIN
+            elif post_receipt.get("run_id") != _RUN_ID or "run_id" not in post_receipt:
+                post_status = "fail"
+                post_reason = (
+                    "post-publication receipt is stale (run_id does not match "
+                    "the current run); not current evidence"
+                )
+            else:
+                raw = post_receipt.get("status", "pending")
+                if raw not in _VALID:
+                    raise ValueError(
+                        f"post-publication receipt has invalid status {raw!r}; "
+                        f"must be one of pass, fail, pending"
+                    )
+                post_status = raw
+                post_reason = post_receipt.get(
+                    "gate_status_reason",
+                    "all post-publication channel probes passed" if raw == "pass" else "",
+                )
+
+    gate_8 = {
+        "pre_publication": {"status": pre_status, "reason": pre_reason},
+        "post_publication": {"status": post_status, "reason": post_reason},
+    }
+
+    # ── Validate distribution aggregate ──
+    dist = statuses.get("distribution")
+    if dist is not None and dist not in _VALID:
+        raise ValueError(
+            f"gate distribution has invalid status {dist!r}; "
+            f"must be one of pass, fail, pending"
+        )
+
+    # ── Validate non-distribution gates ──
+    for gate in ALL_GATES:
+        if gate == "distribution":
+            continue
+        if gate not in statuses:
+            continue
+        s = statuses[gate]
+        if s is None or s not in _VALID:
+            raise ValueError(
+                f"gate {gate} has invalid status {s!r}; "
+                f"must be one of pass, fail, pending"
+            )
+
+    # ── Collect non-distribution failures ──
+    failures = {}
+    for gate in ALL_GATES:
+        if gate == "distribution":
+            continue
+        s = statuses.get(gate, "not-run")
+        if s != "pass":
+            failures[gate] = s
+
+    # ── BLOCKED: pre != pass ──
+    if pre_status != "pass":
+        failures["distribution"] = {"pre_publication": gate_8["pre_publication"],
+                                      "post_publication": gate_8["post_publication"]}
+    elif post_status == "fail":
+        failures["distribution"] = {"pre_publication": gate_8["pre_publication"],
+                                      "post_publication": gate_8["post_publication"]}
+
+    if failures:
+        return "BLOCKED"
+
+    # ── PREPARED: post pending, aggregate in {pass, pending} ──
+    if post_status == "pending":
+        if dist not in ("pass", "pending"):
+            return "BLOCKED"
+        return "PREPARED"
+
+    # ── post == pass: check for READY ──
+    if dist != "pass":
+        return "BLOCKED"
+
+    is_hex40 = bool(
+        accepted_main_sha
+        and len(accepted_main_sha) == 40
+        and all(c in "0123456789abcdef" for c in accepted_main_sha)
+    )
+    tag_matches_sha = bool(is_hex40 and tag_target and tag_target == accepted_main_sha)
+    has_digests = bool(artifacts and artifacts.get("sdist") and artifacts.get("wheel"))
+
+    if tag_matches_sha and has_digests:
+        return "READY"
+    return "BLOCKED"
+
+
 def _build_negative_control_matrix():
     """Generate a table-driven matrix over every combination of the
     non-distribution gate statuses and the two Gate 8 halves, including
@@ -2403,6 +2589,61 @@ def _build_negative_control_matrix():
             f"pre receipt status {pre_bad_name!r} + dist=pending → ValueError",
         ))
 
+    # ── Pre receipt rows with dist=pass: absent, stale, no run_id, foreign
+    #    run_id → BLOCKED (pre=pending is not pass, spec rule) ──
+    for pre_variant_name, vs_receipt, rb_receipt in (
+        ("stale pass pre + dist=pass", {"status": "pass", "run_id": "OTHER"}, {"status": "pass", "run_id": _RUN_ID}),
+        ("stale fail pre + dist=pass", {"status": "fail", "run_id": "OTHER"}, {"status": "pass", "run_id": _RUN_ID}),
+        ("stale pending pre + dist=pass", {"status": "pending", "run_id": "OTHER"}, {"status": "pass", "run_id": _RUN_ID}),
+        ("no run_id pre + dist=pass", {"status": "pass"}, {"status": "pass", "run_id": _RUN_ID}),
+        ("foreign run_id pre + dist=pass", {"status": "pass", "run_id": "FOREIGN"}, {"status": "pass", "run_id": _RUN_ID}),
+        ("absent vs receipt + dist=pass", None, {"status": "pass", "run_id": _RUN_ID}),
+        ("absent rb receipt + dist=pass", {"status": "pass", "run_id": _RUN_ID}, None),
+    ):
+        idx += 1
+        statuses = dict(all_pass)
+        statuses["distribution"] = "pass"
+        scr = {}
+        if vs_receipt is not None:
+            scr["criterion3_version_sources"] = vs_receipt
+        if rb_receipt is not None:
+            scr["criterion3_reproducible_build"] = rb_receipt
+        rows.append((
+            f"gm-{idx:04d}", statuses,
+            None, scr, None, "BLOCKED",
+            f"{pre_variant_name} → BLOCKED (pre=pending is not pass)",
+        ))
+
+    # Pre receipt with None status + dist=pass → ValueError
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pass"
+    scr = {
+        "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_version_sources": {"status": None, "run_id": _RUN_ID},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, scr,
+        None, "ValueError",
+        "pre receipt status None + dist=pass → ValueError",
+    ))
+
+    # Pre receipt with None status + dist=pending → ValueError (both halves)
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pending"
+    scr = {
+        "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_version_sources": {"status": None, "run_id": _RUN_ID},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, scr,
+        None, "ValueError",
+        "pre receipt status None + dist=pending → ValueError",
+    ))
+
     # ── gate_8_override with bogus/error post → ValueError ──
     for ov_bad_name, ov_bad_status in (
         ("error", "error"),
@@ -2438,6 +2679,22 @@ def _build_negative_control_matrix():
         g8o, None, None, "ValueError",
         "gate_8_override pre='bogus' → ValueError",
     ))
+
+    # ── Replace every hardcoded expected value with the oracle ──
+    for i, row in enumerate(rows):
+        scenario_id, statuses, gate_8_override, sub_check_receipts, release_meta, _hardcoded, desc = row
+        kwargs = {}
+        if gate_8_override is not None:
+            kwargs["gate_8_override"] = gate_8_override
+        if sub_check_receipts is not None:
+            kwargs["sub_check_receipts"] = sub_check_receipts
+        if release_meta is not None:
+            kwargs.update(release_meta)
+        try:
+            expected = _oracle_verdict(statuses, **kwargs)
+        except ValueError:
+            expected = "ValueError"
+        rows[i] = (scenario_id, statuses, gate_8_override, sub_check_receipts, release_meta, expected, desc)
 
     return rows
 
@@ -3490,8 +3747,21 @@ class TestCriterion7ReleaseVerdict:
         )
 
         for gate in ALL_GATES:
-            for bad in ("fail", "pending"):
+            for bad in ("fail", "pending", "not-run"):
                 statuses = {**all_pass, gate: bad}
+                if bad == "not-run":
+                    # "not-run" is not a valid explicit status — it is
+                    # rejected by the vocabulary choke point.  The correct
+                    # not-run path (gate absent from statuses) is tested
+                    # separately below.
+                    with pytest.raises(ValueError):
+                        _verdict(
+                            statuses,
+                            accepted_main_sha=sha40,
+                            tag_target=sha40,
+                            artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
+                        )
+                    continue
                 blocked = _verdict(
                     statuses,
                     accepted_main_sha=sha40,
