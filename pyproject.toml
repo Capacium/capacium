@@ -69,6 +69,13 @@ Mirror = "https://github.com/Capacium/capacium"
 cap = "capacium.cli:main"
 capacium-skills-mcp = "capacium.skills_mcp_wrapper:main"
 
+[tool.setuptools]
+# setuptools pins wheel timestamps from SOURCE_DATE_EPOCH but leaves the sdist
+# gzip container and member mtimes at build time. This command rewrites the
+# archive post-hoc so a build with SOURCE_DATE_EPOCH set is byte-reproducible;
+# without the variable the archive is untouched.
+cmdclass = {sdist = "capacium._build.ReproducibleSdist"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["capacium*"]
