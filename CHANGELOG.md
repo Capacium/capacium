@@ -1,3 +1,19 @@
+## [1.1.7] - 2026-10-23
+
+### Neutral-Core Boundary
+
+- **Commercial license command removed.** The pre-launch `cap license` command
+  (issue, validate, revoke, list) has been removed to enforce the neutral-Core
+  boundary defined in MANIFESTO §4. Capacium Core does not issue, validate or
+  decide commercial licence entitlements. The commercial licensing surface is
+  owned by SevenOfNine and will be delivered through a separate product channel.
+  No compatibility shim is provided; the command was never part of a published
+  Capacium release.
+- **Neutrality lint hardened.** The neutrality lint now rejects executable Core
+  uses of licensee identifiers, licence-type classifications, commercial REST
+  endpoint references and tier enums, while continuing to accept SPDX
+  identifiers, manifest package-licence fields and copyright notices.
+
 ## [1.1.6] - 2026-09-28
 
 ### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)
