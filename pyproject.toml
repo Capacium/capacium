@@ -33,7 +33,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "capacium-models>=0.4.0",
+    "capacium-models>=1.1.0",
     "tomli>=2.0.0; python_version < '3.11'",
     # Core: Manifest.load parses capability.yaml. Without PyYAML the loader
     # silently degrades to a naive line parser that corrupts nested lists

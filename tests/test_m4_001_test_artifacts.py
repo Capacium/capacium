@@ -265,7 +265,7 @@ class TestArtifactCleanupCommand:
         assert broken_symlink.is_symlink()
 
         # Test Real Execution
-        real_report = clean_test_artifacts(dry_run=False, registry=registry, verbose=True)
+        clean_test_artifacts(dry_run=False, registry=registry, verbose=True)
         captured = capsys.readouterr().out
         assert "Cleaned test artifacts" in captured
 

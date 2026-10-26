@@ -279,9 +279,23 @@ def main():
     package_parser.add_argument("--manifest", help="Path to capability.yaml (default: capability.yaml in current directory)")
     package_parser.add_argument("--output-dir", default="./dist/", help="Output directory (default: ./dist/)")
 
-    publish_parser = subparsers.add_parser("publish", help="Publish a capability to the Exchange registry")
-    publish_parser.add_argument("package_path", help="Path to .tar.gz, capability.yaml, or directory containing capability.yaml")
-    publish_parser.add_argument("--token", help="API token for the Exchange registry (or set CAPACIUM_API_TOKEN)")
+    publish_parser = subparsers.add_parser(
+        "publish",
+        help="Publish capability metadata to a trusted Exchange registry",
+        description=(
+            "Publish capability metadata to a trusted Exchange registry. The "
+            "publication token is bound to the owner you publish as; it is not a "
+            "shared server-wide secret that must match the Exchange."
+        ),
+    )
+    publish_parser.add_argument(
+        "package_path",
+        help="Path to .tar.gz, capability.yaml, or directory containing capability.yaml",
+    )
+    publish_parser.add_argument(
+        "--token",
+        help="Publish token scoped to owner/repository (or set CAPACIUM_API_TOKEN)",
+    )
     publish_parser.add_argument(
         "--registry",
         help="Target registry URL (default: https://api.capacium.xyz). Use for non-default or self-hosted registries.",
@@ -913,16 +927,17 @@ def main():
             if registry_arg and registry_arg.lower() == "false":
                 registry_arg = None
             authority_events_path = getattr(args, "authority_events", None)
-            success = publish_capability(
-                Path(args.package_path),
-                registry_url=registry_arg,
-                token=token,
-                json_output=getattr(args, "json", False),
-                authority_events_path=(
-                    Path(authority_events_path) if authority_events_path else None
-                ),
+            sys.exit(
+                publish_capability(
+                    Path(args.package_path),
+                    registry_url=registry_arg,
+                    token=token,
+                    json_output=bool(getattr(args, "json", False)),
+                    authority_events_path=(
+                        Path(authority_events_path) if authority_events_path else None
+                    ),
+                )
             )
-            sys.exit(0 if success else 1)
 
         elif args.command == "validate":
             from .commands.validate import cmd_validate

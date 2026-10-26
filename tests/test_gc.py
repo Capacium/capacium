@@ -8,6 +8,23 @@ from capacium.models import Capability, Kind
 from capacium.registry import Registry
 
 
+def _store_relative(tmp_home: Path, target) -> str:
+    """The ``owner/name/version`` POSIX spelling of a store path.
+
+    ``str(Path)`` uses the host separator, so a raw ``"global/elementeer-mcp"``
+    substring never matches a Windows backslash spelling and the assertion
+    silently reports the refusal as missing. Resolving relative to the store and
+    using ``as_posix()`` compares the *location* on every host, not a spelling
+    of it (Windows regression: run 34584467521).
+    """
+    packages = (tmp_home / ".capacium" / "packages").resolve()
+    try:
+        rel = Path(target).resolve().relative_to(packages)
+    except ValueError:
+        return str(target)
+    return rel.as_posix()
+
+
 def _add_capability(
     tmp_home: Path,
     registry: Registry,
@@ -386,10 +403,20 @@ def test_cleanup_plan_quarantines_unregistered_and_deletes_phantom(tmp_home, mon
     # also the target of a live harness link (antigravity-backup -> old owner),
     # so it MUST be refused, never quarantined — quarantining it would sever
     # the live link (CAP-REC-D2 blocker). The genuinely unlinked mempalace is
-    # still quarantined above.
-    refused = {str(a.target) for a in actions if a.action == "refuse"}
-    assert any("global/elementeer-mcp" in p for p in refused)
-    assert not any("global/elementeer-mcp" in p for p in quarantined)
+    # still quarantined above. Comparison is on the store-relative location so
+    # it holds under the Windows backslash separator too.
+    refused_rel = {
+        _store_relative(tmp_home, a.target)
+        for a in actions
+        if a.action == "refuse"
+    }
+    assert any(p == "global/elementeer-mcp/2.4.2" for p in refused_rel), refused_rel
+    quarantined_rel = {
+        _store_relative(tmp_home, a.target)
+        for a in actions
+        if a.action == "quarantine"
+    }
+    assert not any(p.startswith("global/elementeer-mcp/") for p in quarantined_rel)
 
     deleted = {
         a.ref: a for a in actions if a.action == "delete" and a.ref

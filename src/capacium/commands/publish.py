@@ -1,4 +1,23 @@
-"""cap publish — Upload a capability tarball to the Exchange registry."""
+"""cap publish — Publish a capability to a trusted Exchange registry.
+
+The publisher posts the capability metadata envelope (not package bytes). A
+successful response carries a structured receipt; ``--json`` emits exactly that
+receipt on stdout so automation can consume ``publication_id``,
+``canonical_name``, ``version`` and the idempotency/creation flags.
+
+Return values are integer exit codes so distinct failure classes are
+distinguishable to callers:
+
+* ``0`` accepted (created or idempotent retry)
+* ``1`` local user error (missing manifest, pre-flight validation)
+* ``2`` transport-uncertain — the request may or may not have been recorded;
+  read the coordinate back before retrying
+* ``3`` HTTP 401 (missing/malformed/expired credential)
+* ``4`` HTTP 403 (valid credential bound to another owner)
+* ``5`` HTTP 409 (coordinate already published with different metadata)
+* ``6`` HTTP 422 (invalid request or dependency entry)
+* ``7`` any other server-reported HTTP error
+"""
 
 import json
 import sys
@@ -19,6 +38,26 @@ PUBLISH_AUTHORITY_EVENTS_INVALID = "publish.authority-events.invalid"
 #: Accepted keys are exactly the fields of the event dataclass, so the accepted
 #: document shape and the reported ``transition_evidence`` shape cannot drift.
 _AUTHORITY_EVENT_FIELDS = frozenset(identity.AuthorityEvent.__dataclass_fields__)
+
+# Exit codes (non-zero classes are distinct for automation).
+EXIT_OK = 0
+EXIT_USER_ERROR = 1
+EXIT_TRANSPORT_UNCERTAIN = 2
+EXIT_UNAUTHORIZED = 3   # HTTP 401
+EXIT_FORBIDDEN = 4      # HTTP 403
+EXIT_CONFLICT = 5       # HTTP 409
+EXIT_VALIDATION = 6     # HTTP 422
+EXIT_HTTP_OTHER = 7     # other server-reported HTTP error
+
+
+def _err(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _info(message: str, json_output: bool) -> None:
+    # Progress prose is routed to stdout only for a human run. In JSON mode the
+    # sole stdout payload is the receipt, so progress goes to stderr.
+    print(message, file=sys.stderr if json_output else sys.stdout)
 
 
 def _printer(json_output: bool):
@@ -44,13 +83,13 @@ def _fail(
     *,
     json_output: bool,
     emit,
-) -> bool:
+) -> int:
     identity.add_diagnostic(report, code, field, message, identity.SEVERITY_ERROR)
     if json_output:
         _emit_report(report)
     else:
         emit(f"Error: {message}")
-    return False
+    return EXIT_USER_ERROR
 
 
 def _authority_events_from_file(
@@ -108,7 +147,7 @@ def publish_capability(
     json_output: bool = False,
     authority_events: Optional[Sequence["identity.AuthorityEvent"]] = None,
     authority_events_path: Optional[Path] = None,
-) -> bool:
+) -> int:
     emit = _printer(json_output)
     report = identity.empty_report()
 
@@ -126,62 +165,41 @@ def publish_capability(
         authority_events = loaded
 
     if not package_path.exists():
-        return _fail(
-            report,
-            identity.PUBLISH_PACKAGE_NOT_FOUND,
-            "package_path",
-            f"file not found: {package_path}",
-            json_output=json_output,
-            emit=emit,
-        )
+        _err(f"Error: file not found: {package_path}")
+        return EXIT_USER_ERROR
 
     if package_path.is_dir() or package_path.suffix in (".yaml", ".yml"):
         manifest_path = package_path if package_path.is_file() else package_path / "capability.yaml"
         if not manifest_path.exists():
-            return _fail(
-                report,
-                identity.PUBLISH_PACKAGE_NOT_FOUND,
-                "package_path",
-                f"no capability.yaml found in {package_path}",
-                json_output=json_output,
-                emit=emit,
-            )
+            _err(f"Error: no capability.yaml found in {package_path}")
+            return EXIT_USER_ERROR
         manifest = Manifest.load(manifest_path)
-        emit(f"Publishing from {manifest_path}...")
+        _info(f"Publishing from {manifest_path}...", json_output)
     elif package_path.name.endswith(".tar.gz"):
-        emit(f"Reading {package_path}...")
-        manifest = _extract_manifest_from_tarball(package_path, emit=emit)
+        _info(f"Reading {package_path}...", json_output)
+        manifest = _extract_manifest_from_tarball(package_path)
     else:
-        return _fail(
-            report,
-            identity.PUBLISH_PACKAGE_NOT_FOUND,
-            "package_path",
-            f"file must be a .tar.gz package or capability.yaml: {package_path}",
-            json_output=json_output,
-            emit=emit,
-        )
+        _err(f"Error: file must be a .tar.gz package or capability.yaml: {package_path}")
+        return EXIT_USER_ERROR
     if manifest is None:
-        return _fail(
-            report,
-            identity.PUBLISH_MANIFEST_MISSING_FIELD,
-            "manifest",
-            "could not read a capability manifest from the package",
-            json_output=json_output,
-            emit=emit,
-        )
+        return EXIT_USER_ERROR
 
-    report = identity.empty_report(manifest)
+    if not manifest.name:
+        _err("Error: manifest missing required field 'name'")
+        return EXIT_USER_ERROR
+    if not manifest.kind:
+        _err("Error: manifest missing required field 'kind'")
+        return EXIT_USER_ERROR
+    if not manifest.version:
+        _err("Error: manifest missing required field 'version'")
+        return EXIT_USER_ERROR
 
-    for required in ("name", "kind", "version"):
-        if not getattr(manifest, required, ""):
-            return _fail(
-                report,
-                identity.PUBLISH_MANIFEST_MISSING_FIELD,
-                required,
-                f"manifest missing required field '{required}'",
-                json_output=json_output,
-                emit=emit,
-            )
+    errors = manifest.validate()
+    if errors:
+        _err("Error: Manifest validation failed (Pre-Flight Check):")
+        for err in errors:
+            _err(f"  - {err}")
+        return EXIT_USER_ERROR
 
     owner = manifest.owner or "global"
     frameworks = manifest.frameworks or []
@@ -207,7 +225,7 @@ def publish_capability(
     if not report["valid"]:
         if json_output:
             _emit_report(report)
-        return False
+        return EXIT_USER_ERROR
 
     payload = {
         "name": manifest.name,
@@ -220,86 +238,148 @@ def publish_capability(
         "dependencies": manifest.dependencies or {},
         "replaces": manifest.replaces or [],
         "previous_identities": manifest.previous_identities or [],
-        "canonical_listing_id": canonical,
+        "operator_meta": manifest.operator_meta or {},
+        "checkpoint_meta": manifest.checkpoint_meta or {},
+        "policy_meta": manifest.policy_meta or {},
+        "mcp_tools": manifest.mcp_tools or [],
     }
 
-    emit(f"Publishing {canonical}@{manifest.version}...")
+    # Map deprecated governance.trust_state on to intended_trust_tier.
+    governance = getattr(manifest, "governance", None) or manifest.extensions.get("x_governance", {})
+    if isinstance(governance, dict) and "trust_state" in governance:
+        import click
+        click.secho(
+            "Warning: 'governance.trust_state' is deprecated. Please use 'intended_trust_tier'.",
+            fg="yellow", err=True
+        )
+        payload["intended_trust_tier"] = governance["trust_state"]
+    elif "intended_trust_tier" in manifest.extensions:
+        payload["intended_trust_tier"] = manifest.extensions["intended_trust_tier"]
+
+    _info(f"Publishing {canonical}@{manifest.version}...", json_output)
 
     try:
         client = RegistryClient(token=token)
         result = client.publish(payload, registry_url=registry_url)
         canonical_result = result.get("canonical_name", canonical)
-        emit(f"Published: {canonical_result}")
-        emit(f"  Kind: {result.get('kind', manifest.kind)}")
-        emit(f"  URL: https://capacium.xyz/listings/{canonical_result}")
-
-        # Fetch and display quality score breakdown
-        _display_quality_score(
-            client, canonical_result, manifest, registry_url, emit=emit
-        )
 
         if json_output:
-            _emit_report(report)
-        return True
+            _emit_receipt_json(client, result, canonical_result, manifest)
+        else:
+            print(f"Published: {canonical_result}")
+            print(f"  Kind: {result.get('kind', manifest.kind)}")
+
+            created = _ever_created(result, client)
+            if created is True:
+                print("  Status: accepted (new publication)")
+            elif created is False:
+                print("  Status: accepted (idempotent retry)")
+
+            _display_quality_score(client, canonical_result, manifest, registry_url)
+
+        return EXIT_OK
 
     except RegistryClientError as e:
         code = e.status_code
         msg = str(e)
 
         if code == 409:
-            identity.add_diagnostic(
-                report,
-                identity.PUBLISH_REGISTRY_CONFLICT,
-                "registry",
-                f"{canonical} already exists",
-                identity.SEVERITY_ERROR,
-            )
-        elif code in (401, 403):
-            identity.add_diagnostic(
-                report,
-                identity.PUBLISH_REGISTRY_UNAUTHORIZED,
-                "registry",
-                f"Unauthorized ({code})",
-                identity.SEVERITY_ERROR,
-            )
-        else:
-            identity.add_diagnostic(
-                report,
-                identity.PUBLISH_REGISTRY_ERROR,
-                "registry",
-                f"Error ({code}): {msg}" if code and code >= 400 else str(msg),
-                identity.SEVERITY_ERROR,
-            )
-
-        if json_output:
-            _emit_report(report)
-            return False
-
-        if code == 409:
-            emit(f"Already exists: {canonical}")
-        elif code in (401, 403):
-            emit(f"Error: Unauthorized ({code})")
-            emit("  Set CAPACIUM_API_TOKEN in your environment or use --token.")
-            emit("  The Exchange server token must match the CAPACIUM_API_TOKEN env var on the server.")
-        elif code and code >= 400:
-            emit(f"Error ({code}): {msg}")
-        else:
-            emit(f"Error: {msg}")
-        return False
+            _err(f"Already exists: {canonical}")
+            _err("The same name and version is already published with different metadata.")
+            _err(f"To inspect the existing publication, look it up: cap search {canonical}")
+            return EXIT_CONFLICT
+        if code == 401:
+            _err("Error: Unauthorized (401)")
+            _err("Set CAPACIUM_API_TOKEN in your environment or pass --token.")
+            _err("Trusted publishing: the token is bound to the publishing owner; it is not a"
+                 " shared server-wide secret that must match the Exchange.")
+            return EXIT_UNAUTHORIZED
+        if code == 403:
+            _err("Error: Forbidden (403)")
+            _err(f"The token is valid but is not bound to publisher {owner}.")
+            _err(f"Use a token scoped for publish:{canonical}.")
+            return EXIT_FORBIDDEN
+        if code == 422:
+            _err(f"Error: Invalid publication request (422): {msg}")
+            _err("No publication row was created.")
+            return EXIT_VALIDATION
+        if code is None:
+            return _transport_uncertain(canonical, manifest.version, msg)
+        if code >= 400:
+            _err(f"Error ({code}): {msg}")
+            return EXIT_HTTP_OTHER
+        _err(f"Error: {msg}")
+        return EXIT_TRANSPORT_UNCERTAIN
 
     except Exception as e:
-        identity.add_diagnostic(
-            report,
-            identity.PUBLISH_REGISTRY_ERROR,
-            "registry",
-            str(e),
-            identity.SEVERITY_ERROR,
-        )
-        if json_output:
-            _emit_report(report)
-        else:
-            emit(f"Error: {e}")
-        return False
+        return _transport_uncertain(canonical, manifest.version, str(e))
+
+
+def _transport_uncertain(canonical: str, version: str, detail: str) -> int:
+    """A network/transport failure does not prove the publish was not recorded.
+
+    Print the canonical lookup key and steer toward readback without asserting a
+    definitive failure, then exit non-zero (system/uncertain class).
+    """
+    _err(f"Could not confirm publication of {canonical}@{version}.")
+    _err("The registry may not have been reached; the request might have been recorded.")
+    _err(f"Look-up key for readback: {canonical}")
+    _err("Before retrying, read the current state back (for example with 'cap search' "
+         f"or the listing for {canonical}) to avoid resubmitting an existing publication.")
+    _err(f"Transport detail: {detail}")
+    return EXIT_TRANSPORT_UNCERTAIN
+
+
+def _ever_created(result: dict, client: RegistryClient):
+    """Truthfully reflect creation vs idempotency.
+
+    The 1.1.1 server returns ``created``/``idempotent`` in the receipt; when the
+    body omits them, fall back to the HTTP status captured by the transport.
+    """
+    if "created" in result:
+        return bool(result["created"])
+    status = getattr(client, "last_response_status", None)
+    if status == 201:
+        return True
+    return None
+
+
+def _emit_receipt_json(
+    client: RegistryClient,
+    result: dict,
+    canonical: str,
+    manifest: Manifest,
+) -> None:
+    """Emit the single JSON receipt on stdout (no surrounding prose)."""
+    version = _pick(result, "version", manifest.version)
+    receipt = {
+        "canonical_name": canonical,
+        "name": _pick(result, "name", manifest.name),
+        "version": version,
+    }
+    if "publication_id" in result:
+        receipt["publication_id"] = result["publication_id"]
+    if "publication_digest" in result:
+        receipt["publication_digest"] = result["publication_digest"]
+
+    created = _ever_created(result, client)
+    if "created" in result:
+        receipt["created"] = bool(result["created"])
+    elif created is not None:
+        receipt["created"] = bool(created)
+    if "idempotent" in result:
+        receipt["idempotent"] = bool(result["idempotent"])
+    if "status" in result:
+        receipt["status"] = result["status"]
+
+    json.dump(receipt, sys.stdout)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _pick(result: dict, key: str, fallback):
+    value = result.get(key)
+    return fallback if value in (None, "") else value
 
 
 def _display_quality_score(
@@ -429,14 +509,14 @@ def _extract_manifest_from_tarball(
                     break
 
             if not manifest_name:
-                emit("Error: no capability.yaml found in tarball")
-                emit(f"  Contents: {names}")
+                _err("Error: no capability.yaml found in tarball")
+                _err(f"  Contents: {names}")
                 return None
 
             member = tar.getmember(manifest_name)
             f = tar.extractfile(member)
             if f is None:
-                emit(f"Error: could not read {manifest_name} from tarball")
+                _err(f"Error: could not read {manifest_name} from tarball")
                 return None
 
             content = f.read().decode("utf-8")
@@ -445,8 +525,8 @@ def _extract_manifest_from_tarball(
             return manifest
 
     except tarfile.ReadError as e:
-        emit(f"Error: invalid tar.gz file: {e}")
+        _err(f"Error: invalid tar.gz file: {e}")
         return None
     except Exception as e:
-        emit(f"Error reading tarball: {e}")
+        _err(f"Error reading tarball: {e}")
         return None

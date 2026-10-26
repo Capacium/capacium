@@ -41,8 +41,10 @@ def submit_repository(
 ) -> bool:
     """Submit *github_url* to the Exchange and report the real outcome.
 
-    Returns True when the submission was accepted (even if still
-    processing), False when the Exchange reports the job as failed.
+    Returns True only when the submission was confirmed (a listing the
+    Exchange acknowledged). Returns False when the client cannot vouch for
+    the outcome: an unrecognised response, a missing job id, or a submission
+    still queued at the deadline are all failures, not successes.
     """
     if client is None:
         from ..registry_client import RegistryClient
@@ -52,7 +54,7 @@ def submit_repository(
 
     if not isinstance(response, dict):
         _print_raw_with_warning(response)
-        return True
+        return False
 
     # Legacy synchronous schema (pre-queue Exchange versions)
     if "canonical_name" in response and "job_id" not in response:
@@ -67,7 +69,7 @@ def submit_repository(
     job_id = response.get("job_id")
     if not job_id:
         _print_raw_with_warning(response)
-        return True
+        return False
 
     canonical_hint = response.get("canonical_hint", github_url)
     print(f"Accepted: {canonical_hint} (job {job_id})")
@@ -107,4 +109,4 @@ def submit_repository(
 
     print(f"Still processing — check later with job id {job_id}")
     print(f"  (GET /v2/submit/{job_id} on the Exchange)")
-    return True
+    return False

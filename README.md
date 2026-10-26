@@ -182,7 +182,5 @@ cap publish ./dist/local-my-skill-0.1.0.tar.gz
 Apache-2.0. See [LICENSE](./LICENSE).
 
 ## Development
-
-Canonical repository: **self-hosted Forgejo** — `git.langevc.com/capacium/capacium`
-(`git clone git@git.langevc.com:capacium/capacium.git`). Develop against the Forgejo
-clone and open pull requests there. The GitHub copy is a read-only mirror.
+ 
+The canonical repository is maintained on self-hosted infrastructure. The GitHub repository serves as the public release and distribution mirror. Pull requests and issues submitted via GitHub are welcomed and synchronized automatically.

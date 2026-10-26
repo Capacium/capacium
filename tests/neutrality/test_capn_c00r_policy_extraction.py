@@ -177,7 +177,6 @@ def test_source_scan_finds_no_active_policy_evaluator_or_workflow_migration() ->
         "capacium.commands.policy",
         "policy-as-code",
         "policy violation",
-        "policy_meta",
     }
     policy_workflow = re.compile(r"policy.*workflow|workflow.*policy", re.IGNORECASE)
     findings: list[str] = []

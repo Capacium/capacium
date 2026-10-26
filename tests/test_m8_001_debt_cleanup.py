@@ -6,7 +6,10 @@
 """
 
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 from capacium.utils.copytree import (
     safe_copytree,
@@ -17,6 +20,21 @@ from capacium.adapters.base import ensure_package_dir
 from capacium.storage import StorageManager
 from capacium.registry import Registry
 from capacium.commands.install import install_capability
+
+# Windows has no POSIX execute bit: ``chmod`` on a regular file only toggles the
+# read-only attribute, and ``st_mode`` never reports ``S_IXUSR`` for a file made
+# executable this way. Executability on Windows is decided by extension and file
+# association, not by a mode bit, so these assertions describe a POSIX property
+# the platform cannot represent. ``ensure_execution_permissions`` still runs and
+# still best-effort chmods on Windows; only the bit assertion is skipped.
+POSIX_EXEC_BIT = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "asserts the POSIX execute bit (st_mode & S_IXUSR); Windows chmod on a "
+        "regular file only toggles the read-only attribute, so the bit is not "
+        "representable and executability is extension-based"
+    ),
+)
 
 
 class TestGitMetadataRemoval:
@@ -91,6 +109,7 @@ class TestGitMetadataRemoval:
         assert (pkg_dir / "capability.yaml").exists()
 
 
+@POSIX_EXEC_BIT
 class TestExecutionPermissions:
     """BUG-008: Ensure scripts have execute permissions post-installation."""
 
@@ -232,11 +251,15 @@ class TestFullInstallLifecycleDebtCleanup:
         # BUG-009 verification: .git must not exist in installed package
         assert not (pkg_dir / ".git").exists()
 
-        # BUG-008 verification: scripts and bin tools must be executable
-        installed_test_script = pkg_dir / "scripts" / "test.sh"
-        installed_tool = pkg_dir / "bin" / "runner"
-        assert bool(installed_test_script.stat().st_mode & stat.S_IXUSR)
-        assert bool(installed_tool.stat().st_mode & stat.S_IXUSR)
+        # BUG-008 verification: scripts and bin tools must be executable.
+        # The POSIX execute bit is not representable on Windows (see
+        # POSIX_EXEC_BIT); there the function is still exercised end-to-end by
+        # the install below and the .git cleanup assertion above.
+        if sys.platform != "win32":
+            installed_test_script = pkg_dir / "scripts" / "test.sh"
+            installed_tool = pkg_dir / "bin" / "runner"
+            assert bool(installed_test_script.stat().st_mode & stat.S_IXUSR)
+            assert bool(installed_tool.stat().st_mode & stat.S_IXUSR)
 
 
 class TestScrubPATReferences:

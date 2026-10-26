@@ -1,5 +1,6 @@
 import builtins
 import gc
+import inspect
 import os
 import shutil
 import sqlite3
@@ -30,6 +31,26 @@ _REAL_PROD_CAPACIUM_SEP = _REAL_PROD_CAPACIUM_STR + os.sep
 _real_rmtree = shutil.rmtree
 
 
+def home_env(home, *, base=None) -> dict:
+    """Return a subprocess environment whose *platform* home points at ``home``.
+
+    ``Path.home()`` reads ``USERPROFILE`` (or ``HOMEDRIVE`` + ``HOMEPATH``) on
+    Windows and ``HOME`` on POSIX. A sandboxed subprocess that sets only ``HOME``
+    therefore still resolves the real runner home on Windows and writes into the
+    operator's ``~/.capacium``. All home variables are set so the same helper
+    sandboxes identically on every host.
+    """
+    env = dict(os.environ if base is None else base)
+    home_str = str(home)
+    env["HOME"] = home_str
+    env["USERPROFILE"] = home_str
+    drive, _, tail = home_str.partition(":")
+    if drive and tail:
+        env["HOMEDRIVE"] = drive + ":"
+        env["HOMEPATH"] = tail
+    return env
+
+
 def _is_real_capacium_write(p) -> bool:
     if not p:
         return False
@@ -50,19 +71,116 @@ def _is_real_capacium_write(p) -> bool:
         return False
 
 
-def _rmtree_retry(path, attempts: int = 5, delay: float = 0.25) -> None:
+def _real_rmtree_supports_kwarg(name: str) -> bool:
+    """Capability probe: does the installed stdlib ``shutil.rmtree`` accept
+    ``name`` (e.g. ``onexc``, added in 3.12; ``dir_fd``/``onerror`` older)?
+
+    Derived from the live callable's signature rather than a hardcoded
+    ``sys.version_info`` branch, so it stays correct on 3.10, 3.11, 3.12+ and
+    on any doctored callable a caller passes in. Only keyword-only or named
+    keyword parameters count — a ``**kwargs`` catch-all does not, because the
+    underlying C implementation may still reject an unknown keyword.
+    """
+    try:
+        parameters = inspect.signature(_real_rmtree).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters
+
+
+def _as_onexc(onerror):
+    """Adapt a 3.10/3.11 ``onerror(func, path, exc_info)`` callback to the
+    3.12 ``onexc(func, path, exc)`` shape."""
+    if onerror is None:
+        return None
+
+    def onexc(func, path, exc):
+        exc_info = (
+            (type(exc), exc, exc.__traceback__) if exc is not None else None
+        )
+        return onerror(func, path, exc_info)
+
+    return onexc
+
+
+def _as_onerror(onexc):
+    """Adapt a 3.12 ``onexc(func, path, exc)`` callback to the 3.10/3.11
+    ``onerror(func, path, exc_info)`` shape.
+
+    Without this conversion a caller that passes only ``onexc`` (the 3.12
+    spelling) silently loses its handler on 3.10/3.11, where ``onerror`` is the
+    only accepted keyword — the exact defect that left a read-only tree behind
+    because the retry callback was never invoked.
+    """
+    if onexc is None:
+        return None
+
+    def onerror(func, path, exc_info):
+        exc = exc_info[1] if exc_info else None
+        return onexc(func, path, exc)
+
+    return onerror
+
+
+def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None:
+    """Forward to the real ``rmtree`` using only the keyword arguments the
+    installed stdlib actually accepts.
+
+    Python 3.11 exposes ``(path, ignore_errors, onerror, *, dir_fd)`` and
+    Python 3.12+ exposes ``(path, ignore_errors, onerror, *, onexc, dir_fd)``.
+    Some 3.10/3.11 builds omit ``dir_fd`` entirely when fd-based functions are
+    unavailable. ``ignore_errors`` is always accepted; each optional keyword
+    (``onerror``, ``onexc``, ``dir_fd``) is probed per call and forwarded only
+    when the real callable understands it, so an unsupported keyword never
+    raises ``TypeError``.
+
+    Callback selection is capability-based *and shape-preserving*: whichever
+    spelling the caller supplied is converted to the one the real callable
+    accepts, so a handler is never dropped merely because the two Python
+    versions name the same callback differently.
+    """
+    kwargs = {"ignore_errors": ignore_errors}
+    if _real_rmtree_supports_kwarg("onexc"):
+        kwargs["onexc"] = _as_onexc(onerror) if onexc is None else onexc
+    elif _real_rmtree_supports_kwarg("onerror"):
+        kwargs["onerror"] = _as_onerror(onexc) if onerror is None else onerror
+    if _real_rmtree_supports_kwarg("dir_fd"):
+        kwargs["dir_fd"] = dir_fd
+    _real_rmtree(path, **kwargs)
+
+
+def _rmtree_retry(path, ignore_errors: bool = False, onerror=None, *,
+                  onexc=None, dir_fd=None,
+                  _attempts: int = 5, _delay: float = 0.25) -> None:
     """shutil.rmtree replacement that retries on transient Windows handle
-    contention before falling back to an ignoring best-effort removal."""
-    for attempt in range(attempts):
+    contention before falling back to an ignoring best-effort removal.
+
+    Signature matches the stdlib (``ignore_errors``, ``onerror``, ``onexc``,
+    ``dir_fd``) so pytest's ``tmp_path`` teardown can call it exactly as it
+    calls ``shutil.rmtree``. The retry budget is passed via private keyword
+    args (``_attempts``/``_delay``) that collide with no stdlib parameter, so
+    the wrapper can be swapped in transparently on Windows.
+
+    Keyword forwarding is capability-based (see ``_call_real_rmtree``): the
+    wrapper declares ``onexc``/``onerror``/``dir_fd`` so it accepts every
+    caller, but only hands the installed stdlib the subset it understands.
+    """
+    for attempt in range(_attempts):
         try:
-            _real_rmtree(path)
+            # ``ignore_errors=True`` suppresses the ``onexc``/``onerror``
+            # callback semantics; callers asking to ignore errors want silent
+            # best-effort removal from the first attempt.
+            if ignore_errors:
+                _call_real_rmtree(path, True, None, None, dir_fd)
+            else:
+                _call_real_rmtree(path, False, onerror, onexc, dir_fd)
             return
         except (PermissionError, OSError):
-            if attempt == attempts - 1:
-                _real_rmtree(path, ignore_errors=True)
+            if attempt == _attempts - 1:
+                _call_real_rmtree(path, True, None, None, dir_fd)
                 return
             gc.collect()
-            time.sleep(delay)
+            time.sleep(_delay)
 
 
 @pytest.fixture(scope="session", autouse=True)

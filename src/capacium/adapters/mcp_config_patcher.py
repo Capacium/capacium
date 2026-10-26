@@ -165,6 +165,15 @@ class McpConfigPatcher:
             return None
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         backup_path = config_path.with_suffix(f".{ts}.bak")
+        # The filesystem clock is coarser than ``%f`` on Windows (and NTFS
+        # timestamps can collide within one tick), so two backups taken in the
+        # same instant would share a name and the second would overwrite the
+        # first — silently shrinking the retention window. Disambiguate.
+        if backup_path.exists():
+            counter = 1
+            while backup_path.exists():
+                backup_path = config_path.with_suffix(f".{ts}_{counter}.bak")
+                counter += 1
         shutil.copy2(config_path, backup_path)
         cls.prune_backups(config_path, keep_last=keep_last)
         return backup_path

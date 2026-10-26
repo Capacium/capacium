@@ -71,6 +71,10 @@ class Capability:
     source_url: Optional[str] = None
     source_ref: Optional[str] = None
     source_commit: Optional[str] = None
+    operator_meta: Optional[Dict[str, Any]] = None
+    checkpoint_meta: Optional[Dict[str, Any]] = None
+    policy_meta: Optional[Dict[str, Any]] = None
+    mcp_tools: Optional[List[Dict[str, Any]]] = None
 
     @property
     def id(self) -> str:

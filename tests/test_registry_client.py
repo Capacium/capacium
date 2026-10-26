@@ -156,6 +156,75 @@ def test_http_error():
             assert "HTTP 500" in str(e)
 
 
+_Q = "https://api.capacium.xyz"
+
+
+def test_submit_url_not_doubled_when_config_ends_in_v2(tmp_path):
+    """RED (criterion 1): the submit path builds a bare RegistryClient() (as
+    submit.py does) whose base falls through to the config file; when that
+    config URL carries the /v2 suffix the submit URL must not double to /v2/v2.
+    """
+    from pathlib import Path as _P
+    cdir = _P.home() / ".capacium"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "config.yaml").write_text(f"registry: {_Q}/v2\n")
+
+    client = RegistryClient()          # registry_url AND base_url AND env all unset
+    assert client._base_url is None
+    url = client._build_registry_url("/v2/submit")
+    assert url == f"{_Q}/v2/submit", f"submit URL doubled: {url}"
+
+
+def test_base_from_explicit_registry_arg_strips_trailing_v2():
+    """Criterion 2 — source 1: explicit registry_url argument ending /v2."""
+    client = RegistryClient()
+    url = client._build_registry_url("/v2/submit", registry_url=f"{_Q}/v2")
+    assert url == f"{_Q}/v2/submit"
+
+
+def test_base_from_constructor_strips_trailing_v2():
+    """Criterion 2 — source 2: constructor base_url ending /v2."""
+    client = RegistryClient(base_url=f"{_Q}/v2")
+    url = client._build_registry_url("/v2/submit")
+    assert url == f"{_Q}/v2/submit"
+
+
+def test_base_from_environment_strips_trailing_v2(monkeypatch):
+    """Criterion 2 — source 4: CAPACIUM_REGISTRY_URL ending /v2 (bare-host
+    default is source-4's empty-string fallback, already without /v2)."""
+    monkeypatch.setenv("CAPACIUM_REGISTRY_URL", f"{_Q}/v2")
+    client = RegistryClient()
+    url = client._build_registry_url("/v2/submit")
+    assert url == f"{_Q}/v2/submit"
+
+
+def test_trailing_slash_and_trailing_v2_and_both_resolve_identically():
+    """Criterion 2 — a trailing '/v2', a trailing slash, and both together all
+    resolve to the same single-/v2 submit URL."""
+    cases = {
+        f"{_Q}/v2": f"{_Q}/v2/submit",
+        f"{_Q}/": f"{_Q}/v2/submit",
+        f"{_Q}/v2/": f"{_Q}/v2/submit",
+        _Q: f"{_Q}/v2/submit",
+    }
+    for base, expected in cases.items():
+        client = RegistryClient(base_url=base)
+        assert client._build_registry_url("/v2/submit") == expected
+
+
+def test_v2_appearing_elsewhere_is_not_stripped():
+    """Criterion 3 — normalisation strips only an exact trailing /v2 segment.
+    A base whose earlier path merely contains 'v2' (v2-staging, v20) is kept."""
+    cases = {
+        "https://self.host/api/v2-staging": "https://self.host/api/v2-staging/v2/submit",
+        "https://self.host/api/v20": "https://self.host/api/v20/v2/submit",
+        "https://self.host/v2-staging": "https://self.host/v2-staging/v2/submit",
+    }
+    for base, expected in cases.items():
+        client = RegistryClient(base_url=base)
+        assert client._build_registry_url("/v2/submit") == expected
+
+
 def test_search_with_kind_filter():
     client = RegistryClient()
     fake_data = {

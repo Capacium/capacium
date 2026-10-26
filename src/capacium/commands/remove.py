@@ -14,6 +14,8 @@ from ._journal import (
     _make_journal_path, _write_journal, _delete_journal,
     _serialize_cap, _encode_bytes, recover_orphaned_journals,
 )
+from ..utils.fs import canonical_path
+from ..utils.fs import rmtree as fs_rmtree
 
 
 class _RemovalSnapshot:
@@ -219,12 +221,18 @@ def _harness_link_targets_version(cap_name: str, package_dir: Path) -> bool:
 
     Deleting that directory would therefore orphan the harness link, which is
     exactly the data loss CAP-REC-D1 guards against.
+
+    Both sides are compared in the shared canonical vocabulary
+    (:func:`capacium.utils.fs.canonical_path`): on Windows ``link.resolve()`` of
+    a directory link keeps the ``\\\\?\\`` extended prefix that ``os.readlink``
+    returns, so a raw ``==`` against the bare install path would miss the live
+    link and delete an in-use generation.
     """
-    target = package_dir.resolve()
+    target = canonical_path(package_dir)
     for parent_dir in _known_skill_paths():
         for link in _iter_cap_link_paths(parent_dir, cap_name):
             try:
-                if link.is_symlink() and link.resolve() == target:
+                if link.is_symlink() and canonical_path(link) == target:
                     return True
             except OSError:
                 continue
@@ -669,7 +677,7 @@ def _remove_sub_capabilities(
             if snapshot is not None:
                 snapshot.park_tree(pkg_dir)
             elif pkg_dir.exists():
-                shutil.rmtree(pkg_dir)
+                fs_rmtree(pkg_dir)
 
         if force and member_cap is None:
             alt_pkg_dir = storage.get_package_dir(
@@ -678,7 +686,7 @@ def _remove_sub_capabilities(
             if snapshot is not None:
                 snapshot.park_tree(alt_pkg_dir)
             elif alt_pkg_dir.exists():
-                shutil.rmtree(alt_pkg_dir)
+                fs_rmtree(alt_pkg_dir)
             _purge_all_adapter_symlinks(m_name)
 
         print(f"  Removed sub-capability {member_id}")
