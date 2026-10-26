@@ -1651,7 +1651,31 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
     ``criterion3_post_publication``) rather than from the single aggregated
     gate status.  A failing pre-publication sub-check yields
     ``pre_publication: fail`` and the reason names the failing checks.
+
+    Any receipt whose ``run_id`` is absent or differs from ``_RUN_ID`` is
+    stale and treated as if absent.  Any half status outside
+    ``{pass, fail, pending}`` is coerced to ``fail`` so that the verdict
+    path never silently accepts an out-of-vocabulary value as a pass.
     """
+    _VALID_HALF = frozenset(("pass", "fail", "pending"))
+
+    def _read_post_receipt():
+        """Return (status, reason) from a current criterion3_post_publication
+        receipt, or (None, None) when absent or stale."""
+        if sub_check_receipts is None:
+            return None, None
+        post = sub_check_receipts.get("criterion3_post_publication") or {}
+        if _is_stale_receipt(post, _RUN_ID):
+            return None, None
+        raw = post.get("status", "pending")
+        status = raw if raw in _VALID_HALF else "fail"
+        reason = post.get("gate_status_reason", (
+            f"post-publication receipt status {raw!r} is not a valid half "
+            f"status"
+        ) if status == "fail" else post.get("gate_status_reason",
+            "all post-publication channel probes passed"))
+        return status, reason
+
     dist_status = statuses.get("distribution", "not-run")
     if dist_status == "not-run":
         return {
@@ -1665,6 +1689,12 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
             },
         }
     if dist_status == "fail":
+        post_status, post_reason = _read_post_receipt()
+        if post_status == "fail":
+            post_reason_final = post_reason
+        else:
+            post_status = "pending"
+            post_reason_final = NOT_RUN_REQUIRES_RELEASECHAIN
         return {
             "pre_publication": {
                 "status": "fail",
@@ -1674,8 +1704,8 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
                 ),
             },
             "post_publication": {
-                "status": "pending",
-                "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
+                "status": post_status,
+                "reason": post_reason_final,
             },
         }
     if dist_status == "pending":
@@ -1692,26 +1722,30 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
             if pre_failures:
                 pre_status = "fail"
                 pre_reason = "pre-publication check(s) failed: " + "; ".join(pre_failures)
+        # Post-publication half on dist=pending: read the actual receipt so
+        # a recorded failure is never silently relabelled NOT_RUN.
+        post_status, post_reason = _read_post_receipt()
+        if post_status is None:
+            post_status = "pending"
+            post_reason = (
+                "post-publication checks require a published release; "
+                "every claim is NOT_RUN_REQUIRES_RELEASECHAIN"
+            )
         return {
             "pre_publication": {
                 "status": pre_status,
                 "reason": pre_reason,
             },
             "post_publication": {
-                "status": "pending",
-                "reason": (
-                    "post-publication checks require a published release; "
-                    "every claim is NOT_RUN_REQUIRES_RELEASECHAIN"
-                ),
+                "status": post_status,
+                "reason": post_reason,
             },
         }
     if dist_status == "pass":
-        post_status = "pass"
-        post_reason = "all post-publication channel probes passed"
-        if sub_check_receipts is not None:
-            post = sub_check_receipts.get("criterion3_post_publication") or {}
-            post_status = post.get("status", "pending")
-            post_reason = post.get("gate_status_reason", post_reason)
+        post_status, post_reason = _read_post_receipt()
+        if post_status is None:
+            post_status = "pass"
+            post_reason = "all post-publication channel probes passed"
         return {
             "pre_publication": {
                 "status": "pass",
@@ -1770,18 +1804,22 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
         if s != "pass":
             failures[gate] = s
 
-    # Pre-publication failure has precedence over pending post-publication
-    if pre_pub["status"] == "fail":
+    # pre != pass is always blocking — pre is only "pass" when every
+    # pre-publication check passed.  pending and out-of-vocabulary values
+    # are not pass.
+    if pre_pub["status"] != "pass":
         failures["distribution"] = {
             "pre_publication": pre_pub,
             "post_publication": post_pub,
         }
     elif post_pub["status"] == "fail":
+        # Failure has precedence over pending.
         failures["distribution"] = {
             "pre_publication": pre_pub,
             "post_publication": post_pub,
         }
     elif post_pub["status"] == "pending":
+        # All pre-pub checks passed; post-pub is NOT_RUN_REQUIRES_RELEASECHAIN.
         pending["distribution"] = {
             "pre_publication": pre_pub,
             "post_publication": post_pub,
@@ -1807,11 +1845,18 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
             "gate_8": gate_8,
         }
 
-    # All gates pass — but READY also requires release metadata to be bound.
-    has_main = bool(accepted_main_sha and len(accepted_main_sha) == 40)
-    has_tag = bool(tag_target and tag_target.startswith("v"))
+    # All gates pass (pre == pass, post == pass) — READY requires release
+    # metadata bound to the exact accepted main SHA.
+    is_hex40 = bool(
+        accepted_main_sha
+        and len(accepted_main_sha) == 40
+        and all(c in "0123456789abcdef" for c in accepted_main_sha)
+    )
+    tag_matches_sha = bool(
+        is_hex40 and tag_target and tag_target == accepted_main_sha
+    )
     has_digests = bool(artifacts and artifacts.get("sdist") and artifacts.get("wheel"))
-    if has_main and has_tag and has_digests:
+    if tag_matches_sha and has_digests:
         return {
             "release": "READY",
             "accepted_main_sha": accepted_main_sha,
@@ -1821,15 +1866,27 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
             "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
             "gate_8": gate_8,
         }
+    # All pre-pub + post-pub checks passed but the metadata is not yet bound —
+    # the release is not READY.  Return BLOCKED (not PREPARED with a fabricated
+    # pending record) because the criteria require the metadata binding.
+    missing = []
+    if not tag_matches_sha:
+        if not is_hex40:
+            missing.append("accepted_main_sha is not a 40-hex commit SHA")
+        elif not tag_target:
+            missing.append("tag_target is absent")
+        else:
+            missing.append(f"tag_target {tag_target!r} != accepted_main_sha {accepted_main_sha!r}")
+    if not has_digests:
+        missing.append("artifact digests (sdist/wheel) are absent")
     return {
-        "release": "PREPARED",
-        "pending_gates": {"distribution": {
+        "release": "BLOCKED",
+        "blocking_gates": ["distribution"],
+        "blocking_statuses": {"distribution": {
             "pre_publication": pre_pub,
-            "post_publication": {
-                "status": "pending",
-                "reason": NOT_RUN_REQUIRES_RELEASECHAIN,
-            },
+            "post_publication": post_pub,
         }},
+        "pending_gates": {},
         "gate_count": len(ALL_GATES),
         "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
         "gate_8": gate_8,
@@ -2002,23 +2059,35 @@ def _build_negative_control_matrix():
             ))
 
     # ── All non-distribution gates pass, distribution pass / pending / fail ──
-    # dist=pass without metadata → PREPARED (F3: READY refused)
+    # dist=pass without metadata → BLOCKED (metadata binding required for READY;
+    # post=pass without SHA/tag/digests is not PREPARED)
     idx += 1
     all_pass = {g: "pass" for g in ALL_GATES}
     rows.append((
         f"gm-{idx:04d}", dict(all_pass),
-        None, None, None, "PREPARED",
-        "all pass + dist=pass + no metadata → PREPARED",
+        None, None, None, "BLOCKED",
+        "all pass + dist=pass + no metadata → BLOCKED (metadata binding absent)",
     ))
-    # dist=pass with metadata → READY
+    # dist=pass with metadata bound to exact SHA → READY
+    idx += 1
+    sha40 = "a" * 40
+    rows.append((
+        f"gm-{idx:04d}", dict(all_pass),
+        None, None,
+        {"accepted_main_sha": sha40, "tag_target": sha40,
+         "artifacts": {"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}}},
+        "READY",
+        "all pass + dist=pass + metadata (tag == sha) → READY",
+    ))
+    # dist=pass with metadata but tag != sha → BLOCKED
     idx += 1
     rows.append((
         f"gm-{idx:04d}", dict(all_pass),
         None, None,
-        {"accepted_main_sha": "m" * 40, "tag_target": "v1.1.7",
+        {"accepted_main_sha": sha40, "tag_target": "v1.1.7",
          "artifacts": {"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}}},
-        "READY",
-        "all pass + dist=pass + metadata → READY",
+        "BLOCKED",
+        "all pass + dist=pass + tag is version not SHA → BLOCKED",
     ))
     # dist=pending → PREPARED
     idx += 1
@@ -2067,6 +2136,20 @@ def _build_negative_control_matrix():
         "pre_publication fail via override → BLOCKED",
     ))
 
+    # ── Gate 8 override: pre_publication pending → BLOCKED (pending is not pass) ──
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pass"
+    gate_8_override = {
+        "pre_publication": {"status": "pending", "reason": "pre-pub not yet run"},
+        "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        gate_8_override, None, None, "BLOCKED",
+        "pre_publication pending via override → BLOCKED (pending is not pass)",
+    ))
+
     # ── Observed evidence: version_sources fail + dist=pending (F1/F5) ──
     idx += 1
     statuses = dict(all_pass)
@@ -2093,6 +2176,54 @@ def _build_negative_control_matrix():
         f"gm-{idx:04d}", statuses,
         None, sub_check_receipts, None, "PREPARED",
         "all pre-pub sub-checks pass via receipts + dist=pending → PREPARED",
+    ))
+
+    # ── Receipt-driven: post-publication fail on production path (dist=pass) ──
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pass"
+    sub_check_receipts = {
+        "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_post_publication": {"status": "fail", "reason": "forgejo tag probe failed",
+                                          "run_id": _RUN_ID},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, sub_check_receipts, None, "BLOCKED",
+        "post_publication fail via receipt + dist=pass → BLOCKED",
+    ))
+
+    # ── Receipt-driven: post-publication stale receipt → BLOCKED ──
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pass"
+    sub_check_receipts = {
+        "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_post_publication": {"status": "pass",
+                                          "run_id": "PREVIOUS-RUN"},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, sub_check_receipts, None, "BLOCKED",
+        "stale post receipt + dist=pass → BLOCKED (stale is not current)",
+    ))
+
+    # ── Receipt-driven: post-publication fail on dist=pending path ──
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = "pending"
+    sub_check_receipts = {
+        "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        "criterion3_post_publication": {"status": "fail", "reason": "pypi probe failed",
+                                          "run_id": _RUN_ID},
+    }
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, sub_check_receipts, None, "BLOCKED",
+        "post_publication fail via receipt + dist=pending → BLOCKED",
     ))
 
     return rows
@@ -2165,26 +2296,38 @@ class TestCriterion1To3Gate8StateMachine:
     # ── criterion 3: READY ──
 
     def test_ready_emitted_only_when_all_fourteen_pass_and_metadata_bound(self):
-        """READY requires all fourteen gates pass AND accepted_main_sha, tag_target
-        and artifacts are bound. Without metadata the verdict stays PREPARED."""
+        """READY requires all fourteen gates pass AND tag_target == accepted_main_sha
+        (a real 40-hex SHA) AND artifact digests are present. Without metadata or
+        with a mismatched tag the verdict is BLOCKED, not PREPARED."""
         statuses = {gate: "pass" for gate in ALL_GATES}
-        # Without release metadata: all gates pass but READY is not emitted
+        sha40 = "a" * 40
+        # Without release metadata: all gates pass but READY is refused → BLOCKED
         verdict_no_meta = _verdict(statuses)
-        assert verdict_no_meta["release"] == "PREPARED", (
-            f"all-pass without metadata → PREPARED, got {verdict_no_meta['release']}"
+        assert verdict_no_meta["release"] == "BLOCKED", (
+            f"all-pass without metadata → BLOCKED, got {verdict_no_meta['release']}"
         )
-        # With release metadata: READY
-        verdict = _verdict(
+        # With metadata but tag is a human version, not SHA → BLOCKED
+        verdict_wrong_tag = _verdict(
             statuses,
-            accepted_main_sha="m" * 40,
+            accepted_main_sha=sha40,
             tag_target="v1.1.7",
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
-        assert verdict["release"] == "READY", (
-            f"all-pass with metadata → READY, got {verdict['release']}"
+        assert verdict_wrong_tag["release"] == "BLOCKED", (
+            f"tag=v1.1.7 != sha → BLOCKED, got {verdict_wrong_tag['release']}"
         )
-        assert verdict["accepted_main_sha"] == "m" * 40
-        assert verdict["tag_target"] == "v1.1.7"
+        # With metadata where tag == accepted_main_sha → READY
+        verdict = _verdict(
+            statuses,
+            accepted_main_sha=sha40,
+            tag_target=sha40,
+            artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
+        )
+        assert verdict["release"] == "READY", (
+            f"all-pass with tag==sha → READY, got {verdict['release']}"
+        )
+        assert verdict["accepted_main_sha"] == sha40
+        assert verdict["tag_target"] == sha40
         assert verdict["artifacts"] == {"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}}
 
     # ── criterion 4: BLOCKED precedence ──
