@@ -1186,11 +1186,10 @@ def _archive_and_build(dest: Path, label: str) -> dict:
 def _sdist_members(sdist: Path) -> dict:
     """Map every regular file inside an sdist to its content digest.
 
-    The sdist's gzip container is not normalised by the current build config
-    (its header timestamp tracks build time), so byte-equality of the ``.tar.gz``
-    is not the invariant that holds. The invariant that *does* hold and that
-    gates a reproducible release is that the payload is identical member for
-    member.
+    This is the member-level view of the sdist: a reproducible release needs
+    the payload to be identical member for member. Byte-equality of the whole
+    ``.tar.gz`` is asserted separately by the reproducibility test; mapping the
+    members here makes a payload drift name the file that drifted.
     """
     members = {}
     with tarfile.open(sdist) as tar:
@@ -1217,11 +1216,12 @@ class TestCriterion3DistributionPrePublication:
     def test_sdist_and_wheel_are_reproducible_from_the_tested_commit(
         self, tmp_path, evidence_dir
     ):
-        """Two independent builds of the tested commit agree.
+        """Two independent builds of the tested commit agree byte for byte.
 
-        The wheel is byte-identical. The sdist payload is identical member for
-        member; its gzip container timestamp is not normalised by this build
-        configuration, which is recorded rather than asserted away.
+        ``SOURCE_DATE_EPOCH`` pins the wheel directly and, through the
+        ``sdist`` command declared in ``pyproject.toml``, the sdist container
+        and member timestamps as well. Both artifacts are therefore expected
+        to be identical, and the comparison is asserted rather than recorded.
         """
         first = _archive_and_build(tmp_path, "first")
         second = _archive_and_build(tmp_path, "second")
@@ -1239,7 +1239,10 @@ class TestCriterion3DistributionPrePublication:
         )
         assert members_a, "the sdist is empty"
 
-        sdist_bytes_equal = _sha256(first["sdist"]) == _sha256(second["sdist"])
+        assert _sha256(first["sdist"]) == _sha256(second["sdist"]), (
+            "the sdist is not reproducible: two builds of the tested commit "
+            "produced different bytes"
+        )
         detail = {
             "tested_commit": _tested_commit(),
             "wheel": {"name": wheel_a.name, "sha256": _sha256(wheel_a)},
@@ -1248,11 +1251,11 @@ class TestCriterion3DistributionPrePublication:
                 "sha256": _sha256(first["sdist"]),
                 "member_count": len(members_a),
                 "payload_reproducible": True,
-                "gzip_bytes_reproducible": sdist_bytes_equal,
+                "gzip_bytes_reproducible": True,
                 "container_note": (
-                    "SOURCE_DATE_EPOCH pins the tar member mtimes but the gzip "
-                    "container header mtime still tracks build time with the "
-                    "current build config; the payload is what is gated"
+                    "SOURCE_DATE_EPOCH pins the gzip container header mtime and "
+                    "every tar member mtime through the sdist command declared "
+                    "in pyproject.toml, so the whole archive is byte-identical"
                 ),
             },
         }
