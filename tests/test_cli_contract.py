@@ -767,7 +767,8 @@ class TestJsonContractC4:
         free of commercial keys and tier values.
         """
         import json
-        result = _cap("search", "--json", env={"HOME": str(tmp_path)})
+        result = _cap("search", "--json", "--registry", "http://127.0.0.1:1",
+                       env={"HOME": str(tmp_path)})
         assert result.returncode == 0, f"cap search --json failed: {result.stderr}"
         try:
             data = json.loads(result.stdout)
