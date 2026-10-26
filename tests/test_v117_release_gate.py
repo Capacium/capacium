@@ -4052,9 +4052,19 @@ class TestCriterion1ManifestAndVerdict:
 
         The verdict is derived from the receipts this run actually wrote, so it
         reports the release truthfully: any non-distribution gate that is not
-        ``pass`` blocks 1.1.7. The distribution gate pending by construction
-        (its published half needs the release chain) yields PREPARED when all
-        other gates pass, not BLOCKED.
+        ``pass`` blocks 1.1.7. PREPARED is reachable only when the Gate 8
+        post-publication half is *absent* and therefore carries exactly
+        ``NOT_RUN_REQUIRES_RELEASECHAIN``; a live post receipt — even a pending
+        one with a descriptive reason — blocks the release.
+
+        The expectation is derived from the spec, not from the receipt layout.
+        Version-source agreement changes which branch is asserted: while
+        ``criterion3_version_sources`` disagreed (README 0.18.0 vs pyproject
+        1.1.6) the pre-publication half failed, so the verdict was BLOCKED and
+        this test exited through the failure branch. With every source at
+        1.1.7 the pre-publication half passes, so the live post-publication
+        receipt written earlier in this run is what determines the outcome:
+        pending with a descriptive reason, hence BLOCKED.
         """
         statuses = _observed_statuses()
 
@@ -4072,10 +4082,11 @@ class TestCriterion1ManifestAndVerdict:
         # Gate 8 pre_publication may be fail even when distribution is pending
         # (criterion 5: version-source mismatch). The sub-check receipts
         # determine the actual Gate 8 halves.
-        gate_8_pre = (verdict.get("gate_8") or {}).get("pre_publication") or {}
-        gate_8_pre_fail = gate_8_pre.get("status") == "fail"
+        gate_8 = verdict.get("gate_8") or {}
+        gate_8_pre = gate_8.get("pre_publication") or {}
+        gate_8_post = gate_8.get("post_publication") or {}
 
-        has_failures = non_dist_failures or gate_8_pre_fail
+        has_failures = non_dist_failures or gate_8_pre.get("status") != "pass"
         if has_failures:
             assert verdict["release"] == "BLOCKED", (
                 "a non-distribution gate that is not pass, or a failing Gate 8 "
@@ -4086,9 +4097,28 @@ class TestCriterion1ManifestAndVerdict:
             )
             for gate in verdict["blocking_gates"]:
                 assert statuses[gate] != "pass"
-        elif statuses.get("distribution") == "pending":
+        elif (
+            statuses.get("distribution") == "pending"
+            and gate_8_post.get("status") == "pending"
+            and gate_8_post.get("reason") == NOT_RUN_REQUIRES_RELEASECHAIN
+        ):
             assert verdict["release"] == "PREPARED", (
-                f"distribution pending + others pass → PREPARED, got {verdict['release']}"
+                "distribution pending with an absent post-publication half "
+                f"(NOT_RUN_REQUIRES_RELEASECHAIN) → PREPARED, got {verdict['release']}"
             )
+        else:
+            # A live post-publication receipt (pending with a descriptive
+            # reason, fail or stale) is not PREPARED evidence; the spec makes
+            # it BLOCKED.
+            assert verdict["release"] == "BLOCKED", (
+                "a live Gate 8 post-publication receipt may not yield "
+                f"{verdict['release']}; only an absent post half → PREPARED"
+            )
+            assert verdict["blocking_gates"], (
+                "a blocked release must name its blockers"
+            )
+            assert "distribution" in verdict["blocking_gates"]
+            for gate in verdict["blocking_gates"]:
+                assert statuses[gate] != "pass"
         # rename_to is never in automatic aggregation
         assert "rename_to" not in verdict or verdict.get("rename_to") is None
