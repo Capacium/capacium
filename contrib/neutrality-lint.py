@@ -165,25 +165,26 @@ def _lint_file_ast(path: Path, constants: dict[str, object]) -> list[str]:
                     f"{disp}:{node.lineno} — belongs in SevenOfNine (MANIFESTO §4)"
                 )
             # Check Enum class body for tier member assignments
+            # Dominance rule (R6-F2): collect tier-word members first,
+            # only reject when >= 3 of the 4 tier values are present.
             if _is_enum_class(node):
+                enum_tier_members: set[str] = set()
+                tier_assigns: list[tuple[int, str]] = []
                 for item in node.body:
                     if isinstance(item, ast.Assign):
                         for target in item.targets:
                             if isinstance(target, ast.Name):
-                                # Uppercase tier member assignments in Enum bodies
-                                if target.id in ('FREE', 'TRIAL', 'STANDARD', 'ENTERPRISE'):
-                                    errors.append(
-                                        f"PROHIBITED: commercial-tier enum member "
-                                        f"'{target.id}' in {disp}:{item.lineno} "
-                                        f"— belongs in SevenOfNine (MANIFESTO §4)"
-                                    )
-                                # Lowercase tier member assignments in Enum bodies
-                                if target.id in _TIER_VALUES:
-                                    errors.append(
-                                        f"PROHIBITED: commercial-tier enum member "
-                                        f"'{target.id}' in {disp}:{item.lineno} "
-                                        f"— belongs in SevenOfNine (MANIFESTO §4)"
-                                    )
+                                tid_upper = target.id.upper()
+                                if tid_upper in ('FREE', 'TRIAL', 'STANDARD', 'ENTERPRISE'):
+                                    enum_tier_members.add(target.id.lower())
+                                    tier_assigns.append((item.lineno, target.id))
+                if len(enum_tier_members & _TIER_VALUES) >= 3:
+                    for lineno, tid in tier_assigns:
+                        errors.append(
+                            f"PROHIBITED: commercial-tier enum member "
+                            f"'{tid}' in {disp}:{lineno} "
+                            f"— belongs in SevenOfNine (MANIFESTO §4)"
+                        )
             self.generic_visit(node)
 
         def visit_FunctionDef(self, node):

@@ -489,6 +489,54 @@ def _json_command_label(cmd_tuple: tuple[str, ...]) -> str:
     return " ".join(cmd_tuple)
 
 
+def _install_fixture_cap(home_dir: Path, work_dir: Path) -> None:
+    """Install a minimal fixture capability into an isolated home for
+    deterministic JSON-emitting tests. Also index it into the search index
+    so commands that look up capabilities via the index (e.g. compare) can
+    find it."""
+    cap_dir = work_dir / "acme-demo"
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    (cap_dir / "capability.yaml").write_text("""\
+kind: skill
+name: acme/demo
+version: 1.0.0
+description: Test fixture capability
+owner: acme
+""")
+    (cap_dir / "main.py").write_text("print('hello')")
+    result = _cap("install", "acme/demo", "--source", str(cap_dir),
+                   "--skip-runtime-check", env={"HOME": str(home_dir)})
+    assert result.returncode == 0, (
+        f"Fixture install failed (rc={result.returncode}): {result.stderr}"
+    )
+    # Index into search index so compare and other index-based commands work.
+    from capacium.index import Index
+    index_db = home_dir / ".capacium" / "search_index.db"
+    idx = Index(db_path=index_db)
+    idx.upsert({
+        "id": "acme/demo",
+        "name": "acme/demo",
+        "owner": "acme",
+        "kind": "skill",
+        "trust": "installed",
+        "stars": 0,
+        "forks": 0,
+        "license": "",
+        "categories": [],
+        "tags": [],
+        "description": "Test fixture capability",
+        "frameworks": [],
+        "runtimes": {},
+        "dependencies": {},
+        "fingerprint": "",
+        "source_url": "",
+        "publisher": "",
+        "version": "1.0.0",
+        "updated_at": "",
+        "last_synced_at": "",
+    })
+
+
 class TestJsonCompletenessC4:
     """Criterion 3 completeness: every --json command surface discovered by AST
     in cli.py must have at least one test in TestJsonContractC4 that exercises
@@ -562,9 +610,6 @@ class TestJsonCompletenessC4:
                         for handler in item.handlers:
                             if (isinstance(handler.type, ast_mod.Attribute)
                                     and handler.type.attr == 'JSONDecodeError'):
-                                # Handler body is vacuous only if it's exactly
-                                # [Return()] — i.e. a single bare return with
-                                # no preceding assertions.
                                 if (len(handler.body) == 1
                                         and isinstance(handler.body[0], ast_mod.Return)
                                         and handler.body[0].value is None):
@@ -575,6 +620,103 @@ class TestJsonCompletenessC4:
         assert not detector.vacuous, (
             f"Tests with vacuous JSONDecodeError handler (must have assertions): "
             f"{detector.vacuous}"
+        )
+
+    def test_every_mapped_test_has_json_parse(self):
+        """Every mapped test method in TestJsonContractC4 must contain a
+        ``json.loads`` call, proving it actually parses a JSON payload."""
+        import inspect
+        import ast as ast_mod
+
+        source_lines, _ = inspect.getsourcelines(TestJsonContractC4)
+        source = ''.join(source_lines)
+        tree = ast_mod.parse(source)
+
+        # Collect all mapped test method names
+        mapped_names: set[str] = set()
+        for names in self._COVERAGE_MAP.values():
+            mapped_names.update(names)
+
+        class ParseCheckVisitor(ast_mod.NodeVisitor):
+            def __init__(self):
+                self.methods_with_parse: set[str] = set()
+
+            def visit_FunctionDef(self, node):
+                has_json_loads = False
+                for item in ast_mod.walk(node):
+                    if isinstance(item, ast_mod.Call):
+                        if (isinstance(item.func, ast_mod.Attribute)
+                                and item.func.attr == 'loads'):
+                            has_json_loads = True
+                if has_json_loads:
+                    self.methods_with_parse.add(node.name)
+                self.generic_visit(node)
+
+        detector = ParseCheckVisitor()
+        detector.visit(tree)
+
+        missing_parse = mapped_names - detector.methods_with_parse
+        assert not missing_parse, (
+            f"Mapped tests without json.loads call: {sorted(missing_parse)}"
+        )
+
+    def test_self_test_mapped_method_without_parse_is_detected(self):
+        """Self-test: a synthetic mapped test body without json.loads is
+        correctly flagged as missing a parse, proving the completeness check
+        itself fails when a mapped test does not execute a JSON parse."""
+        import ast as ast_mod
+
+        synthetic_source = '''
+class TestJsonContractC4:
+    def test_info_json_no_commercial_keys(self, tmp_path):
+        """Real test with parse."""
+        import json
+        result = None
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        return data
+
+    def test_fake_no_parse(self, tmp_path):
+        """Fake test without json.loads."""
+        result = None
+        assert result.returncode == 0
+        # No json.loads here
+
+    def test_another_real(self, tmp_path):
+        import json
+        result = None
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        return data
+'''
+        mapped_names = {"test_info_json_no_commercial_keys",
+                        "test_fake_no_parse",
+                        "test_another_real"}
+
+        tree = ast_mod.parse(synthetic_source)
+
+        class ParseCheckVisitor(ast_mod.NodeVisitor):
+            def __init__(self):
+                self.methods_with_parse: set[str] = set()
+
+            def visit_FunctionDef(self, node):
+                has_json_loads = False
+                for item in ast_mod.walk(node):
+                    if isinstance(item, ast_mod.Call):
+                        if (isinstance(item.func, ast_mod.Attribute)
+                                and item.func.attr == 'loads'):
+                            has_json_loads = True
+                if has_json_loads:
+                    self.methods_with_parse.add(node.name)
+                self.generic_visit(node)
+
+        detector = ParseCheckVisitor()
+        detector.visit(tree)
+
+        missing_parse = mapped_names - detector.methods_with_parse
+        assert missing_parse == {"test_fake_no_parse"}, (
+            f"Self-test: expected only test_fake_no_parse as missing parse, "
+            f"got {sorted(missing_parse)}"
         )
 
     def test_every_mapped_surface_has_test_method(self):
@@ -770,38 +912,34 @@ description: A test capability
         _assert_no_commercial_keys(data, "cap install --json")
 
     def test_info_json_no_commercial_keys(self, tmp_path):
-        """``cap info --json`` against a nonexistent capability: JSON or
-        clean error — neither path may carry commercial keys or tier values."""
+        """``cap info --json`` against an installed fixture capability:
+        must emit valid JSON free of commercial keys or tier values."""
         import json
-        result = _cap("info", "--json", "nonexistent/cap99999",
-                       env={"HOME": str(tmp_path)})
+        _install_fixture_cap(tmp_path, tmp_path)
+        result = _cap("info", "--json", "acme/demo", env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap info --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            # Non-JSON path: scan stderr/stdout for commercial terms
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in info --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap info --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap info --json")
 
     def test_compare_json_no_commercial_keys(self, tmp_path):
-        """``cap compare --json`` against nonexistent capabilities: JSON or
-        clean error — neither path may carry commercial keys or tier values."""
+        """``cap compare --json`` against installed fixture capabilities:
+        must emit valid JSON free of commercial keys or tier values."""
         import json
-        result = _cap("compare", "--json", "nonexistent/a", "nonexistent/b",
+        _install_fixture_cap(tmp_path, tmp_path)
+        result = _cap("compare", "--json", "acme/demo", "acme/demo",
                        env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap compare --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in compare --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap compare --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap compare --json")
 
     def test_publish_json_no_commercial_keys(self, tmp_path):
@@ -855,10 +993,11 @@ description: A test capability
         _assert_no_commercial_keys(data, "cap status --json")
 
     def test_adapt_json_no_commercial_keys(self, tmp_path):
-        """``cap adapt --json`` against a nonexistent capability: JSON or
-        clean error — neither path may carry commercial keys or tier values."""
+        """``cap adapt --json`` requires a remote Exchange API; when the
+        registry is unreachable the command produces non-JSON error output.
+        Both paths must be free of commercial keys or tier values."""
         import json
-        result = _cap("adapt", "--json", "nonexistent/cap99999",
+        result = _cap("adapt", "--json", "--target", "opencode", "acme/demo",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
@@ -893,15 +1032,13 @@ description: A test capability
         import json
         result = _cap("host", "inspect", "--json",
                        env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap host inspect --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in host inspect --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap host inspect --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap host inspect --json")
 
     def test_host_verify_json_no_commercial_keys(self, tmp_path):
@@ -956,58 +1093,59 @@ description: A test capability
         _assert_no_commercial_keys(data, "cap host unregister --json")
 
     def test_harness_add_json_no_commercial_keys(self, tmp_path):
-        """``cap harness add --json`` against a nonexistent capability:
-        JSON or clean error — neither path may carry commercial keys."""
+        """``cap harness add --json`` against an installed fixture capability:
+        must emit valid JSON free of commercial keys."""
         import json
-        result = _cap("harness", "add", "--json", "nonexistent/cap99999",
+        _install_fixture_cap(tmp_path, tmp_path)
+        result = _cap("harness", "add", "--json", "acme/demo",
                        env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap harness add --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in harness add --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap harness add --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap harness add --json")
 
     def test_harness_remove_json_no_commercial_keys(self, tmp_path):
-        """``cap harness remove --json`` against a nonexistent capability:
-        JSON or clean error — neither path may carry commercial keys."""
+        """``cap harness remove --json`` against a fixture capability with an
+        existing desired binding: must emit valid JSON free of commercial keys."""
         import json
-        result = _cap("harness", "remove", "--json", "nonexistent/cap99999",
+        _install_fixture_cap(tmp_path, tmp_path)
+        # First add a binding so remove has something to remove
+        _cap("harness", "add", "acme/demo", env={"HOME": str(tmp_path)})
+        result = _cap("harness", "remove", "--json", "acme/demo",
                        env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap harness remove --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in harness remove --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap harness remove --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap harness remove --json")
 
     def test_harness_replace_json_no_commercial_keys(self, tmp_path):
-        """``cap harness replace --json`` against a nonexistent capability:
-        JSON or clean error — neither path may carry commercial keys."""
+        """``cap harness replace --json`` against a fixture capability with an
+        existing desired binding: must emit valid JSON free of commercial keys."""
         import json
+        _install_fixture_cap(tmp_path, tmp_path)
+        # First add a binding so replace has something to work on
+        _cap("harness", "add", "acme/demo", env={"HOME": str(tmp_path)})
         result = _cap(
             "harness", "replace", "--json",
-            "nonexistent/cap99999",
+            "acme/demo",
             "--old-framework", "claude-code",
             "--new-framework", "opencode",
             env={"HOME": str(tmp_path)})
+        assert result.returncode == 0, (
+            f"cap harness replace --json failed (rc={result.returncode}): {result.stderr}"
+        )
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            out = (result.stdout + result.stderr).lower()
-            for key in _JSON_FORBIDDEN_KEYS:
-                assert key not in out, (
-                    f"Commercial key '{key}' in harness replace --json non-JSON output"
-                )
-            return
+        except json.JSONDecodeError as e:
+            pytest.fail(f"cap harness replace --json output is not valid JSON: {e}")
         _assert_no_commercial_keys(data, "cap harness replace --json")
 
     def test_skills_mcp_list_json_no_commercial_keys(self, tmp_path):

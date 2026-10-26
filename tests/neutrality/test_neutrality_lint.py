@@ -232,17 +232,18 @@ class PricingTier(IntEnum):
         assert "pricing-tier" in result.stdout.lower()
 
     COMMERCIAL_TIER_ASSIGNMENTS = [
-        "FREE = 'free'",
-        "TRIAL = 'trial'",
-        "STANDARD = 'standard'",
-        "ENTERPRISE = 'enterprise'",
+        "FREE = 'free'\n    TRIAL = 'trial'\n    STANDARD = 'standard'",
+        "TRIAL = 'trial'\n    STANDARD = 'standard'\n    ENTERPRISE = 'enterprise'",
+        "FREE = 'free'\n    TRIAL = 'trial'\n    ENTERPRISE = 'enterprise'",
+        "FREE = 'free'\n    STANDARD = 'standard'\n    ENTERPRISE = 'enterprise'",
     ]
 
     @pytest.mark.parametrize("evil_line", COMMERCIAL_TIER_ASSIGNMENTS)
     def test_commercial_tier_enum_member_rejected(self, evil_line):
+        """Three or more tier members in an Enum body must be rejected (dominance rule)."""
         content = f"\nfrom enum import Enum\n\nclass LicensePlan(Enum):\n    {evil_line}\n"
         result = _run_lint_on(content)
-        assert result.returncode != 0, f"Commercial tier assignment must be rejected: {evil_line}"
+        assert result.returncode != 0, f"Commercial tier assignment must be rejected: {evil_line[:40]}..."
         assert "commercial-tier" in result.stdout.lower()
 
     def test_licensee_id_in_dataclass_rejected(self):
@@ -799,6 +800,77 @@ class Tier(Enum):
         assert result.returncode == 0, (
             "Enum with non-tier members must pass"
         )
+
+    # ── Fix E (R6-F2): negative regression for Enum dominance ──
+
+    def test_fp_single_standard_enum_member_passes(self):
+        content = """
+from enum import Enum
+
+class SecurityPosture(Enum):
+    STANDARD = "standard"
+    HARDENED = "hardened"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            "Enum with single STANDARD + non-tier member must pass (dominance rule)"
+        )
+
+    def test_fp_standard_high_enum_passes(self):
+        content = """
+from enum import Enum
+
+class SupportLevel(Enum):
+    STANDARD = "standard"
+    HIGH = "high"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            "Enum with STANDARD+HIGH must pass (dominance rule, <3 of 4 tier words)"
+        )
+
+    def test_fp_standard_hardened_enum_passes(self):
+        content = """
+from enum import Enum
+
+class Posture(Enum):
+    STANDARD = "standard"
+    HARDENED = "hardened"
+    MINIMAL = "minimal"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            "Enum with STANDARD+HARDENED+MINIMAL must pass (dominance rule, <3 of 4)"
+        )
+
+    def test_fp_single_lowercase_standard_enum_passes(self):
+        content = """
+from enum import Enum
+
+class Mode(Enum):
+    standard = "standard"
+    advanced = "advanced"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode == 0, (
+            "Enum with single lowercase standard must pass (dominance rule)"
+        )
+
+    def test_four_tier_enum_still_rejected(self):
+        content = """
+from enum import Enum
+
+class Tier(Enum):
+    FREE = "free"
+    TRIAL = "trial"
+    STANDARD = "standard"
+    ENTERPRISE = "enterprise"
+"""
+        result = _run_lint_on(content)
+        assert result.returncode != 0, (
+            "Four-tier Enum must still be rejected"
+        )
+        assert "commercial-tier enum member" in result.stdout.lower()
 
 
 # ── CAP117F-CORE-001 criterion 6: positive controls ──
