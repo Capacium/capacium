@@ -1645,11 +1645,10 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
     Returns separate pre_publication and post_publication dicts, each with
     ``pass``, ``fail`` or ``pending`` status and an evidence reason.
 
-    When *sub_check_receipts* is provided (the observed-run path), each half
-    is derived from its own recorded sub-check receipts
+    Each half is derived from its own recorded sub-check receipts
     (``criterion3_reproducible_build``, ``criterion3_version_sources``,
-    ``criterion3_post_publication``) rather than from the single aggregated
-    gate status.
+    ``criterion3_post_publication``) regardless of the distribution aggregate
+    status.  The aggregate is only a cross-check applied later by ``_verdict``.
 
     A receipt counts only when its ``run_id`` matches ``_RUN_ID`` AND its
     status is in ``{pass, fail, pending}``.  A missing, stale, unbound or
@@ -1657,36 +1656,26 @@ def _gate_8_sub_results(statuses: dict, *, sub_check_receipts: dict | None = Non
     pending (-> BLOCKED), post then is pending (-> PREPARED at most, never
     READY).  Out-of-vocabulary statuses raise ``ValueError`` on every path.
     A counted ``fail`` receipt wins over pending.
+
+    When *sub_check_receipts* is ``None`` (no receipts available), both
+    halves are ``pending`` — absent evidence is not a pass.
     """
     _VALID_HALF = frozenset(("pass", "fail", "pending"))
 
-    dist_status = statuses.get("distribution", "not-run")
-
-    if dist_status == "not-run":
-        return {
-            "pre_publication": {
-                "status": "fail",
-                "reason": "distribution gate receipt absent from this run",
-            },
-            "post_publication": {
-                "status": "fail",
-                "reason": "distribution gate receipt absent from this run",
-            },
-        }
-
     # ── ONE derivation path for both halves, same for every aggregate ──
-    # The aggregate is only a cross-check; the halves are always derived from
-    # the sub-check receipts (criterion3_reproducible_build,
-    # criterion3_version_sources, criterion3_post_publication).
+    # The halves are always derived from the sub-check receipts
+    # (criterion3_reproducible_build, criterion3_version_sources,
+    # criterion3_post_publication).  The distribution aggregate status does
+    # not influence the half derivation; it is only a cross-check in _verdict.
     #
-    # When sub_check_receipts is None (receipts not yet available), the
-    # pre-publication half defaults to pass and the post-publication half
-    # defaults to pending — the production path always supplies a dict.
+    # Receipt vocabulary is always validated before any result is returned,
+    # so an out-of-vocabulary receipt status raises ValueError on every path
+    # including when the distribution aggregate is absent from statuses.
 
     # Pre-publication half: derived from two pre-publication sub-checks.
     if sub_check_receipts is None:
-        pre_status = "pass"
-        pre_reason = "pre-publication checks passed; build reproducible, version sources agree"
+        pre_status = "pending"
+        pre_reason = "pre-publication receipts absent from this run"
     else:
         pre_status = "pass"
         pre_reason_parts = []
@@ -1810,13 +1799,20 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
                 f"must be one of pass, fail, pending"
             )
 
-    # Validate the distribution aggregate status.
-    dist = statuses.get("distribution")
-    if dist is not None and dist not in _VALID:
-        raise ValueError(
-            f"gate distribution has invalid status {dist!r}; "
-            f"must be one of pass, fail, pending"
-        )
+    # Validate the distribution aggregate status unconditionally.
+    # An explicit None must raise ValueError (BLK-B); absent key is not-run.
+    # Use "in" to distinguish absent from None.
+    if "distribution" in statuses:
+        dist = statuses["distribution"]
+        if dist is None or dist not in _VALID:
+            raise ValueError(
+                f"gate distribution has invalid status {dist!r}; "
+                f"must be one of pass, fail, pending"
+            )
+        dist_present = True
+    else:
+        dist = None
+        dist_present = False
 
     # Validate every non-distribution gate status — a gate that is present
     # but with None or an out-of-vocabulary value raises ValueError.
@@ -1887,7 +1883,24 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
             "gate_8": gate_8,
         }
 
+    # PREPARED: only when post_publication is pending BY ABSENCE of a
+    # post receipt (reason == NOT_RUN_REQUIRES_RELEASECHAIN). A counted
+    # pending post receipt with any other reason is BLOCKED (F-3).
     if pending_gates:
+        if post_pub["reason"] != NOT_RUN_REQUIRES_RELEASECHAIN:
+            failures["distribution"] = {
+                "pre_publication": pre_pub,
+                "post_publication": post_pub,
+            }
+            return {
+                "release": "BLOCKED",
+                "blocking_gates": sorted(failures),
+                "blocking_statuses": dict(sorted(failures.items())),
+                "pending_gates": {},
+                "gate_count": len(ALL_GATES),
+                "statuses": {g: statuses.get(g, "not-run") for g in ALL_GATES},
+                "gate_8": gate_8,
+            }
         return {
             "release": "PREPARED",
             "pending_gates": dict(sorted(pending_gates.items())),
@@ -2078,40 +2091,96 @@ def _is_stale_receipt(receipt: dict | None, current_run_id: str) -> bool:
 _NON_DIST_GATES = tuple(g for g in ALL_GATES if g != "distribution")
 
 
+def _oracle_counted(receipt, run_id):
+    """A receipt counts only when its run_id matches AND status is in
+    {pass, fail, pending}.  Returns (counted, raw_status).  Absent -> not
+    counted.  Raises ValueError on out-of-vocabulary status."""
+    if receipt is None:
+        return False, None
+    if "run_id" not in receipt or receipt.get("run_id") != run_id:
+        return False, None
+    raw = receipt.get("status", "pending")
+    if raw not in ("pass", "fail", "pending"):
+        raise ValueError(f"receipt OOV status {raw!r}")
+    return True, raw
+
+
+def _oracle_halves(pre_receipts, post_receipt, run_id):
+    """Derive pre/post halves from receipts per the receipt rule.
+
+    pre  = fail if any counted fail; pending if any absent/stale/pending;
+           pass only if BOTH pre receipts are counted pass.
+    post = pass/fail/pending from a counted receipt;
+           absent  -> pending + reason NOT_RUN_REQUIRES_RELEASECHAIN;
+           stale/unbound -> 'stale' (BLOCKED);
+           OOV -> ValueError.
+    Returns dict with status/reason plus a 'post_stale' flag.
+    """
+    pre_receipts = pre_receipts or {}
+
+    pre_fail = False
+    pre_pending = False
+    for name in ("criterion3_reproducible_build", "criterion3_version_sources"):
+        counted, raw = _oracle_counted(pre_receipts.get(name), run_id)
+        if not counted:
+            pre_pending = True
+            continue
+        if raw == "fail":
+            pre_fail = True
+        elif raw == "pending":
+            pre_pending = True
+    if pre_fail:
+        pre = "fail"
+    elif pre_pending:
+        pre = "pending"
+    else:
+        pre = "pass"
+
+    post_stale = False
+    if post_receipt is None:
+        post = "pending"
+        post_reason = NOT_RUN_REQUIRES_RELEASECHAIN
+    else:
+        counted, raw = _oracle_counted(post_receipt, run_id)
+        if not counted:
+            post = "stale"
+            post_stale = True
+            post_reason = "stale"
+        else:
+            post = raw
+            post_reason = post_receipt.get("gate_status_reason", "")
+
+    return {
+        "pre": pre,
+        "pre_reason": "",
+        "post": post,
+        "post_reason": post_reason,
+        "post_stale": post_stale,
+    }
+
+
 def _oracle_verdict(statuses, *, gate_8_override=None,
                     sub_check_receipts=None,
                     accepted_main_sha=None, tag_target=None, artifacts=None):
-    """Oracle for the release verdict written purely from the specification.
+    """Independent spec oracle — written ONLY from the binding spec sections.
 
-    This function is the *independent* reference — it does not call
-    ``_verdict`` or ``_gate_8_sub_results``.  Every matrix row that is
-    generated from the dimensions below (aggregate, pre receipts, post
-    receipts, metadata) takes its expected value from this oracle, so the
-    matrix cannot drift to match a defective implementation.
+    This oracle is NOT derived from the implementation. It does not call
+    ``_verdict`` or ``_gate_8_sub_results``. Every matrix row takes its
+    expected value from this function, so the matrix cannot encode
+    implementation defects.
 
-    The rules (from verdict-split-GATE-003-r1.md, Review 4 controller decision):
+    Spec sources: verdict-split-GATE-003-r1.md sections Review 2, Review 3,
+    Review 4. Rules:
 
-    * A receipt counts only when its ``run_id`` matches ``_RUN_ID`` AND its
-      status is in ``{pass, fail, pending}``.  Any other value raises
-      ValueError.
-    * A missing, stale, unbound or out-of-vocabulary pre receipt never yields
-      pass: pre is then pending (→ BLOCKED).  A counted fail receipt wins over
-      pending.
-    * A missing post receipt yields post=pending (→ PREPARED at most, never
-      READY).  A stale/unbound post receipt yields post=fail (→ BLOCKED).
-      A counted fail wins over pending.
-    * BLOCKED iff any non-distribution gate is not pass, or pre != pass, or
-      post == fail, or a post receipt is stale/unbound.
-    * PREPARED iff all non-distribution gates pass AND pre == pass AND post is
-      pending AND the distribution aggregate is in {pass, pending}.
-    * READY iff all non-distribution gates pass AND pre == pass AND post ==
-      pass from a current run-bound receipt AND distribution aggregate == pass
-      AND accepted_main_sha is a non-empty 40-hex string AND tag_target ==
-      accepted_main_sha AND artifacts sdist+wheel digests are present.
-    * A non-distribution gate or the distribution aggregate with None or
-      out-of-vocabulary status raises ValueError.
-    * The gate_8_override path obeys the same rules for pre_publication and
-      post_publication statuses (validated and treated exactly as if derived).
+    * Absent non-distribution gate -> not-run -> BLOCKED.
+    * Explicit None / OOV on any status -> ValueError.
+    * BLOCKED when any non-distribution gate is not pass, or pre != pass,
+      or post == fail/stale.
+    * PREPARED when all non-distribution pass AND pre == pass AND post is
+      pending with reason NOT_RUN_REQUIRES_RELEASECHAIN.
+    * READY when all pass AND pre == pass AND post == pass from a current
+      receipt AND aggregate == pass AND tag_target == accepted_main_sha
+      (40-hex) AND artifact digests present.
     """
     _VALID = frozenset(("pass", "fail", "pending"))
 
@@ -2124,91 +2193,22 @@ def _oracle_verdict(statuses, *, gate_8_override=None,
                     f"Gate 8 {half_name} has invalid status {s!r}; "
                     f"must be one of pass, fail, pending"
                 )
-        pre_status = gate_8_override["pre_publication"]["status"]
-        post_status = gate_8_override["post_publication"]["status"]
-        pre_reason = gate_8_override["pre_publication"].get("reason", "")
+        pre = gate_8_override["pre_publication"]["status"]
+        post = gate_8_override["post_publication"]["status"]
         post_reason = gate_8_override["post_publication"].get("reason", "")
+        post_stale = False
     else:
-        # ── Derive pre_publication half from sub_check_receipts ──
-        if sub_check_receipts is None:
-            pre_status = "pass"
-            pre_reason = "pre-publication checks passed; build reproducible, version sources agree"
-        else:
-            pre_status = "pass"
-            pre_reason_parts = []
-            pre_has_counted_fail = False
-            for name in ("criterion3_reproducible_build", "criterion3_version_sources"):
-                receipt = sub_check_receipts.get(name)
-                if receipt is None:
-                    pre_status = "pending"
-                    pre_reason_parts.append(f"{name}: receipt absent from this run")
-                    continue
-                if receipt.get("run_id") != _RUN_ID or "run_id" not in receipt:
-                    pre_status = "pending"
-                    pre_reason_parts.append(f"{name}: missing or stale (not current evidence)")
-                    continue
-                raw = receipt.get("status", "pending")
-                if raw not in _VALID:
-                    raise ValueError(
-                        f"{name} receipt has invalid status {raw!r}; "
-                        f"must be one of pass, fail, pending"
-                    )
-                if raw == "fail":
-                    pre_has_counted_fail = True
-                    pre_reason_parts.append(f"{name}: failed")
-                elif raw == "pending":
-                    pre_status = "pending"
-                    pre_reason_parts.append(f"{name}: pending")
-            if pre_has_counted_fail:
-                pre_status = "fail"
-            pre_reason = (
-                "pre-publication check(s): " + "; ".join(pre_reason_parts)
-                if pre_reason_parts
-                else "pre-publication checks passed; build reproducible, version sources agree"
-            )
-
-        # ── Derive post_publication half from sub_check_receipts ──
-        if sub_check_receipts is None:
-            post_status = "pending"
-            post_reason = NOT_RUN_REQUIRES_RELEASECHAIN
-        else:
-            post_receipt = sub_check_receipts.get("criterion3_post_publication")
-            if post_receipt is None:
-                post_status = "pending"
-                post_reason = NOT_RUN_REQUIRES_RELEASECHAIN
-            elif post_receipt.get("run_id") != _RUN_ID or "run_id" not in post_receipt:
-                post_status = "fail"
-                post_reason = (
-                    "post-publication receipt is stale (run_id does not match "
-                    "the current run); not current evidence"
-                )
-            else:
-                raw = post_receipt.get("status", "pending")
-                if raw not in _VALID:
-                    raise ValueError(
-                        f"post-publication receipt has invalid status {raw!r}; "
-                        f"must be one of pass, fail, pending"
-                    )
-                post_status = raw
-                post_reason = post_receipt.get(
-                    "gate_status_reason",
-                    "all post-publication channel probes passed" if raw == "pass" else "",
-                )
-
-    gate_8 = {
-        "pre_publication": {"status": pre_status, "reason": pre_reason},
-        "post_publication": {"status": post_status, "reason": post_reason},
-    }
-
-    # ── Validate distribution aggregate ──
-    dist = statuses.get("distribution")
-    if dist is not None and dist not in _VALID:
-        raise ValueError(
-            f"gate distribution has invalid status {dist!r}; "
-            f"must be one of pass, fail, pending"
+        halves = _oracle_halves(
+            sub_check_receipts,
+            (sub_check_receipts or {}).get("criterion3_post_publication"),
+            _RUN_ID,
         )
+        pre = halves["pre"]
+        post = halves["post"]
+        post_reason = halves["post_reason"]
+        post_stale = halves["post_stale"]
 
-    # ── Validate non-distribution gates ──
+    # ── Vocabulary: non-distribution gates ──
     for gate in ALL_GATES:
         if gate == "distribution":
             continue
@@ -2221,33 +2221,49 @@ def _oracle_verdict(statuses, *, gate_8_override=None,
                 f"must be one of pass, fail, pending"
             )
 
-    # ── Collect non-distribution failures ──
-    failures = {}
+    # ── Vocabulary: distribution aggregate (unconditional, BLK-B) ──
+    if "distribution" in statuses:
+        dist = statuses["distribution"]
+        if dist is None or dist not in _VALID:
+            raise ValueError(
+                f"gate distribution has invalid status {dist!r}; "
+                f"must be one of pass, fail, pending"
+            )
+        dist_present = True
+    else:
+        dist = None
+        dist_present = False
+
+    # ── BLOCKED: any non-distribution gate not pass (incl. absent) ──
     for gate in ALL_GATES:
         if gate == "distribution":
             continue
         s = statuses.get(gate, "not-run")
         if s != "pass":
-            failures[gate] = s
+            return "BLOCKED"
 
-    # ── BLOCKED: pre != pass ──
-    if pre_status != "pass":
-        failures["distribution"] = {"pre_publication": gate_8["pre_publication"],
-                                      "post_publication": gate_8["post_publication"]}
-    elif post_status == "fail":
-        failures["distribution"] = {"pre_publication": gate_8["pre_publication"],
-                                      "post_publication": gate_8["post_publication"]}
-
-    if failures:
+    # ── Distribution aggregate gate ──
+    if not dist_present:
+        return "BLOCKED"
+    if dist == "fail":
+        return "BLOCKED"
+    if dist not in ("pass", "pending"):
         return "BLOCKED"
 
-    # ── PREPARED: post pending, aggregate in {pass, pending} ──
-    if post_status == "pending":
-        if dist not in ("pass", "pending"):
+    # ── Halves ──
+    if pre == "fail" or pre != "pass":
+        return "BLOCKED"
+    if post_stale or post == "fail":
+        return "BLOCKED"
+
+    # pre == pass here
+    if post == "pending":
+        # Only absent post (NOT_RUN_REQUIRES_RELEASECHAIN) is PREPARED.
+        if post_reason != NOT_RUN_REQUIRES_RELEASECHAIN:
             return "BLOCKED"
         return "PREPARED"
 
-    # ── post == pass: check for READY ──
+    # post == pass here (fail/stale already returned)
     if dist != "pass":
         return "BLOCKED"
 
@@ -2311,26 +2327,26 @@ def _build_negative_control_matrix():
             ))
 
     # ── All non-distribution gates pass, distribution pass / pending / fail ──
-    # dist=pass without receipts → post=pending → PREPARED (no post evidence).
+    # dist=pass without receipts → pre=pending → BLOCKED (absent evidence is not pass).
     idx += 1
     all_pass = {g: "pass" for g in ALL_GATES}
     sha40 = "a" * 40
     rows.append((
         f"gm-{idx:04d}", dict(all_pass),
-        None, None, None, "PREPARED",
-        "all pass + dist=pass + no receipts → PREPARED (post=pending, no evidence)",
+        None, None, None, "BLOCKED",
+        "all pass + dist=pass + no receipts → BLOCKED (pre=pending, no evidence)",
     ))
-    # dist=pass without receipts but with bound metadata → PREPARED
-    # (post is still pending without a current receipt; metadata alone cannot
-    #  reach READY).
+    # dist=pass without receipts but with bound metadata → BLOCKED
+    # (pre is still pending without current receipts; metadata alone cannot
+    #  reach PREPARED).
     idx += 1
     rows.append((
         f"gm-{idx:04d}", dict(all_pass),
         None, None,
         {"accepted_main_sha": sha40, "tag_target": sha40,
          "artifacts": {"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}}},
-        "PREPARED",
-        "all pass + dist=pass + metadata (no post receipt) → PREPARED (post=pending)",
+        "BLOCKED",
+        "all pass + dist=pass + metadata (no receipts) → BLOCKED (pre=pending)",
     ))
     # dist=pass with current post receipt (pass) + bound metadata → READY
     idx += 1
@@ -2375,6 +2391,53 @@ def _build_negative_control_matrix():
         f"gm-{idx:04d}", statuses,
         None, None, None, "BLOCKED",
         "all pass + dist=fail → BLOCKED",
+    ))
+
+    # ── distribution=None → ValueError (BLK-B: None is out-of-vocabulary) ──
+    idx += 1
+    statuses = dict(all_pass)
+    statuses["distribution"] = None
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, None, None, "ValueError",
+        "all pass + dist=None → ValueError",
+    ))
+
+    # ── Absent distribution gate → BLOCKED ──
+    idx += 1
+    statuses_no_dist = {g: "pass" for g in ALL_GATES if g != "distribution"}
+    rows.append((
+        f"gm-{idx:04d}", statuses_no_dist,
+        None, None, None, "BLOCKED",
+        "all pass + distribution absent → BLOCKED",
+    ))
+
+    # ── Absent non-distribution gate (state absent) → BLOCKED ──
+    idx += 1
+    statuses_absent_state = {g: "pass" for g in ALL_GATES if g != "state"}
+    rows.append((
+        f"gm-{idx:04d}", statuses_absent_state,
+        None, None, None, "BLOCKED",
+        "state absent + all others pass → BLOCKED",
+    ))
+
+    # ── Explicit None on non-distribution gate → ValueError ──
+    idx += 1
+    statuses_none_gate = dict(all_pass)
+    statuses_none_gate["state"] = None
+    rows.append((
+        f"gm-{idx:04d}", statuses_none_gate,
+        None, None, None, "ValueError",
+        "state=None → ValueError",
+    ))
+
+    # ── Explicit sub_check_receipts=None with dist=pass → BLOCKED (F-6) ──
+    idx += 1
+    statuses = dict(all_pass)
+    rows.append((
+        f"gm-{idx:04d}", statuses,
+        None, None, None, "BLOCKED",
+        "all pass + dist=pass + sub_check_receipts omitted → BLOCKED (pre=pending)",
     ))
 
     # ── Gate 8 override: post_publication fail (F6: receipt-driven path) ──
@@ -2720,11 +2783,12 @@ class TestCriterion1To3Gate8StateMachine:
                 assert isinstance(sub[half]["reason"], str)
                 assert len(sub[half]["reason"]) > 0
 
-    def test_gate_8_pending_distribution_has_pass_pre_pub_and_pending_post_pub(self):
-        """When distribution is pending (post-publication unobservable),
-        pre_publication is pass and post_publication is pending."""
+    def test_gate_8_pending_distribution_has_pending_pre_pub_and_pending_post_pub(self):
+        """When distribution is pending and no sub-check receipts are present,
+        pre_publication is pending (absent evidence is not pass) and
+        post_publication is pending."""
         sub = _gate_8_sub_results({"distribution": "pending"})
-        assert sub["pre_publication"]["status"] == "pass"
+        assert sub["pre_publication"]["status"] == "pending"
         assert sub["post_publication"]["status"] == "pending"
         assert NOT_RUN_REQUIRES_RELEASECHAIN in sub["post_publication"]["reason"]
 
@@ -2745,31 +2809,43 @@ class TestCriterion1To3Gate8StateMachine:
         assert "version" in sub["pre_publication"]["reason"].lower()
 
     def test_gate_8_not_run_is_fail_on_both_halves(self):
-        """Absent receipt → both halves are fail (not a valid Gate 8 status)."""
+        """When the distribution gate receipt is absent (statuses has no
+        distribution key), both halves derive from sub_check_receipts.
+        Without receipts, both are pending (absent evidence is not pass/fail)."""
         sub = _gate_8_sub_results({})
-        assert sub["pre_publication"]["status"] == "fail"
-        assert sub["post_publication"]["status"] == "fail"
+        assert sub["pre_publication"]["status"] == "pending"
+        assert sub["post_publication"]["status"] == "pending"
 
     # ── criterion 2: PREPARED ──
 
     def test_prepared_emitted_when_all_pass_except_distribution_pending(self):
         """PREPARED: Gates 1–7 and 9–14 pass, Gate 8 pre-publication passes,
-        post-publication pending with NOT_RUN_REQUIRES_RELEASECHAIN."""
+        post-publication pending with NOT_RUN_REQUIRES_RELEASECHAIN.
+        Pre-publication sub-check receipts must be present and pass."""
         statuses = {gate: "pass" for gate in ALL_GATES}
         statuses["distribution"] = "pending"
-        verdict = _verdict(statuses)
+        sub_check_receipts = {
+            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        }
+        verdict = _verdict(statuses, sub_check_receipts=sub_check_receipts)
         assert verdict["release"] == "PREPARED", (
             f"expected PREPARED when only distribution is pending, got {verdict['release']}"
         )
         assert "distribution" in verdict.get("pending_gates", {})
         assert verdict.get("gate_8", {}).get("pre_publication", {}).get("status") == "pass"
         assert verdict.get("gate_8", {}).get("post_publication", {}).get("status") == "pending"
+        assert verdict.get("gate_8", {}).get("post_publication", {}).get("reason") == NOT_RUN_REQUIRES_RELEASECHAIN
 
     def test_prepared_has_no_blocking_gates(self):
         """PREPARED must not list any blocking gates."""
         statuses = {gate: "pass" for gate in ALL_GATES}
         statuses["distribution"] = "pending"
-        verdict = _verdict(statuses)
+        sub_check_receipts = {
+            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        }
+        verdict = _verdict(statuses, sub_check_receipts=sub_check_receipts)
         assert "blocking_gates" not in verdict or verdict.get("blocking_gates") == []
 
     # ── criterion 3: READY ──
@@ -2779,37 +2855,38 @@ class TestCriterion1To3Gate8StateMachine:
         (a real 40-hex SHA) AND artifact digests are present, AND a current
         criterion3_post_publication receipt with status=pass.
 
-        Without a current post receipt the verdict is PREPARED (post=pending),
-        even with bound metadata.  Without metadata the verdict is PREPARED
-        (post=pending), not BLOCKED.
+        Without a current post receipt AND without pre receipts, the verdict is
+        BLOCKED (pre=pending, absent evidence is not pass).  Without metadata
+        the verdict is also BLOCKED (pre=pending, no receipts).
         """
         statuses = {gate: "pass" for gate in ALL_GATES}
         sha40 = "a" * 40
-        # Without release metadata: all gates pass, no post receipt → PREPARED
+        # Without release metadata and without receipts: all gates pass,
+        # no pre/post receipts → pre=pending → BLOCKED
         verdict_no_meta = _verdict(statuses)
-        assert verdict_no_meta["release"] == "PREPARED", (
-            f"all-pass without metadata → PREPARED, got {verdict_no_meta['release']}"
+        assert verdict_no_meta["release"] == "BLOCKED", (
+            f"all-pass without receipts → BLOCKED (pre=pending), got {verdict_no_meta['release']}"
         )
-        # With metadata but no post receipt → PREPARED (post is still pending)
+        # With metadata but no receipts → BLOCKED (pre is pending)
         verdict_meta_no_post = _verdict(
             statuses,
             accepted_main_sha=sha40,
             tag_target=sha40,
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
-        assert verdict_meta_no_post["release"] == "PREPARED", (
-            f"all-pass with metadata but no post receipt → PREPARED, "
+        assert verdict_meta_no_post["release"] == "BLOCKED", (
+            f"all-pass with metadata but no receipts → BLOCKED, "
             f"got {verdict_meta_no_post['release']}"
         )
-        # With metadata but tag is a human version, not SHA, no post receipt → PREPARED
+        # With metadata but tag is a human version, not SHA, no receipts → BLOCKED
         verdict_wrong_tag = _verdict(
             statuses,
             accepted_main_sha=sha40,
             tag_target="v1.1.7",
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
-        assert verdict_wrong_tag["release"] == "PREPARED", (
-            f"tag=v1.1.7 != sha + no post receipt → PREPARED, "
+        assert verdict_wrong_tag["release"] == "BLOCKED", (
+            f"tag=v1.1.7 != sha + no receipts → BLOCKED, "
             f"got {verdict_wrong_tag['release']}"
         )
         # With metadata where tag == accepted_main_sha + current post receipt → READY
@@ -2836,7 +2913,8 @@ class TestCriterion1To3Gate8StateMachine:
     # ── criterion 4: BLOCKED precedence ──
 
     def test_blocked_when_any_pre_publication_check_fails(self):
-        """BLOCKED when any required pre-publication check fails."""
+        """BLOCKED when any required pre-publication check fails.
+        Distribution also blocks when pre=pending (no receipts)."""
         for gate in ALL_GATES:
             if gate == "distribution":
                 continue
@@ -2847,7 +2925,9 @@ class TestCriterion1To3Gate8StateMachine:
             assert verdict["release"] == "BLOCKED", (
                 f"{gate}=fail must block the release, got {verdict['release']}"
             )
-            assert verdict["blocking_gates"] == [gate]
+            # distribution also blocks because pre=pending (no receipts)
+            assert gate in verdict["blocking_gates"]
+            assert "distribution" in verdict["blocking_gates"]
 
     def test_blocked_when_distribution_fails_even_with_post_pending(self):
         """A version mismatch produces Gate 8 pre-publication FAIL and overall
@@ -2868,7 +2948,9 @@ class TestCriterion1To3Gate8StateMachine:
         statuses["state"] = "fail"
         verdict = _verdict(statuses)
         assert verdict["release"] == "BLOCKED"
-        assert verdict["blocking_gates"] == ["state"]
+        # distribution also blocks because pre=pending (no receipts)
+        assert "state" in verdict["blocking_gates"]
+        assert "distribution" in verdict["blocking_gates"]
 
     # ── criterion 4 (extended): post-publication failure → BLOCKED ──
 
@@ -3086,8 +3168,7 @@ class TestCriterion1To3Gate8StateMachine:
         statuses and the two Gate 8 halves, including receipt-driven rows
         for stale, absent, and out-of-vocabulary receipts on both halves,
         and gate_8_override ValueError checks."""
-        full = {gate: statuses.get(gate, "not-run") for gate in ALL_GATES}
-        full.update(statuses)
+        full = dict(statuses)  # only gates that are actually present
         kwargs = {}
         if gate_8_override is not None:
             kwargs["gate_8_override"] = gate_8_override
@@ -3198,12 +3279,16 @@ class TestCriterion1To3Gate8StateMachine:
         the verdict is BLOCKED. This replaces the base assertion that
         'observed run verdict is recorded and blocked' which assumed Gate 8
         pending always meant BLOCKED."""
-        # All gates pass, distribution pending → PREPARED
+        # All gates pass, distribution pending, pre receipts pass → PREPARED
         statuses = {gate: "pass" for gate in ALL_GATES}
         statuses["distribution"] = "pending"
-        verdict = _verdict(statuses)
+        pre_pass = {
+            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        }
+        verdict = _verdict(statuses, sub_check_receipts=pre_pass)
         assert verdict["release"] == "PREPARED", (
-            f"distribution pending + all pass → PREPARED, got {verdict['release']}"
+            f"distribution pending + all pass + pre receipts pass → PREPARED, got {verdict['release']}"
         )
 
         # All gates pass, distribution pending, but version_sources fail
@@ -3229,7 +3314,9 @@ class TestCriterion1To3Gate8StateMachine:
         assert verdict["release"] == "BLOCKED", (
             f"state=pending + dist=pending → BLOCKED, got {verdict['release']}"
         )
-        assert verdict["blocking_gates"] == ["state"]
+        # distribution also blocks because pre=pending (no receipts)
+        assert "state" in verdict["blocking_gates"]
+        assert "distribution" in verdict["blocking_gates"]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -3387,8 +3474,15 @@ class TestCriterion8NegativeControlMatrix:
         )
         verdicts_seen.add(v["release"])
 
-        # PREPARED
-        v = _verdict({**{gate: "pass" for gate in ALL_GATES}, "distribution": "pending"})
+        # PREPARED — needs pre receipts + dist=pending
+        pre_pass = {
+            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        }
+        v = _verdict(
+            {**{gate: "pass" for gate in ALL_GATES}, "distribution": "pending"},
+            sub_check_receipts=pre_pass,
+        )
         verdicts_seen.add(v["release"])
 
         # BLOCKED — pre-pub fail
@@ -3686,38 +3780,56 @@ class TestCriterion7ReleaseVerdict:
 
     def test_all_fourteen_green_is_the_only_ready(self):
         """Fourteen passes plus bound metadata (tag_target == accepted_main_sha)
-        AND a current criterion3_post_publication receipt with status=pass
-        yield READY.  Without a current post receipt the verdict is PREPARED
-        (post=pending), even with bound metadata.
+        AND current criterion3_post_publication receipt with status=pass AND
+        current pre-publication receipts (both pass) yield READY.
 
-        Flipping any non-distribution gate to fail, pending or not-run blocks;
-        flipping distribution to pending yields PREPARED
-        (post-publication not yet runnable)."""
+        Without receipts, pre=pending → BLOCKED (absent evidence is not pass).
+        With receipts but distribution=pending → BLOCKED (no post evidence).
+        Only with all three receipt types present and pass can READY be reached.
+        """
         all_pass = {gate: "pass" for gate in ALL_GATES}
         sha40 = "a" * 40
+        pre_receipts = {
+            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
+            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+        }
 
-        # Without metadata: all gates pass, no post receipt → PREPARED
+        # Without metadata and without receipts → BLOCKED (pre=pending)
         no_meta = _verdict(all_pass)
-        assert no_meta["release"] == "PREPARED", (
-            f"all-pass without metadata → PREPARED, got {no_meta['release']}"
+        assert no_meta["release"] == "BLOCKED", (
+            f"all-pass without receipts → BLOCKED, got {no_meta['release']}"
         )
 
-        # With metadata but no current post receipt → PREPARED
+        # With metadata but no receipts → BLOCKED (pre=pending)
         meta_no_post = _verdict(
             all_pass,
             accepted_main_sha=sha40,
             tag_target=sha40,
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
-        assert meta_no_post["release"] == "PREPARED", (
-            f"all-pass with metadata but no post receipt → PREPARED, "
+        assert meta_no_post["release"] == "BLOCKED", (
+            f"all-pass with metadata but no receipts → BLOCKED, "
             f"got {meta_no_post['release']}"
+        )
+
+        # With pre receipts only + dist=pending → BLOCKED (post=pending but
+        # pre=pass, dist=pending fails the PREPARED aggregate check because
+        # there is no post evidence to make it PREPARED — actually pre=pass
+        # with dist=pending and post=pending+NOT_RUN → PREPARED)
+        # Wait: dist=pending with pre receipts pass → post=pending (absent) →
+        # PREPARED. Let me verify the logic.
+        prep_with_receipts = _verdict(
+            {**all_pass, "distribution": "pending"},
+            sub_check_receipts=pre_receipts,
+        )
+        assert prep_with_receipts["release"] == "PREPARED", (
+            f"all pass + dist=pending + pre receipts pass → PREPARED, "
+            f"got {prep_with_receipts['release']}"
         )
 
         # With metadata + current post receipt (pass) + tag == sha → READY
         ready_receipts = {
-            "criterion3_reproducible_build": {"status": "pass", "run_id": _RUN_ID},
-            "criterion3_version_sources": {"status": "pass", "run_id": _RUN_ID},
+            **pre_receipts,
             "criterion3_post_publication": {"status": "pass", "run_id": _RUN_ID},
         }
         ready = _verdict(
@@ -3770,8 +3882,8 @@ class TestCriterion7ReleaseVerdict:
                 )
                 if gate == "distribution":
                     if bad == "pending":
-                        assert blocked["release"] == "PREPARED", (
-                            f"{gate}=pending + all pass → PREPARED"
+                        assert blocked["release"] == "BLOCKED", (
+                            f"{gate}=pending + all pass + no receipts → BLOCKED"
                         )
                         continue
                     assert blocked["release"] == "BLOCKED", (
@@ -3782,7 +3894,9 @@ class TestCriterion7ReleaseVerdict:
                     assert blocked["release"] == "BLOCKED", (
                         f"{gate}={bad} must block the release"
                     )
-                    assert blocked["blocking_gates"] == [gate]
+                    # Without receipts, pre=pending → distribution also blocks
+                    assert gate in blocked["blocking_gates"]
+                    assert "distribution" in blocked["blocking_gates"]
 
             # Absent gate (not-run) blocks by omission — omit it from statuses.
             if gate != "distribution":
@@ -3797,7 +3911,9 @@ class TestCriterion7ReleaseVerdict:
                 assert blocked_absent["release"] == "BLOCKED", (
                     f"{gate} absent → BLOCKED"
                 )
-                assert blocked_absent["blocking_gates"] == [gate]
+                # Without receipts, pre=pending → distribution also blocks
+                assert gate in blocked_absent["blocking_gates"]
+                assert "distribution" in blocked_absent["blocking_gates"]
 
         # Absent distribution (not-run) blocks
         statuses_no_dist = {**all_pass}
@@ -3811,11 +3927,16 @@ class TestCriterion7ReleaseVerdict:
         assert blocked_no_dist["release"] == "BLOCKED"
         assert blocked_no_dist["blocking_gates"] == ["distribution"]
 
-        # distribution=pending with all others pass → PREPARED
+        # distribution=None raises ValueError (BLK-B)
+        statuses_none_dist = {**all_pass, "distribution": None}
+        with pytest.raises(ValueError):
+            _verdict(statuses_none_dist)
+
+        # distribution=pending with all others pass + pre receipts → PREPARED
         prep_statuses = {**all_pass, "distribution": "pending"}
-        prepared = _verdict(prep_statuses)
+        prepared = _verdict(prep_statuses, sub_check_receipts=pre_receipts)
         assert prepared["release"] == "PREPARED", (
-            "distribution pending + all others pass → PREPARED, not BLOCKED"
+            "distribution pending + all others pass + pre receipts pass → PREPARED, not BLOCKED"
         )
 
     def test_a_missing_gate_receipt_blocks(self):
