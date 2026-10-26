@@ -14,6 +14,32 @@
   endpoint references and tier enums, while continuing to accept SPDX
   identifiers, manifest package-licence fields and copyright notices.
 
+### Release State Repair
+
+- **Release readiness is reported per half, not as one opaque verdict.** The
+  distribution gate now states separately whether its pre-publication checks
+  passed and whether the published channels were verified. A pending
+  post-publication half is reported as pending with its reason; it is never
+  counted as a pass.
+- **A version mismatch blocks the release.** When `pyproject.toml`, the README
+  install references, `.version.yaml` and the changelog do not resolve to one
+  version, the release is reported as blocked before anything is published, and
+  the failure is not hidden behind pending channel checks.
+- **"Ready" requires the release metadata to be bound.** A release is reported
+  ready only when the accepted main commit is the one tagged and the sdist and
+  wheel digests match; missing evidence leaves the release blocked.
+
+### OpenClaude
+
+- **The OpenClaude adapter targets the official distribution.** Capacium's
+  OpenClaude harness support is verified against `@twigpine/openclaude@0.32.0`
+  and requires the `openclaude` executable to resolve inside that package root.
+  A binary owned by the obsolete `@gitlawb/openclaude@0.31.0` distribution no
+  longer satisfies the integration check and is treated as a negative control.
+
+These notes describe the 1.1.7 candidate. No tag, release, package upload or
+channel publication had occurred when they were written.
+
 ## [1.1.6] - 2026-09-28
 
 ### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)

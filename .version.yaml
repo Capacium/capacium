@@ -1,0 +1,19 @@
+# Capacium — declared version sources.
+#
+# The release line resolves exactly one version. Every required location below
+# is read independently; a mismatch in any single one is a pre-publication
+# failure, before any channel can be published. Prose and historical changelog
+# entries are deliberately not locations: they describe past releases and must
+# not be rewritten by a version bump.
+schema: 1
+source_of_truth: pyproject.toml
+locations:
+  - path: pyproject.toml
+    pattern: '^version\s*=\s*"(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"$'
+    required: true
+  - path: README.md
+    pattern: '(?:@v|ghcr\.io/capacium/cap:)(\d+\.\d+\.\d+)'
+    required: true
+  - path: CHANGELOG.md
+    pattern: '^##\s*\[(\d+\.\d+\.\d+)\]'
+    required: true
