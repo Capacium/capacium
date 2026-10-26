@@ -1773,9 +1773,10 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
       check passes, and every post-publication claim is explicitly
       NOT_RUN_REQUIRES_RELEASECHAIN.
     * READY: All fourteen gates pass, including Gate 8 post-publication, AND
-      *accepted_main_sha*, *tag_target* and *artifacts* are all present and
-      non-empty.  Without them the verdict stays PREPARED — the release is not
-      yet fully bound.
+      *accepted_main_sha* is a 40-hex SHA, *tag_target* equals
+      *accepted_main_sha*, and *artifacts* (sdist + wheel digests) are present.
+      Without all three the verdict is BLOCKED — the release metadata is not
+      yet bound.
     * BLOCKED: Any required pre-publication check fails, any attempted
       post-publication check fails, or any non-distribution gate is not
       ``pass``.  A pending non-distribution gate is **not** a pass — failure
@@ -1787,7 +1788,8 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
     *sub_check_receipts* passes through to ``_gate_8_sub_results`` so the
     pre-publication half is derived from its own recorded sub-check receipts.
     *accepted_main_sha*, *tag_target* and *artifacts* bind the READY verdict
-    to the actual release metadata; when absent the verdict stays PREPARED.
+    to the actual release metadata; when any is absent or tag_target differs
+    from accepted_main_sha, the verdict is BLOCKED.
     """
     gate_8 = gate_8_override if gate_8_override is not None else _gate_8_sub_results(
         statuses, sub_check_receipts=sub_check_receipts
@@ -1859,6 +1861,8 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
     if tag_matches_sha and has_digests:
         return {
             "release": "READY",
+            "blocking_gates": [],
+            "rename_to": None,
             "accepted_main_sha": accepted_main_sha,
             "tag_target": tag_target,
             "artifacts": artifacts,
@@ -2850,11 +2854,12 @@ class TestCriterion8NegativeControlMatrix:
         BLOCKED (post-pub fail), BLOCKED (both fail), and READY."""
         verdicts_seen = set()
 
-        # READY — with metadata
+        # READY — with metadata where tag == accepted_main_sha
+        sha40 = "a" * 40
         v = _verdict(
             {gate: "pass" for gate in ALL_GATES},
-            accepted_main_sha="m" * 40,
-            tag_target="v1.1.7",
+            accepted_main_sha=sha40,
+            tag_target=sha40,
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
         verdicts_seen.add(v["release"])
@@ -3045,12 +3050,16 @@ class TestCriterion9ReleaseEvidence:
     def test_evidence_environment_includes_platform_and_python(self):
         """The environment section records platform and Python version so
         evidence is reproducible."""
+        gate_8 = {
+            "pre_publication": {"status": "pass", "reason": "ok"},
+            "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+        }
         evidence = _release_evidence(
             candidate_sha="c" * 40,
             accepted_main_sha=None,
             tag_target=None,
             artifacts={},
-            gate_8_sub_results={},
+            gate_8_sub_results=gate_8,
             env_info={"ci": "forgejo", "runner": "macos-arm64"},
         )
         env = evidence["environment"]
@@ -3063,24 +3072,32 @@ class TestCriterion9ReleaseEvidence:
         """Before the promotion gate accepts a main commit, accepted_main_sha
         is explicitly None — not omitted. This distinguishes 'not yet set' from
         'field missing'."""
+        gate_8 = {
+            "pre_publication": {"status": "pass", "reason": "ok"},
+            "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+        }
         evidence = _release_evidence(
             candidate_sha="c" * 40,
             accepted_main_sha=None,
             tag_target=None,
             artifacts={},
-            gate_8_sub_results={},
+            gate_8_sub_results=gate_8,
         )
         assert "accepted_main_sha" in evidence
         assert evidence["accepted_main_sha"] is None
 
     def test_tag_target_is_none_until_tag_created(self):
         """Before the release tag exists, tag_target is explicitly None."""
+        gate_8 = {
+            "pre_publication": {"status": "pass", "reason": "ok"},
+            "post_publication": {"status": "pending", "reason": NOT_RUN_REQUIRES_RELEASECHAIN},
+        }
         evidence = _release_evidence(
             candidate_sha="c" * 40,
             accepted_main_sha="m" * 40,
             tag_target=None,
             artifacts={},
-            gate_8_sub_results={},
+            gate_8_sub_results=gate_8,
         )
         assert "tag_target" in evidence
         assert evidence["tag_target"] is None
@@ -3136,38 +3153,53 @@ class TestCriterion7ReleaseVerdict:
     gates read READY; pending post-publication yields PREPARED, not BLOCKED."""
 
     def test_all_fourteen_green_is_the_only_ready(self):
-        """Fourteen passes plus bound metadata yield READY. Flipping any
-        non-distribution gate to fail, pending or not-run blocks; flipping
-        distribution to pending yields PREPARED (post-publication not yet
-        runnable). READY is refused when metadata is absent."""
+        """Fourteen passes plus bound metadata (tag_target == accepted_main_sha)
+        yield READY. Flipping any non-distribution gate to fail, pending or
+        not-run blocks; flipping distribution to pending yields PREPARED
+        (post-publication not yet runnable). READY is refused when metadata
+        is absent or tag_target differs from accepted_main_sha."""
         all_pass = {gate: "pass" for gate in ALL_GATES}
+        sha40 = "a" * 40
 
-        # Without metadata: all gates pass but READY is refused
-        prepared_no_meta = _verdict(all_pass)
-        assert prepared_no_meta["release"] == "PREPARED", (
-            f"all-pass without metadata → PREPARED, got {prepared_no_meta['release']}"
+        # Without metadata: all gates pass but READY is refused → BLOCKED
+        blocked_no_meta = _verdict(all_pass)
+        assert blocked_no_meta["release"] == "BLOCKED", (
+            f"all-pass without metadata → BLOCKED, got {blocked_no_meta['release']}"
         )
+        assert blocked_no_meta["blocking_gates"] == ["distribution"]
 
-        # With metadata: READY
+        # With metadata where tag == accepted_main_sha → READY
         ready = _verdict(
             all_pass,
-            accepted_main_sha="m" * 40,
-            tag_target="v1.1.7",
+            accepted_main_sha=sha40,
+            tag_target=sha40,
             artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
         )
         assert ready["release"] == "READY"
-        assert "blocking_gates" not in ready or ready.get("blocking_gates") == []
+        assert ready["blocking_gates"] == []
+        assert ready["rename_to"] is None
         assert ready["gate_count"] == 14
-        assert ready["accepted_main_sha"] == "m" * 40
-        assert ready["tag_target"] == "v1.1.7"
+        assert ready["accepted_main_sha"] == sha40
+        assert ready["tag_target"] == sha40
+
+        # With metadata but tag is a version string, not SHA → BLOCKED
+        blocked_wrong_tag = _verdict(
+            all_pass,
+            accepted_main_sha=sha40,
+            tag_target="v1.1.7",
+            artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
+        )
+        assert blocked_wrong_tag["release"] == "BLOCKED", (
+            f"tag=v1.1.7 != sha → BLOCKED, got {blocked_wrong_tag['release']}"
+        )
 
         for gate in ALL_GATES:
             for bad in ("fail", "pending", "not-run"):
                 statuses = {**all_pass, gate: bad}
                 blocked = _verdict(
                     statuses,
-                    accepted_main_sha="m" * 40,
-                    tag_target="v1.1.7",
+                    accepted_main_sha=sha40,
+                    tag_target=sha40,
                     artifacts={"sdist": {"sha256": "a" * 64}, "wheel": {"sha256": "b" * 64}},
                 )
                 if gate == "distribution":
