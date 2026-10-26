@@ -187,17 +187,62 @@ class TestCommercialLicenseAbsenceC3:
 
     def test_license_not_in_choice_list(self):
         """``license`` is not in the argparse choices list."""
-        result = _cap("--help")
-        # The choices list appears in the usage line or error message.
-        # Verify license does not appear as a valid command choice.
-        out = result.stdout
-        assert "license" not in out.split(
-            "invalid choice:"
-        )[-1] if "invalid choice" in out else True
-        # Verify the usage line does not list license.
-        # We check by confirming ``cap license`` exits non-zero.
+        # Verify ``cap license`` exits non-zero.
         unknown = _cap("license")
         assert unknown.returncode != 0
+
+    def test_license_module_absent(self):
+        """``src/capacium/commands/license.py`` does not exist."""
+        repo_root = Path(__file__).resolve().parent.parent
+        license_py = repo_root / "src" / "capacium" / "commands" / "license.py"
+        assert not license_py.exists(), (
+            f"license.py must not exist: {license_py}"
+        )
+
+    def test_no_license_subparser_in_tree(self):
+        """Walk the argparse parser tree and assert no subparser name or
+        alias is license/licence."""
+        import ast
+        repo_root = Path(__file__).resolve().parent.parent
+        cli_py = repo_root / "src" / "capacium" / "cli.py"
+        tree = ast.parse(cli_py.read_text())
+
+        class SubparserCollector(ast.NodeVisitor):
+            def __init__(self):
+                self.names: list[tuple[int, str]] = []
+                self.aliases: list[tuple[int, str]] = []
+
+            def visit_Call(self, node):
+                if (isinstance(node.func, ast.Attribute)
+                        and node.func.attr == 'add_parser'):
+                    # Positional name
+                    if node.args and isinstance(node.args[0], ast.Constant):
+                        name = node.args[0].value
+                        if isinstance(name, str):
+                            self.names.append((node.lineno, name))
+                    # Keyword name
+                    for kw in node.keywords:
+                        if kw.arg == 'name' and isinstance(kw.value, ast.Constant):
+                            self.names.append((node.lineno, kw.value.value))
+                    # Aliases keyword
+                    for kw in node.keywords:
+                        if kw.arg == 'aliases' and isinstance(kw.value, ast.List):
+                            for elt in kw.value.elts:
+                                if isinstance(elt, ast.Constant):
+                                    self.aliases.append((node.lineno, elt.value))
+                self.generic_visit(node)
+
+        collector = SubparserCollector()
+        collector.visit(tree)
+
+        for lineno, name in collector.names:
+            assert name.lower() not in ('license', 'licence'), (
+                f"Prohibited subparser name '{name}' at cli.py:{lineno}"
+            )
+        for lineno, alias in collector.aliases:
+            assert alias.lower() not in ('license', 'licence'), (
+                f"Prohibited subparser alias '{alias}' at cli.py:{lineno}"
+            )
 
     def test_license_exits_nonzero_as_unknown(self):
         """``cap license`` exits with a non-zero code (unknown command)."""
@@ -494,6 +539,44 @@ class TestJsonCompletenessC4:
             f"{[_json_command_label(c) for c in sorted(extra_in_map)]}"
         )
 
+    def test_no_vacuous_json_decode_handler(self):
+        """No mapped test contains ``except json.JSONDecodeError:`` with a
+        body that is exactly a bare ``return`` (no assertions)."""
+        import inspect
+        import ast as ast_mod
+        source_lines, _ = inspect.getsourcelines(TestJsonContractC4)
+        source = ''.join(source_lines)
+        tree = ast_mod.parse(source)
+
+        class VacuousDetector(ast_mod.NodeVisitor):
+            def __init__(self):
+                self.vacuous: list[str] = []
+
+            def visit_FunctionDef(self, node):
+                self._check(node)
+                self.generic_visit(node)
+
+            def _check(self, node):
+                for item in ast_mod.walk(node):
+                    if isinstance(item, ast_mod.Try):
+                        for handler in item.handlers:
+                            if (isinstance(handler.type, ast_mod.Attribute)
+                                    and handler.type.attr == 'JSONDecodeError'):
+                                # Handler body is vacuous only if it's exactly
+                                # [Return()] — i.e. a single bare return with
+                                # no preceding assertions.
+                                if (len(handler.body) == 1
+                                        and isinstance(handler.body[0], ast_mod.Return)
+                                        and handler.body[0].value is None):
+                                    self.vacuous.append(node.name)
+
+        detector = VacuousDetector()
+        detector.visit(tree)
+        assert not detector.vacuous, (
+            f"Tests with vacuous JSONDecodeError handler (must have assertions): "
+            f"{detector.vacuous}"
+        )
+
     def test_every_mapped_surface_has_test_method(self):
         """Every entry in _COVERAGE_MAP maps to an existing test method."""
         # Collect actual test method names from TestJsonContractC4
@@ -687,86 +770,121 @@ description: A test capability
         _assert_no_commercial_keys(data, "cap install --json")
 
     def test_info_json_no_commercial_keys(self, tmp_path):
-        """``cap info --json`` against a nonexistent capability emits
-        valid JSON free of commercial keys."""
+        """``cap info --json`` against a nonexistent capability: JSON or
+        clean error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("info", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
-        # May succeed or fail, but stdout must be JSON if it succeeds.
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return  # error output, not JSON — acceptable
+            # Non-JSON path: scan stderr/stdout for commercial terms
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in info --json non-JSON output"
+                )
+            return
         _assert_no_commercial_keys(data, "cap info --json")
 
     def test_compare_json_no_commercial_keys(self, tmp_path):
-        """``cap compare --json`` against nonexistent capabilities emits
-        valid JSON free of commercial keys."""
+        """``cap compare --json`` against nonexistent capabilities: JSON or
+        clean error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("compare", "--json", "nonexistent/a", "nonexistent/b",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in compare --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap compare --json")
 
     def test_publish_json_no_commercial_keys(self, tmp_path):
-        """``cap publish --json`` against a nonexistent path emits
-        valid JSON free of commercial keys."""
+        """``cap publish --json`` against a nonexistent path: JSON or
+        clean error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("publish", "--json", "/nonexistent/path.tar.gz",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in publish --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap publish --json")
 
     def test_repair_json_no_commercial_keys(self, tmp_path):
-        """``cap repair --json`` against an empty home emits valid JSON
-        free of commercial keys."""
+        """``cap repair --json`` against an empty home: JSON or clean
+        error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("repair", "--json", env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in repair --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap repair --json")
 
     def test_status_json_no_commercial_keys(self, tmp_path):
-        """``cap status --json`` against a nonexistent capability emits
-        valid JSON free of commercial keys."""
+        """``cap status --json`` against a nonexistent capability: JSON or
+        clean error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("status", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in status --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap status --json")
 
     def test_adapt_json_no_commercial_keys(self, tmp_path):
-        """``cap adapt --json`` against a nonexistent capability emits
-        valid JSON free of commercial keys."""
+        """``cap adapt --json`` against a nonexistent capability: JSON or
+        clean error — neither path may carry commercial keys or tier values."""
         import json
         result = _cap("adapt", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in adapt --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap adapt --json")
 
     def test_host_register_json_no_commercial_keys(self, tmp_path):
-        """``cap host register --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap host register --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("host", "register", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in host register --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap host register --json")
 
@@ -778,72 +896,102 @@ description: A test capability
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in host inspect --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap host inspect --json")
 
     def test_host_verify_json_no_commercial_keys(self, tmp_path):
-        """``cap host verify --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap host verify --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("host", "verify", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in host verify --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap host verify --json")
 
     def test_host_repair_json_no_commercial_keys(self, tmp_path):
-        """``cap host repair --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap host repair --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("host", "repair", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in host repair --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap host repair --json")
 
     def test_host_unregister_json_no_commercial_keys(self, tmp_path):
-        """``cap host unregister --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap host unregister --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("host", "unregister", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in host unregister --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap host unregister --json")
 
     def test_harness_add_json_no_commercial_keys(self, tmp_path):
-        """``cap harness add --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap harness add --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("harness", "add", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in harness add --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap harness add --json")
 
     def test_harness_remove_json_no_commercial_keys(self, tmp_path):
-        """``cap harness remove --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap harness remove --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap("harness", "remove", "--json", "nonexistent/cap99999",
                        env={"HOME": str(tmp_path)})
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in harness remove --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap harness remove --json")
 
     def test_harness_replace_json_no_commercial_keys(self, tmp_path):
-        """``cap harness replace --json`` against a nonexistent capability
-        emits valid JSON free of commercial keys."""
+        """``cap harness replace --json`` against a nonexistent capability:
+        JSON or clean error — neither path may carry commercial keys."""
         import json
         result = _cap(
             "harness", "replace", "--json",
@@ -854,6 +1002,11 @@ description: A test capability
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in harness replace --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap harness replace --json")
 
@@ -866,6 +1019,11 @@ description: A test capability
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            out = (result.stdout + result.stderr).lower()
+            for key in _JSON_FORBIDDEN_KEYS:
+                assert key not in out, (
+                    f"Commercial key '{key}' in skills-mcp list --json non-JSON output"
+                )
             return
         _assert_no_commercial_keys(data, "cap skills-mcp list --json")
 
