@@ -3340,7 +3340,7 @@ class TestFixH_GeneratorCoverage:
         """At least one catalog in a batch has optional_deps."""
         TestFixG_BacktrackingOracle._random_catalog(
             42, num_coords=4, max_versions=3,
-        )
+        )[0]
         # With num_coords=4 and optional_deps probability 0.2 per non-dep
         # pair, it's likely but not certain. Check a batch.
         for seed in range(42, 58):
