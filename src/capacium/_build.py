@@ -113,11 +113,23 @@ def _normalize_metadata(data: bytes) -> bytes:
 
     Pins ``Metadata-Version`` to 2.1, normalises ``Requires-Dist`` spacing
     and quoting, drops ``Dynamic``, and sorts headers alphabetically (with
-    ``Metadata-Version`` always first).
+    ``Metadata-Version`` always first). The blank line that separates RFC 822
+    headers from the body is preserved; body lines are never sorted.
     """
     lines = data.decode("utf-8").splitlines()
+    # Find the first blank line — it separates headers from the body.
+    blank_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line == "":
+            blank_idx = i
+            break
+    if blank_idx is None:
+        blank_idx = len(lines)
+    header_lines = lines[:blank_idx]
+    body_lines = lines[blank_idx:]  # includes the blank terminator at [0]
+
     result: list[str] = []
-    for line in lines:
+    for line in header_lines:
         if line.startswith("Metadata-Version:"):
             result.append("Metadata-Version: 2.1")
         elif line.startswith("Dynamic:"):
@@ -127,9 +139,9 @@ def _normalize_metadata(data: bytes) -> bytes:
             result.append(f"Requires-Dist: {_normalize_requires_dist(value.strip())}")
         else:
             result.append(line)
-    header = result[0]  # Metadata-Version
-    body = sorted(result[1:])
-    return "\n".join([header] + body).encode("utf-8") + b"\n"
+    header_first = result[0]  # Metadata-Version
+    header_rest = sorted(result[1:])
+    return "\n".join([header_first] + header_rest + body_lines).encode("utf-8")
 
 
 def _normalize_wheel_file(data: bytes) -> bytes:

@@ -1,7 +1,6 @@
-"""M7-001 distribution checks: channel parity and rollback reliability.
+"""M7-001 distribution checks: channel parity, metadata integrity and rollback.
 
-Two concerns, verified as a textual/workflow contract plus a runtime
-rollback invariant:
+Three concerns:
 
 1. Channel parity — every distribution channel must resolve the SAME version
    and image name/tag. The historical contradiction (CAP-CI-002) was three
@@ -14,6 +13,10 @@ rollback invariant:
 2. Rollback — a transactional remove must restore the registry row and client
    state exactly, not merely their existence. The upgrade path (update.py) has
    no rollback journal; that gap is recorded in the ops receipt, not here.
+
+3. Metadata integrity — the reproducibility normaliser must preserve the
+   RFC 822 header/body structure so that Name and Version remain readable
+   by email.parser and importlib.metadata after wheel processing.
 """
 
 from __future__ import annotations
@@ -218,3 +221,70 @@ def test_remove_rollback_restores_client_config_verbatim(tmp_home):
     assert config_path.read_text() == before
     assert registry.get_capability("acme/rb-mcp") is not None
     assert package_dir.exists()
+
+
+# ── Metadata integrity ─────────────────────────────────────────────────────
+
+
+def test_metadata_normalization_preserves_name_and_version():
+    """_normalize_metadata must keep Name/Version in the header block.
+
+    Regression: the old implementation sorted ALL lines including the blank
+    line that terminates RFC 822 headers, so Name and Version fell into the
+    body and email.parser / importlib.metadata could not find them.
+    """
+    from email.parser import Parser
+    from capacium._build import _normalize_metadata
+
+    # Simulate a realistic METADATA: headers first, then a blank separator,
+    # then the description body.
+    original = b"""\
+Metadata-Version: 2.1
+Name: capacium
+Version: 1.1.7
+Summary: Capability Packaging System
+Home-page: https://capacium.xyz
+Author: Capacium
+License: Apache-2.0
+Requires-Python: >=3.10
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: capacium-models>=1.1.0
+Requires-Dist: tomli>=2.0.0; python_version< '3.11'
+Dynamic: Requires-Dist
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: Apache Software License
+Description-Content-Type: text/markdown
+
+Capacium defines a standard manifest format for AI agent capabilities.
+"""
+
+    normalized = _normalize_metadata(original)
+
+    # Must be valid bytes.
+    assert isinstance(normalized, bytes)
+
+    # email.parser must find Name and Version.
+    msg = Parser().parsestr(normalized.decode("utf-8"))
+    assert msg["Name"] == "capacium", f"Name header missing or wrong: {msg['Name']!r}"
+    assert msg["Version"] == "1.1.7", f"Version header missing or wrong: {msg['Version']!r}"
+
+    # The blank line separator must appear exactly once, before the body.
+    text = normalized.decode("utf-8")
+    lines = text.splitlines()
+    blank_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line == "":
+            blank_idx = i
+            break
+    assert blank_idx is not None, "no blank line separator in METADATA"
+    # Everything before the blank must be a header (contains ": ").
+    for line in lines[:blank_idx]:
+        assert ": " in line or line.startswith("Metadata-Version:"), (
+            f"non-header line before blank separator: {line!r}"
+        )
+    # The body must contain the description text.
+    body = "\n".join(lines[blank_idx + 1:])
+    assert "Capacium defines" in body, f"body missing: {body!r}"
+
+    # Dynamic must be dropped.
+    assert "Dynamic:" not in text, "Dynamic field was not dropped"
