@@ -1812,10 +1812,8 @@ def _verdict(statuses: dict, *, gate_8_override: dict | None = None,
                 f"gate distribution has invalid status {dist!r}; "
                 f"must be one of pass, fail, pending"
             )
-        dist_present = True
     else:
         dist = None
-        dist_present = False
 
     # Validate every non-distribution gate status — a gate that is present
     # but with None or an out-of-vocabulary value raises ValueError.

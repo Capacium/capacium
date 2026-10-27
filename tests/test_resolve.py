@@ -1817,7 +1817,7 @@ class TestFixB_C7_ReplayVerification:
         }
 
         resolver = Resolver(catalog=catalog)
-        lock = resolver.resolve("alice/lib", "1.0.0").to_lock()
+        resolver.resolve("alice/lib", "1.0.0").to_lock()
 
         # Use a lock with root not in catalog
         fake_lock = {
@@ -2968,7 +2968,7 @@ class TestFixG_BacktrackingOracle:
             )
             resolver = Resolver(catalog=catalog)
             try:
-                plan = resolver.resolve(root, version_spec)
+                resolver.resolve(root, version_spec)
                 resolver_success = True
             except ResolveError:
                 resolver_success = False
@@ -3338,9 +3338,9 @@ class TestFixH_GeneratorCoverage:
 
     def test_random_catalog_emits_optional_deps(self):
         """At least one catalog in a batch has optional_deps."""
-        catalog = TestFixG_BacktrackingOracle._random_catalog(
+        TestFixG_BacktrackingOracle._random_catalog(
             42, num_coords=4, max_versions=3,
-        )[0]
+        )
         # With num_coords=4 and optional_deps probability 0.2 per non-dep
         # pair, it's likely but not certain. Check a batch.
         for seed in range(42, 58):
@@ -3705,7 +3705,7 @@ class TestFixI_OracleExpanded:
                 )
             resolver = Resolver(catalog=catalog)
             try:
-                plan = resolver.resolve(root, version_spec)
+                resolver.resolve(root, version_spec)
                 resolver_success = True
             except ResolveError:
                 resolver_success = False

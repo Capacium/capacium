@@ -1206,7 +1206,7 @@ class Resolver:
     def _find_mandatory_cycle(self, selected: Dict[str, str]) -> Optional[List[str]]:
         """Return a cycle path if the mandatory graph (deps + bundle_members)
         of *selected* contains a cycle, or None."""
-        WHITE, GRAY, BLACK = 0, 1, 2
+        GRAY, BLACK = 1, 2
         color: Dict[str, int] = {}
         parent: Dict[str, Optional[str]] = {}
 
@@ -1266,7 +1266,7 @@ class Resolver:
         and ``bundle_members`` as directed edges. Returns the first cycle
         found as a list of coordinates.
         """
-        WHITE, GRAY, BLACK = 0, 1, 2
+        GRAY, BLACK = 1, 2
         color: Dict[str, int] = {}
         parent: Dict[str, Optional[str]] = {}
 

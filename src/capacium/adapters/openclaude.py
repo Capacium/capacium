@@ -16,7 +16,7 @@ import os
 import platform
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List
 
 from ..storage import StorageManager
 from ..symlink_manager import SymlinkManager
