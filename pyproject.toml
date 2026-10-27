@@ -74,7 +74,7 @@ capacium-skills-mcp = "capacium.skills_mcp_wrapper:main"
 # gzip container and member mtimes at build time. This command rewrites the
 # archive post-hoc so a build with SOURCE_DATE_EPOCH set is byte-reproducible;
 # without the variable the archive is untouched.
-cmdclass = {sdist = "capacium._build.ReproducibleSdist"}
+cmdclass = {sdist = "capacium._build.ReproducibleSdist", bdist_wheel = "capacium._build.ReproducibleWheel"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
