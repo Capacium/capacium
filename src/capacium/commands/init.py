@@ -173,6 +173,12 @@ def init_capability(
 
     manifest.save(output_path)
     print(f"\n  Created {output_path}")
+
+    # The initial seed and the unknown-capability install share one pipeline
+    # and one durable EvidenceRecord schema: a freshly created capability
+    # starts from null publisher authority and no security assessment.
+    from ..trust import ORIGIN_SEED, build_evidence_record, write_evidence_record
+    write_evidence_record(output_path.parent, build_evidence_record(ORIGIN_SEED))
     return True
 
 

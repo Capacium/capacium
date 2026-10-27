@@ -1,27 +1,191 @@
-## [1.1.6] - 2026-09-28
-
-### 🚀 Features & Ecosystem (The "Understand-Anything" Cut)
-- **100% "One-Line Install" Compliance**: Added native support for 6 new AI harnesses, making Capacium fully compliant with the Egonex-AI *Understand-Anything* ecosystem.
-  - `pi` (`~/.agents/skills/`)
-  - `vibe` (`~/.vibe/skills/`)
-  - `kimi` (`~/.kimi-code/skills/`)
-  - `trae` (`~/.trae/skills/`)
-  - `nanobot` (`~/.nanobot/workspace/skills/`)
-  - `kiro` (`~/.kiro/skills/`)
-- **Framework Detector**: Upgraded the internal detection pipeline (`harness_link_roots`) to support 38 active AI agent environments.
-
-### 🛡️ Security & UX (The "Brew++" Update)
-- **Single Registry Fallback**: `cap install` now dynamically pulls fallback manifests from the PostgreSQL backend if the upstream repository lacks a `capability.yaml`.
-- **The Consent Gate**: Introduced a strict, interactive security prompt when installing `community-provided` manifests. Execution is blocked unless `--allow-community-manifest` is explicitly passed or manually confirmed.
-- **Enterprise Provenance**: Added `manifest_origin` to `.capacium-source.json` to track exactly which trust-tier (publisher vs. community) authorized the installation.
-- **Brew-level Transparency**: Completely overhauled the Terminal UI in `src/capacium/ui.py`. Implemented strict visual hierarchies (`==>`), hidden subprocess logs with spinners, and determinate ASCII progress bars.
-
-### ⚙️ Ops & Infrastructure
-- **Ops-Engine Pin**: Explicitly pinned the `capacium-ops` layover to `ops-engine v3.4.2` to guarantee stable PostgreSQL backend interactions for the registry payload.
-
 # Changelog
 
-## Capacium v0.18.0 — One decision about what may be removed (2026-08-25)
+## [1.1.7] - 2026-10-23
+
+### Neutral-Core Boundary
+
+- **Commercial license command removed.** The pre-launch `cap license` command
+  (issue, validate, revoke, list) has been removed to enforce the neutral-Core
+  boundary defined in MANIFESTO §4. Capacium Core does not issue, validate or
+  decide commercial licence entitlements. The commercial licensing surface is
+  owned by SevenOfNine and will be delivered through a separate product channel.
+  No compatibility shim is provided; the command was never part of a published
+  Capacium release.
+- **Neutrality lint hardened.** The neutrality lint now rejects executable Core
+  uses of licensee identifiers, licence-type classifications, commercial REST
+  endpoint references and tier enums, while continuing to accept SPDX
+  identifiers, manifest package-licence fields and copyright notices.
+
+### Release State Repair
+
+- **Release readiness is reported per half, not as one opaque verdict.** The
+  distribution gate now states separately whether its pre-publication checks
+  passed and whether the published channels were verified. A pending
+  post-publication half is reported as pending with its reason; it is never
+  counted as a pass.
+- **A version mismatch blocks the release.** When `pyproject.toml`, the README
+  install references, `.version.yaml` and the changelog do not resolve to one
+  version, the release is reported as blocked before anything is published, and
+  the failure is not hidden behind pending channel checks.
+- **"Ready" requires the release metadata to be bound.** A release is reported
+  ready only when the accepted main commit is the one tagged and the sdist and
+  wheel digests match; missing evidence leaves the release blocked.
+
+### OpenClaude
+
+- **The OpenClaude adapter targets the official distribution.** Capacium's
+  OpenClaude harness support is verified against `@twigpine/openclaude@0.32.0`
+  and requires the `openclaude` executable to resolve inside that package root.
+  A binary owned by the obsolete `@gitlawb/openclaude@0.31.0` distribution no
+  longer satisfies the integration check and is treated as a negative control.
+
+These notes describe the 1.1.7 candidate. No tag, release, package upload or
+channel publication had occurred when they were written.
+
+## Unreleased
+
+- **Release notes come from the changelog, not the commit log.** Both the
+  Forgejo and GitHub release jobs publish the release body from the matching
+  tag's `CHANGELOG.md` section and fail before creating or editing a release
+  object when the tag has no entry, instead of generating notes from `git log`.
+- **External-audience gate on release notes.** A release body that names this
+  repository's own tracker is refused before publication. The vocabulary is the
+  committed `.ops.yaml` tracker-prefix list, parsed by one shared
+  stdlib-only parser the two jobs both invoke; the checker itself is the
+  pinned ops-engine helper.
+
+## Capacium v1.1.6 — Universal ecosystem parity and secure defaults (2026-09-28)
+
+When connecting multiple AI agents and IDEs to your capabilities, ensuring absolute compatibility across the fragmented agent landscape is critical. Previously, users had to rely on external installation scripts or manual configuration to bridge the gap for emerging tools. Furthermore, discovering capabilities across different trust tiers (publisher-verified vs. community-provided) lacked strict, interactive security barriers.
+
+This release establishes native "one-line install" parity across the entire ecosystem, expanding the framework detector to support 38 active AI environments out-of-the-box. It also overhauls the terminal UX to introduce a strict Consent Gate, ensuring unverified community manifests are never installed silently. Finally, it unifies the registry architecture to pull fallback manifests directly from a single PostgreSQL backend, eliminating architectural fragmentation.
+
+### Added
+- **Ecosystem Parity**: Native support for 6 new AI harnesses (`pi`, `vibe`, `kimi`, `trae`, `nanobot`, `kiro`), making Capacium universally compatible out-of-the-box.
+- **The Consent Gate**: A strict, interactive security prompt when installing `community-provided` manifests. Execution is now blocked unless explicitly bypassed or manually confirmed.
+- **Enterprise Provenance Tracking**: The local `.capacium-source.json` now includes `manifest_origin`, securely tracking the trust-tier that authorized the installation.
+
+### Changed
+- **Terminal UX Transparency**: Completely overhauled `src/capacium/ui.py`. Introduced strict visual hierarchies (using `==>`), hidden subprocess logs with elegant spinners, and determinate ASCII progress bars, inspired by the transparency standards of top-tier package managers.
+- **Single Registry Fallback**: `cap install` dynamically delegates fallback lookups to the primary backend if the upstream repository lacks a capability manifest.
+
+### Fixed
+- **Stable Ops-Engine Constraints**: Explicitly pinned the `capacium-ops` layover to `ops-engine v3.4.2` to guarantee deterministic backend interactions for the registry payload.
+
+## Capacium v1.1.1 — Publish outcomes you can act on (2026-09-09)
+
+If you publish capabilities from a script, `cap publish` was unusable as a
+building block. It reported whether a publish succeeded as a human sentence on
+stdout, and every failure — a bad token, an owner you are not allowed to write
+as, a conflict with an existing version, a network blip — collapsed to the same
+exit code. A caller could not tell "this will never succeed, fix the request"
+apart from "the request may already have been recorded, read it back before
+retrying", so the safe reaction to a failure (retry? change? stop?) had to be
+guessed from prose.
+
+This release makes that outcome machine-readable and distinguishes the failure
+classes, so an automated publisher can decide correctly without a human reading
+the log. It also fixes the support text and the Windows behavior that stood
+between the release and a green cross-platform validation.
+
+### Added
+
+- **Structured publish receipts.** `cap publish --json` emits one JSON object on
+  stdout describing what was published: `canonical_name`, `name`, `version`,
+  `publication_id` and `publication_digest` when the Exchange returns them, and
+  the `created` / `idempotent` / `status` flags. In JSON mode the receipt is the
+  only thing on stdout; progress prose moves to stderr so it cannot corrupt the
+  payload. A human run without `--json` prints the same facts as readable text,
+  including a clear `accepted (new publication)` vs `accepted (idempotent
+  retry)` line instead of a fabricated success.
+
+### Changed
+
+- **Publish exits with a class-specific code.** A caller can now branch on the
+  outcome rather than parse stderr: `0` accepted, `1` local user error (missing
+  manifest or failed pre-flight validation), `2` transport-uncertain — the
+  request may or may not have been recorded, so read the coordinate back before
+  retrying, `3` missing/invalid credential (HTTP 401), `4` credential valid but
+  not bound to the publishing owner (HTTP 403), `5` version already published
+  with different metadata (HTTP 409), `6` invalid request or dependency entry
+  (HTTP 422), `7` any other server-reported HTTP error.
+- **Dependency payloads are preserved end to end.** The publish request carries
+  the manifest `dependencies` as the name-to-constraint map the Exchange
+  expects; entries are no longer dropped or reshaped on the way out.
+- **Trusted-publishing guidance now matches the flow.** The `--token` help and
+  the 401/403 diagnostics no longer repeat the old claim that the client token
+  must equal a server-wide secret on the Exchange. They state the actual
+  contract: the token is bound to the owner you publish as, and a 403 means the
+  token is valid but scoped for a different owner.
+- **Cross-platform filesystem handling.** Package removal, garbage collection
+  and home-directory resolution now go through one set of helpers that cope
+  with Windows realities the POSIX path ignored: read-only files and files held
+  open by a virus scanner or mapped DLL are retried instead of leaving a tree
+  half-removed, `USERPROFILE`/`HOMEDRIVE` resolve the home directory rather than
+  `HOME`, and 8.3 short names and `\\?\` extended-length prefixes are normalized
+  before any containment check, so two spellings of one directory compare equal.
+- **Release and distribution verification.** The release pipeline asserts the
+  canonical `Capacium vX.Y.Z` release title, standalone binaries attach to a
+  release that carries that same canonical title, and a manually dispatched
+  Windows validation job runs the release test command on the candidate before
+  tagging.
+
+### Notes on scope
+
+- The Core behavior in this release is the publisher CLI, the Windows
+  filesystem helpers and the release/distribution verification above. The
+  Exchange-side receipt fields (`created`, `idempotent`, `publication_id`,
+  `publication_digest`) are produced by the coordinated Exchange 1.1.1 release;
+  Core consumes them when present and falls back to the transport status when
+  they are not.
+- The live OIDC publish that exercised this path end to end ran as part of the
+  coordinated SkillWeave 1.5.4 distribution, which depends on this release. It
+  is proof of the integration, not a Capacium Core feature.
+- Checksums are published with the release assets. No cryptographic signature,
+  sigstore attestation or transparency-log entry is produced or claimed, and
+  nothing here confers trust on a listing.
+
+### Upgrade
+
+```bash
+brew update && brew upgrade capacium   # or: pip install --upgrade capacium
+cap --version                          # → 1.1.1
+```
+
+Existing installs need no migration; the new exit codes are only observable to
+callers that inspect them, and a script that treated any non-zero exit as
+failure still does. Docker users should pull `ghcr.io/capacium/cap:1.1.1`.
+
+**Full changelog:** [CHANGELOG.md](https://github.com/Capacium/capacium/blob/main/CHANGELOG.md) · **Diff:** [v1.1.0...v1.1.1](https://github.com/Capacium/capacium/compare/v1.1.0...v1.1.1)
+
+> **Editorial note (2026-09-12):** this expanded entry was written after the
+> `v1.1.1` release. The immutable `v1.1.1` tag still carries the original, shorter
+> changelog entry, and the released artifacts and tag bytes were not modified.
+> The prose here — including the `Unreleased` section above — lives on `main`
+> and changes there, not in the tag.
+
+## Capacium v1.1.0 — CLI payloads, mirror preflight, Forgejo releases (2026-09-08)
+
+### Added
+
+- **CLI payload extraction** with validation for missing fields.
+- **Forgejo release automation** (`forgejo-release.yml`) with idempotent
+  retry on already-existing releases.
+
+### Changed
+
+- **Mirror preflight.** The GitHub mirror reads owner/repo from repository
+  variables and preflights existence and permission before forwarding a ref;
+  the draft `dry_run` input was dropped (the push event is its own proof).
+- **Trustworthy submit reporting.** Exchange submission now reports failure,
+  not success, for unconfirmed listings.
+- **Single trailing-`/v2` strip** at the URL funnel rather than per
+  construction path.
+
+### Fixed
+
+- Removed `tomllib` dependency in the version gate and cleaned unused imports
+  flagged by ruff.
 
 Four review rounds each found the next unguarded way to delete something a
 harness was still using. This release replaces them with one guard and one
@@ -365,7 +529,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
   with expected output, quality score factors, verified trust state, and
   version updates.
 
-## Capacium v0.9.0 — 2026-04-30
+## Capacium v0.9.0 — Maintenance Release (2026-04-30)
 
 ### cap install — Edge Cases & Conflict Detection
 
@@ -390,7 +554,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `ConflictState` enum (5 states) and `ConflictResult` dataclass added to `models.py`.
 - `CapaciumError` base exception class and schema migration framework prepared.
 
-## [Capacium v0.7.3] - 2026-04-26
+## Capacium v0.7.3 — Maintenance Release (2026-04-26)
 
 ### Fixed
 - **OpenCode MCP activation** — `opencode` now writes MCP servers to the active
@@ -410,7 +574,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `cap update --force` and `cap update --skip-runtime-check` for explicit
   adapter reconciliation and advanced runtime bypasses.
 
-## [0.7.2] - 2026-04-25
+## Capacium v0.7.2 — Maintenance Release (2026-04-25)
 
 ### Added
 - **Cursor MCP support** — `cursor` adapter now patches `.cursor/mcp.json`
@@ -430,7 +594,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - 6 new tests covering install, remove, and `capability_exists` semantics for
   the cursor + continue-dev MCP paths.
 
-## [0.7.1] - 2026-04-25
+## Capacium v0.7.1 — Maintenance Release (2026-04-25)
 
 ### Fixed
 - `cap --version` now reads from package metadata via `importlib.metadata`
@@ -444,7 +608,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - Made one `cap doctor` test platform-agnostic (was pinned to a macOS-only
   `brew install` install hint).
 
-## [0.7.0] - 2026-04-25
+## Capacium v0.7.0 — Maintenance Release (2026-04-25)
 
 ### Added
 - **Runtime resolver** — Capacium now models host runtimes (`uv`, `node`, `python`,
@@ -474,7 +638,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - `Manifest` dataclass gains a `runtimes: Dict[str, str]` field; `dependencies:`
   is unchanged and continues to express capability-on-capability deps.
 
-## [0.6.1] - 2026-04-25
+## Capacium v0.6.1 — Maintenance Release (2026-04-25)
 
 ### Changed
 - Updated default registry URL from `registry.capacium.dev/v1` to `api.capacium.xyz/v2`.
@@ -482,7 +646,7 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 ### Removed
 - Internal planning artifacts (`prd/`, `specs/`) from public tracking.
 
-## [0.6.0] - 2026-04-24
+## Capacium v0.6.0 — Maintenance Release (2026-04-24)
 
 ### Added
 - **Universal MCP Client Parity**: Added support for 22+ new MCP clients/adapters.
@@ -503,6 +667,6 @@ PyPI publishing deferred until Capacium org approved at PyPI.
 - Fixed duplicate imports in legacy adapters.
 - Enhanced robustness of MCP server auto-detection (package.json, pyproject.toml, etc.).
 
-## [0.5.0] - 2026-04-24
+## Capacium v0.5.0 — Maintenance Release (2026-04-24)
 - Native MCP support.
 - Headless Client Architecture.

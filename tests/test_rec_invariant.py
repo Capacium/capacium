@@ -31,7 +31,6 @@ deletion.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -57,8 +56,9 @@ _WIN_REASON = (
 
 def _cap(home: Path, *args: str) -> subprocess.CompletedProcess:
     """Run the real CLI as a subprocess under a sandboxed HOME."""
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    from tests.conftest import home_env
+
+    env = home_env(home)
     env["CAPACIUM_PROJECT_ROOT"] = ""
     env["CAPACIUM_SKIP_RUNTIME_CHECK"] = "1"
     return subprocess.run(

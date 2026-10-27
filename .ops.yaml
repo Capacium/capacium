@@ -1,0 +1,30 @@
+# Release configuration for Capacium Core.
+#
+# tracker_prefixes are THIS repository's own tracker prefixes, used by the
+# external-audience gate (.forgejo/workflows/forgejo-release.yml) to refuse a
+# release body that still names the author's tracker. A ticket-shaped token is
+# refused only when its prefix appears here; the gate classifies nothing by
+# shape alone, because the same code-and-number form is shared by identifiers a
+# reader legitimately needs (CVE, RFC, ISO, UTF-8, SHA-256).
+#
+# The list is committed rather than passed as a shell literal so a reviewer can
+# see and change it: it was derived from the prefixes that actually occur in
+# this repository's commit subjects and changelog. Add a prefix here when a new
+# tracker namespace starts being used.
+tracker_prefixes:
+  - CAP
+  - EX
+  - QA
+  - STAB
+  - UP
+  - VER
+  - BUG
+  - TEST
+  - OPS
+  - FIX
+  - FEAT
+  - CL
+  - CI
+  - CIP
+  - ADR
+  - SW

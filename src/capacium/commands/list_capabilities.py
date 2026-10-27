@@ -14,6 +14,15 @@ STATUS_SYMBOLS = {
     "not-installed": "\u25cb",
 }
 
+# Criterion 2: stable health markers for the compact table.
+_HEALTH_MARKERS = {
+    "healthy": "\u2713",       # all desired harnesses verified
+    "partial": "\u26a0",       # some desired harnesses drifted
+    "unverified": "\u25cb",    # installed but nothing verified
+    "blocked": "\u2717",       # blocked by upstream defect
+    "error": "\u2717",         # install or verification error
+}
+
 FRONTEND_ORDER = [
     "opencode",
     "claude-code",
@@ -25,6 +34,26 @@ FRONTEND_ORDER = [
     "windsurf",
     "junie",
 ]
+
+# Criterion 3: the observed local-state layers reported alongside a listing.
+_STATE_KEYS = ("desired", "installed", "verified", "drifted", "unavailable")
+
+
+def _state_fields(registry, cap) -> dict:
+    """State layers for one capability, as top-level JSON keys.
+
+    ``installed`` and ``verified`` are attestations recorded by an install or
+    observed on disk; the manifest's recommended frameworks never enter them.
+    """
+    fields = {key: [] for key in _STATE_KEYS}
+    if registry is None:
+        return fields
+    layers = registry.get_state_layers(f"{cap.owner}/{cap.name}", cap.version)
+    for key in _STATE_KEYS:
+        value = layers.get(key)
+        if isinstance(value, list):
+            fields[key] = value
+    return fields
 
 
 def _get_valid_frameworks(cap) -> list:
@@ -153,7 +182,7 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
                     }
                 else:
                     adapter_statuses[fw] = {"status": "not-installed", "last_error": None, "last_verified": None}
-        result.append({
+        entry = {
             "owner": cap.owner,
             "name": cap.name,
             "version": cap.version,
@@ -169,7 +198,9 @@ def _print_capabilities_json(capabilities, registry=None) -> None:
             "previous_identities": previous_by_new.get(
                 f"{cap.owner}/{cap.name}", []
             ),
-        })
+        }
+        entry.update(_state_fields(registry, cap))
+        result.append(entry)
     print(json.dumps(result, indent=2, default=str))
 
 
@@ -185,6 +216,81 @@ def _print_capabilities(capabilities, label: str, details: bool = False, registr
 
     header = f"Installed capabilities{label} ({len(capabilities)}):"
     print(header)
+    if details:
+        _print_capabilities_detailed(capabilities, registry)
+    else:
+        _print_capabilities_compact(capabilities, registry)
+    if registry:
+        relocations = registry.list_relocations()
+        if relocations:
+            print("\nCanonical relocations:")
+            for relocation in relocations:
+                print(f"  {relocation['old_id']} → {relocation['new_id']}")
+            print()
+
+
+def _compute_health_marker(cap, registry=None) -> "tuple[str, str]":
+    """Return (marker_symbol, label) for a single capability.
+
+    Health is derived from desired/verified state: if at least one desired
+    harness is verified and none are drifted, it is healthy.  If any desired
+    harness is drifted, it is partial.  If nothing is verified at all,
+    it is unverified.
+    """
+    if registry is None:
+        return ("\u25cb", "unverified")
+    layers = registry.get_state_layers(f"{cap.owner}/{cap.name}", cap.version)
+    desired = set(layers.get("desired", []) or [])
+    verified = set(layers.get("verified", []) or [])
+    drifted = set(layers.get("drifted", []) or [])
+
+    if not desired and not verified:
+        return ("\u25cb", "unverified")
+    if desired and verified:
+        if desired & drifted:
+            return ("\u26a0", "partial")
+        return ("\u2713", "healthy")
+    if verified:
+        return ("\u2713", "healthy")
+    return ("\u26a0", "partial")
+
+
+def _print_capabilities_compact(capabilities, registry=None) -> None:
+    """Criterion 2: compact table with coordinate, installed version,
+    verified harnesses and one stable health marker."""
+    rows: "list[list[str]]" = []
+    for cap in capabilities:
+        cap_id = f"{cap.owner}/{cap.name}"
+        marker, health_label = _compute_health_marker(cap, registry)
+        version = cap.version or "—"
+        # Verified harnesses from state layers
+        verified_fws: "list[str]" = []
+        if registry:
+            layers = registry.get_state_layers(cap_id, cap.version)
+            verified_fws = layers.get("verified", []) or []
+        harness_str = ", ".join(verified_fws) if verified_fws else "—"
+        rows.append([cap_id, version, harness_str, f"{marker} {health_label}"])
+
+    # Compute column widths
+    col_widths = [len("Coordinate"), len("Version"), len("Harnesses"), len("Health")]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(_strip_ansi(cell)))
+    header_fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print()
+    print(header_fmt.format("Coordinate", "Version", "Harnesses", "Health"))
+    print("  ".join("─" * w for w in col_widths))
+    for row in rows:
+        print(header_fmt.format(*row))
+    print()
+
+
+def _strip_ansi(text: str) -> str:
+    import re
+    return re.sub(r"\033\[[0-9;]*m", "", text)
+
+
+def _print_capabilities_detailed(capabilities, registry=None) -> None:
     for cap in capabilities:
         cap_id = f"{cap.owner}/{cap.name}"
         kind_str = cap.kind.value if cap.kind else "unknown"
@@ -196,16 +302,9 @@ def _print_capabilities(capabilities, label: str, details: bool = False, registr
         print(f"    installed: {installed}")
         if cap.dependencies:
             print(f"    dependencies: {', '.join(cap.dependencies)}")
-        if details and all_frameworks and registry:
+        if all_frameworks and registry:
             _print_adapter_statuses(cap, registry)
         print()
-    if registry:
-        relocations = registry.list_relocations()
-        if relocations:
-            print("Canonical relocations:")
-            for relocation in relocations:
-                print(f"  {relocation['old_id']} → {relocation['new_id']}")
-            print()
 
 
 def _print_adapter_statuses(cap, registry) -> None:

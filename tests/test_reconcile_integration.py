@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch
 from capacium.commands.list_capabilities import list_capabilities
 from capacium.commands.doctor import doctor

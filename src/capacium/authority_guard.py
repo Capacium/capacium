@@ -186,18 +186,24 @@ def detect_authority_violations(src_dir: Path) -> Tuple[List[Finding], List[Find
             if not fname.endswith(".py"):
                 continue
             path = Path(root) / fname
-            rel_path = path.relative_to(src_dir)
+            # Canonicalize the relative path to POSIX separators before any
+            # policy match. On Windows ``Path.relative_to`` stringifies with
+            # backslashes ("capacium\\kinds.py"), so the exact canonical-path
+            # check and the ``tests/`` exemption would both miss and the
+            # canonical kinds.py would be reported as a duplicate Kind
+            # authority purely because of the separator.
+            rel_path = path.relative_to(src_dir).as_posix()
 
             # ── Requirement 1: exact canonical path ──
             # The canonical authority is src/capacium/kinds.py.
             # When scanning src/capacium/, rel_path is just "kinds.py".
             # When scanning the repo root (src/), rel_path is "capacium/kinds.py".
             # For tempdirs, no path can match src/capacium/kinds.py.
-            is_canonical = str(rel_path) == _CANONICAL_KIND_RELPATH
+            is_canonical = rel_path == _CANONICAL_KIND_RELPATH
 
             # Test files are allowed to reference Kind values as test fixtures.
             # They are not Kind authorities.
-            is_test_file = str(rel_path).startswith("tests/")
+            is_test_file = rel_path.startswith("tests/")
 
             # ── Requirement 2: fail closed on unreadable / SyntaxError ──
             try:

@@ -10,11 +10,20 @@ from .mcp_config_patcher import McpConfigPatcher
 
 
 def _remove_matching_server_keys_json(servers: dict, cap_name: str) -> bool:
-    """Remove all server keys matching cap_name or owner/cap_name pattern."""
-    keys_to_remove = [
-        key for key in list(servers.keys())
-        if key == cap_name or key.endswith("/" + cap_name)
-    ]
+    """Remove Capacium-owned server keys matching cap_name (marker-based).
+
+    Only entries carrying a ``_capacium_owner`` marker that starts with
+    ``capacium:<cap_name>:`` are removed.  Foreign entries are never
+    touched by key or suffix matching.
+    """
+    keys_to_remove = []
+    for key in list(servers.keys()):
+        entry_data = servers.get(key)
+        if not isinstance(entry_data, dict):
+            continue
+        marker = entry_data.get("_capacium_owner", "")
+        if marker.startswith(f"capacium:{cap_name}:"):
+            keys_to_remove.append(key)
     for key in keys_to_remove:
         del servers[key]
     return len(keys_to_remove) > 0
@@ -91,16 +100,28 @@ class OpenCodeAdapter(FrameworkAdapter):
 
         config_path = Path.home() / ".config" / "opencode" / "opencode.json"
 
-        McpConfigPatcher.backup(config_path)
+        backup_path = McpConfigPatcher.backup(config_path)
         config = McpConfigPatcher.read_json(config_path)
         servers = config.setdefault("mcp", {})
 
-        # BUG-004: Remove all existing entries for this capability before writing new one
+        # Remove only Capacium-owned entries (marker-based), never foreign ones
         _remove_matching_server_keys_json(servers, cap_name)
 
-        servers[cap_name] = McpConfigPatcher.build_opencode_mcp_entry(
+        entry = McpConfigPatcher.build_opencode_mcp_entry(
             cap_name, package_dir, mcp_meta,
         )
+        entry["_capacium_owner"] = f"capacium:{cap_name}:mcp-server"
+
+        # Key suffixing: if a foreign entry occupies the target key, use a
+        # suffixed variant so we never clobber it.
+        actual_key = cap_name
+        if cap_name in servers:
+            existing = servers.get(cap_name)
+            if isinstance(existing, dict):
+                existing_marker = existing.get("_capacium_owner", "")
+                if not existing_marker.startswith(f"capacium:{cap_name}:"):
+                    actual_key = f"{cap_name}-capacium"
+        servers[actual_key] = entry
 
         legacy_servers = config.get("mcpServers")
         if isinstance(legacy_servers, dict):
@@ -108,7 +129,17 @@ class OpenCodeAdapter(FrameworkAdapter):
             if not legacy_servers:
                 config.pop("mcpServers", None)
 
-        McpConfigPatcher.write_json(config_path, config)
+        try:
+            McpConfigPatcher.write_json(config_path, config)
+            # Post-write validation
+            verify = McpConfigPatcher.read_json(config_path)
+            verify_servers = verify.get("mcp", {})
+            if actual_key not in verify_servers:
+                raise RuntimeError("post-write validation failed: entry not in config")
+        except Exception:
+            if backup_path is not None:
+                McpConfigPatcher.restore_backup(config_path, backup_path)
+            raise
         return True
 
     def remove_mcp_server(self, cap_name: str, owner: str = "global") -> bool:

@@ -30,6 +30,7 @@ from ..runtimes import (
     infer_required_runtimes,
 )
 from ._resolve import resolve_cap_id
+from ..trust import DiagnosticFinding, finding_from_check
 
 CHECK = "[ok]"
 CROSS = "[--]"
@@ -268,13 +269,26 @@ def _probe_command_for(cap, manifest):
     """Return the (command, args, env) the client actually runs — the built
     binary / local package from the config builder, not the raw manifest
     command (which would hit PyPI/@latest and time out). Falls back to the
-    raw manifest if the entry cannot be built."""
+    raw manifest if the entry cannot be built.
+
+    When ``build_mcp_entry`` wraps the command in a cap exec shim but the
+    original manifest command is not on PATH, the raw command is returned
+    so doctor can diagnose "command not found" truthfully instead of
+    reporting an opaque cap exec error."""
     try:
         from ..adapters.mcp_config_patcher import McpConfigPatcher
+        import shutil as _shutil
+        raw_cmd = (manifest.mcp.get("command") or "").strip()
         entry = McpConfigPatcher.build_mcp_entry(
             cap.name, cap.install_path, manifest.get_mcp_metadata()
         )
         if entry and entry.get("command"):
+            # When the entry is a cap exec wrapper but the original command
+            # isn't on PATH, surface the raw command for diagnostics.
+            if raw_cmd and "exec" in entry.get("args", []):
+                if not _shutil.which(raw_cmd):
+                    env = manifest.mcp.get("env") if isinstance(manifest.mcp.get("env"), dict) else None
+                    return raw_cmd, list(manifest.mcp.get("args") or []), env
             env = entry.get("env") if isinstance(entry.get("env"), dict) else None
             return entry["command"], list(entry.get("args") or []), env
     except Exception:
@@ -675,6 +689,26 @@ def _deep_checks() -> List[Tuple[str, bool, str]]:
     return results
 
 
+def collect_deep_findings(
+    results: List[Tuple[str, bool, str]],
+) -> List["DiagnosticFinding"]:
+    """Project already-run deep check *results* onto the shared finding model.
+
+    A deep check reports symlink depth, config paths, dependency
+    materialisation, registry drift, content drift and store health — all
+    drift-shaped observations about installed state. Projecting them through
+    the shared model is what makes ``cap doctor`` and ``cap reconcile`` agree
+    on what a finding is. Taking the results rather than re-running the checks
+    keeps the probes to a single pass.
+    """
+    findings: List["DiagnosticFinding"] = []
+    for name, passed, detail in results:
+        finding = finding_from_check(name, passed, detail)
+        if finding is not None:
+            findings.append(finding)
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Main doctor entry point
 # ---------------------------------------------------------------------------
@@ -723,11 +757,17 @@ def doctor(cap_spec: Optional[str] = None, deep: bool = False) -> bool:
 
     if deep:
         print("\n--- Deep Checks ---")
-        for name, passed, detail in _deep_checks():
+        deep_results = _deep_checks()
+        for name, passed, detail in deep_results:
             symbol = CHECK if passed else CROSS
             print(f"  {symbol} {name}: {detail}")
             if not passed:
                 overall_ok = False
+        # Each failed deep check is reported through the same finding model
+        # reconcile and repair consume, so the domains are legible in one shape
+        # rather than three.
+        for finding in collect_deep_findings(deep_results):
+            print(f"  [{finding.category.value}/{finding.severity}] {finding.summary}")
     from .reconcile import show_reconcile_summary
     show_reconcile_summary()
 

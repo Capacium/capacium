@@ -1,3 +1,4 @@
+import json as _json_mod
 import shutil
 from pathlib import Path
 from typing import List
@@ -9,6 +10,12 @@ from ..versioning import VersionManager
 from ..models import SKILL_LAYER_KIND_VALUES
 from ..adapters import get_adapter
 from ._resolve import resolve_cap_id
+from ._journal import (
+    _make_journal_path, _write_journal, _delete_journal,
+    _serialize_cap, _encode_bytes, recover_orphaned_journals,
+)
+from ..utils.fs import canonical_path
+from ..utils.fs import rmtree as fs_rmtree
 
 
 class _RemovalSnapshot:
@@ -18,6 +25,10 @@ class _RemovalSnapshot:
     files, skills-dir links, package trees, registry rows) before any
     mutation. ``restore()`` puts everything back; ``commit()`` purges the
     parked package trees once all steps succeeded.
+
+    The journal is persisted to disk (~/.capacium/journal/) before the
+    first mutation, so orphan recovery after a crash or signal can roll
+    back incomplete operations.
     """
 
     def __init__(self, registry: Registry):
@@ -27,6 +38,8 @@ class _RemovalSnapshot:
         self._moves: List[tuple] = [] # (original Path, parked Path)
         self._rows: List = []         # Capability objects removed from registry
         self._members: List[tuple] = []  # (bundle_id, [member_id, ...])
+        self._prior_cap = None        # Capability row being removed
+        self._journal_path: Path = None  # durable journal path
 
     # ── recording ──────────────────────────────────────────────────────
     def record_file(self, path: Path) -> None:
@@ -48,6 +61,10 @@ class _RemovalSnapshot:
         else:
             self._links[path] = None
 
+    def set_prior_cap(self, cap) -> None:
+        """Record the pre-remove registry row so it can be restored."""
+        self._prior_cap = cap
+
     def record_registry_row(self, cap) -> None:
         self._rows.append(cap)
 
@@ -55,7 +72,13 @@ class _RemovalSnapshot:
         self._members.append((bundle_id, list(member_ids)))
 
     def park_tree(self, path: Path) -> None:
-        """Move a package tree aside instead of deleting it outright."""
+        """Move a package tree aside instead of deleting it outright.
+
+        Records the move intent in ``_moves`` and flushes the journal
+        BEFORE the rename so a SIGKILL mid-park leaves a durable record
+        that recovery can use to unpark the tree (CAP117-TRANSACT-004
+        criterion 2).
+        """
         path = Path(path)
         if not path.exists() and not path.is_symlink():
             return
@@ -64,8 +87,46 @@ class _RemovalSnapshot:
         while parked.exists() or parked.is_symlink():
             idx += 1
             parked = path.with_name(f"{path.name}.removing{idx}")
-        path.rename(parked)
         self._moves.append((path, parked))
+        # Flush the journal BEFORE the rename so the durable record
+        # exists even if the process dies mid-rename.
+        self._flush(self._cap_id, self._version)
+        path.rename(parked)
+
+    # ── durable persistence ────────────────────────────────────────────
+    def persist(self, cap_id: str, version: str) -> Path:
+        """Write the journal to disk before the first mutation."""
+        self._journal_path = _make_journal_path(cap_id, version, "remove")
+        self._cap_id = cap_id
+        self._version = version
+        _write_journal(self._journal_path, self._to_disk_data(cap_id, version))
+        return self._journal_path
+
+    def _to_disk_data(self, cap_id: str, version: str) -> dict:
+        """Build a complete serializable snapshot for the durable journal.
+
+        Uses in-memory snapshot bytes so flush-after-mutation
+        re-serializes the pre-mutation content, not whatever is on disk.
+        """
+        return {
+            "cap_id": cap_id,
+            "version": version,
+            "prior_cap": _serialize_cap(self._prior_cap),
+            "files": {
+                str(k): _encode_bytes(v) for k, v in self._files.items()
+            },
+            "links": {str(k): v for k, v in self._links.items()},
+            "moves": [(str(o), str(p)) for o, p in self._moves],
+            "rows": [_serialize_cap(r) for r in self._rows],
+            "members": [(bid, list(mids)) for bid, mids in self._members],
+            "committed": False,
+        }
+
+    def _flush(self, cap_id: str, version: str) -> None:
+        """Re-persist the journal after a mutation so the durable record
+        always contains the complete set of operations performed so far."""
+        if self._journal_path is not None:
+            _write_journal(self._journal_path, self._to_disk_data(cap_id, version))
 
     # ── outcome ────────────────────────────────────────────────────────
     def restore(self) -> None:
@@ -110,14 +171,20 @@ class _RemovalSnapshot:
     def commit(self) -> None:
         for _original, parked in self._moves:
             StorageManager.remove_package_path(parked)
+        if self._journal_path is not None:
+            _delete_journal(self._journal_path)
+            self._journal_path = None
 
 
 def _snapshot_cap_surfaces(snapshot: _RemovalSnapshot, cap_name: str,
                            frameworks: List[str]) -> None:
-    """Record client config files and skills-dir links a remove may touch."""
-    config_backed = set(frameworks) | {"claude-desktop", "codex", "gemini-cli",
-                                       "antigravity", "opencode"}
-    for fw_name in config_backed:
+    """Record client config files and skills-dir links a remove may touch.
+
+    Only snapshot config files for frameworks this capability actually
+    targets. Foreign harness configs (and their secrets) must never
+    enter the transaction journal (CAP117-TRANSACT-004 criterion 6).
+    """
+    for fw_name in set(frameworks):
         try:
             adapter = get_adapter(fw_name)
         except Exception:
@@ -154,12 +221,18 @@ def _harness_link_targets_version(cap_name: str, package_dir: Path) -> bool:
 
     Deleting that directory would therefore orphan the harness link, which is
     exactly the data loss CAP-REC-D1 guards against.
+
+    Both sides are compared in the shared canonical vocabulary
+    (:func:`capacium.utils.fs.canonical_path`): on Windows ``link.resolve()`` of
+    a directory link keeps the ``\\\\?\\`` extended prefix that ``os.readlink``
+    returns, so a raw ``==`` against the bare install path would miss the live
+    link and delete an in-use generation.
     """
-    target = package_dir.resolve()
+    target = canonical_path(package_dir)
     for parent_dir in _known_skill_paths():
         for link in _iter_cap_link_paths(parent_dir, cap_name):
             try:
-                if link.is_symlink() and link.resolve() == target:
+                if link.is_symlink() and canonical_path(link) == target:
                     return True
             except OSError:
                 continue
@@ -175,7 +248,15 @@ def _other_registered_versions(registry: Registry, owner: str, cap_name: str,
     }
 
 
-def remove_capability(cap_spec: str, force: bool = False) -> bool:
+def remove_capability(
+    cap_spec: str,
+    force: bool = False,
+    cascade: bool = False,
+    json_output: bool = False,
+) -> bool:
+    # Recover any orphaned journals before starting a new mutation.
+    recover_orphaned_journals()
+
     spec = VersionManager.parse_version_spec(cap_spec)
     version_spec = spec["version"]
     cap_id = resolve_cap_id(cap_spec)
@@ -189,7 +270,15 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     if version_spec in ["latest", "stable"]:
         cap = registry.get_capability(cap_id)
         if cap is None:
-            print(f"Capability {bare_id} not found.")
+            if json_output:
+                print(_json_mod.dumps({
+                    "operation": "remove",
+                    "cap_id": bare_id,
+                    "status": "error",
+                    "error": f"capability '{bare_id}' not found",
+                }))
+            else:
+                print(f"Capability {bare_id} not found.")
             return False
         version = cap.version
     else:
@@ -197,16 +286,67 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
         cap = registry.get_capability(bare_id, version)
 
     if cap is None:
-        print(f"Capability {bare_id}@{version} not found.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": f"capability '{bare_id}@{version}' not found",
+            }))
+        else:
+            print(f"Capability {bare_id}@{version} not found.")
         return False
 
     cap_kind = cap.kind.value if cap.kind else None
     if not cap_kind or cap_kind == "unknown":
-        print(
-            f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
-            "Cannot dispatch to adapter without a valid Capacium Kind."
-        )
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": f"invalid kind '{cap_kind}'",
+            }))
+        else:
+            print(
+                f"Capability '{bare_id}' has invalid Kind '{cap_kind}'. "
+                "Cannot dispatch to adapter without a valid Capacium Kind."
+            )
         return False
+
+    # ── Dependency guard (CAP117-TRANSACT-004 criterion 4) ──────────
+    # Block removal when other installed capabilities declare a dependency
+    # on this one, unless the operator accepts a cascade plan.
+    dependents = registry.get_dependents(bare_id)
+    if dependents and not force and not cascade:
+        dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": "required dependency",
+                "dependents": dep_ids,
+            }))
+        else:
+            print(
+                f"Refusing to remove {bare_id}@{version}: it is a required dependency "
+                f"of {len(dep_ids)} installed capability(s): {', '.join(dep_ids[:8])}"
+            )
+            if len(dep_ids) > 8:
+                print(f"  ... and {len(dep_ids) - 8} more.")
+            print("  Use --cascade to accept a cascade plan and remove dependents too,")
+            print("  or --force to remove only this capability (may break dependents).")
+        return False
+
+    if cascade and dependents:
+        dep_ids = sorted({f"{d.owner}/{d.name}@{d.version}" for d in dependents})
+        if not json_output:
+            print(f"  Cascade plan: also removing {len(dep_ids)} dependent(s):")
+            for did in dep_ids:
+                print(f"    - {did}")
 
     # Version-precise removal (CAP-REC-D1): a harness link points at exactly
     # one version directory. Deleting that directory orphans the harness, so
@@ -221,12 +361,22 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     other_versions = _other_registered_versions(registry, owner, cap_name, version)
 
     if harness_target and not force and other_versions:
-        print(
-            f"Refusing to remove {bare_id}@{version}: a harness symlink still "
-            f"links to this version. Remove a different version, relink "
-            f"{bare_id} to another version first, or pass --force to remove it "
-            f"anyway. Other installed versions: {', '.join(sorted(other_versions))}."
-        )
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "error",
+                "error": "harness symlink still links to this version",
+                "other_versions": sorted(other_versions),
+            }))
+        else:
+            print(
+                f"Refusing to remove {bare_id}@{version}: a harness symlink still "
+                f"links to this version. Remove a different version, relink "
+                f"{bare_id} to another version first, or pass --force to remove it "
+                f"anyway. Other installed versions: {', '.join(sorted(other_versions))}."
+            )
         return False
 
     # Transactional remove (V14/STAB-002): snapshot every write surface
@@ -234,13 +384,53 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
     # touch the registry. Any failure restores the full pre-remove state.
     snapshot = _RemovalSnapshot(registry)
     _snapshot_cap_surfaces(snapshot, cap_name, list(cap.frameworks or []))
+    snapshot.set_prior_cap(cap)
+
+    # Persist the journal to disk before the first mutation (criterion 1).
+    snapshot.persist(bare_id, version)
 
     # When removing a version the harness does not currently link to, leave
     # the harness symlink (and its command link) intact — it points at a
     # different, still-installed version.
     should_unlink = harness_target or force
 
+    removed_dependents = []
     try:
+        # Cascade: remove dependents first.
+        if cascade and dependents:
+            for dep in dependents:
+                dep_cap_id = f"{dep.owner}/{dep.name}"
+                dep_version = dep.version
+                print(f"  Cascade-removing dependent {dep_cap_id}@{dep_version}...")
+                dep_owner, dep_name = Registry.parse_cap_id(dep_cap_id)
+                dep_snap = _RemovalSnapshot(registry)
+                _snapshot_cap_surfaces(dep_snap, dep_name, list(dep.frameworks or []))
+                dep_snap.set_prior_cap(dep)
+                dep_snap.persist(f"{dep_owner}/{dep_name}", dep_version)
+                try:
+                    dep_kind = dep.kind.value if dep.kind else None
+                    dep_frameworks = dep.frameworks if dep.frameworks else [dep.framework or "opencode"]
+                    for fw_name in dep_frameworks:
+                        try:
+                            adapter = get_adapter(fw_name)
+                        except ValueError:
+                            continue
+                        adapter.remove_capability(dep_name, owner=dep_owner, kind=dep_kind)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
+                    dep_pkg = storage.get_package_dir(dep_name, dep_version, owner=dep_owner)
+                    dep_snap.park_tree(dep_pkg)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
+                    dep_snap.record_registry_row(dep)
+                    registry.remove_capability(dep_cap_id, dep_version)
+                    dep_snap._flush(f"{dep_owner}/{dep_name}", dep_version)
+                    removed_dependents.append(f"{dep_cap_id}@{dep_version}")
+                    dep_snap.commit()
+                except Exception as dep_exc:
+                    dep_snap.restore()
+                    raise RuntimeError(
+                        f"Cascade removal of {dep_cap_id}@{dep_version} failed: {dep_exc}"
+                    )
+
         _remove_sub_capabilities(cap, registry, force, snapshot=snapshot)
 
         frameworks = cap.frameworks if cap.frameworks else [cap.framework or "opencode"]
@@ -255,25 +445,88 @@ def remove_capability(cap_spec: str, force: bool = False) -> bool:
                 cap_name, owner=owner, kind=cap_kind
             )
 
-        package_dir = storage.get_package_dir(cap_name, version, owner=owner)
-        snapshot.park_tree(package_dir)
+        snapshot._flush(bare_id, version)
 
-        # Registry change only after all adapter + filesystem steps succeeded.
+        package_dir = storage.get_package_dir(cap_name, version, owner=owner)
+        # Flush before park_tree so the durable journal captures the
+        # adapter-removal step.  A SIGKILL mid-park then knows the adapter
+        # was already removed and can roll back both the adapter step AND
+        # the parked tree.
+        snapshot.park_tree(package_dir)
+        snapshot._flush(bare_id, version)
+
+        # Record the registry row BEFORE removing it, then flush.  If the
+        # process dies between record and remove, the journal knows what to
+        # restore.
         snapshot.record_registry_row(cap)
+        snapshot._flush(bare_id, version)
         removed = registry.remove_capability(bare_id, version)
+        snapshot._flush(bare_id, version)
         if not removed:
             raise RuntimeError(f"registry row for {bare_id}@{version} vanished mid-remove")
 
         if force:
             _purge_all_adapter_symlinks(cap_name)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException includes KeyboardInterrupt and SystemExit, which
+        # must also trigger rollback (criterion 2 — no partial mutation).
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            snapshot.restore()
+            raise
         snapshot.restore()
-        print(f"Remove of {bare_id}@{version} failed: {exc}")
-        print("  All changes rolled back — state restored.")
+        if not json_output:
+            print(f"Remove of {bare_id}@{version} failed: {exc}")
+            print("  All changes rolled back — state restored.")
+        if json_output:
+            print(_json_mod.dumps({
+                "operation": "remove",
+                "cap_id": bare_id,
+                "version": version,
+                "status": "rolled_back",
+                "error": str(exc),
+                "reverted": {
+                    "changed": [str(k) for k in snapshot._files],
+                    "reverted": [
+                        {
+                            "cap_id": f"{m.owner}/{m.name}",
+                            "version": m.version,
+                            "fingerprint": m.fingerprint[:16] if m.fingerprint else None,
+                        }
+                        for m in snapshot._rows
+                    ],
+                    "files_restored": len(snapshot._files),
+                    "links_restored": len(snapshot._links),
+                    "trees_unparked": len(snapshot._moves),
+                    "rows_restored": len(snapshot._rows),
+                },
+            }))
         return False
 
     snapshot.commit()
-    print(f"Removed {bare_id}@{version}")
+    if json_output:
+        result = {
+            "operation": "remove",
+            "cap_id": bare_id,
+            "version": version,
+            "status": "applied",
+            "applied": {
+                "removed": True,
+                "changed": [str(k) for k in snapshot._files],
+                "reverted": [
+                    {
+                        "cap_id": f"{m.owner}/{m.name}",
+                        "version": m.version,
+                        "fingerprint": m.fingerprint[:16] if m.fingerprint else None,
+                    }
+                    for m in snapshot._rows
+                ],
+                "frameworks_affected": list(cap.frameworks or [cap.framework or "opencode"]),
+                "cascade_removed": removed_dependents,
+            },
+        }
+        print(_json_mod.dumps(result))
+    else:
+        print(f"Removed {bare_id}@{version}")
     return True
 
 
@@ -424,7 +677,7 @@ def _remove_sub_capabilities(
             if snapshot is not None:
                 snapshot.park_tree(pkg_dir)
             elif pkg_dir.exists():
-                shutil.rmtree(pkg_dir)
+                fs_rmtree(pkg_dir)
 
         if force and member_cap is None:
             alt_pkg_dir = storage.get_package_dir(
@@ -433,7 +686,7 @@ def _remove_sub_capabilities(
             if snapshot is not None:
                 snapshot.park_tree(alt_pkg_dir)
             elif alt_pkg_dir.exists():
-                shutil.rmtree(alt_pkg_dir)
+                fs_rmtree(alt_pkg_dir)
             _purge_all_adapter_symlinks(m_name)
 
         print(f"  Removed sub-capability {member_id}")
