@@ -1104,9 +1104,11 @@ class TestEvidenceHygiene:
         assert str(SRC_DIR) in probe.stdout, probe.stdout
 
     def test_documented_python_is_used_for_the_matrix(self):
-        """The matrix needs an interpreter with cryptography and nacl (py3.12 lacks them)."""
-        assert sys.version_info >= (3, 13), (
-            f"the release matrix requires Python 3.13+ (found {platform.python_version()})"
+        """The matrix runs the documented interpreters (``requires-python >=3.10``;
+        CI matrix 3.10-3.12 plus 3.14), and each must provide cryptography and nacl."""
+        assert sys.version_info >= (3, 10), (
+            "the release matrix requires Python >= 3.10 (requires-python; found "
+            f"{platform.python_version()})"
         )
         for module in ("cryptography", "nacl"):
             assert shutil.which(sys.executable) is not None
