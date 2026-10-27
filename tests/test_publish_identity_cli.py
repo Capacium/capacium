@@ -44,7 +44,7 @@ _SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
 _UNREACHABLE_REGISTRY = "http://127.0.0.1:9/"
 
 _HOSTILE_CASE_MANIFEST = """\
-kind: bundle
+kind: skill
 name: skillweave
 version: 1.0.2
 owner: langevc
@@ -52,7 +52,7 @@ repository: https://github.com/LangeVC/skillweave
 """
 
 _HOSTILE_CLAIM_MANIFEST = """\
-kind: bundle
+kind: skill
 name: skillweave
 version: 9.9.9
 owner: attacker
@@ -62,7 +62,7 @@ replaces:
 """
 
 _MOVE_MANIFEST = """\
-kind: bundle
+kind: skill
 name: skillweave
 version: 1.0.2
 owner: LangeVC

@@ -194,13 +194,6 @@ def publish_capability(
         _err("Error: manifest missing required field 'version'")
         return EXIT_USER_ERROR
 
-    errors = manifest.validate()
-    if errors:
-        _err("Error: Manifest validation failed (Pre-Flight Check):")
-        for err in errors:
-            _err(f"  - {err}")
-        return EXIT_USER_ERROR
-
     owner = manifest.owner or "global"
     frameworks = manifest.frameworks or []
     if isinstance(frameworks, str):
@@ -227,6 +220,24 @@ def publish_capability(
             _emit_report(report)
         return EXIT_USER_ERROR
 
+    errors = manifest.validate()
+    if errors:
+        identity.add_diagnostic(
+            report,
+            "publish.manifest.validation",
+            "manifest",
+            "Manifest validation failed (Pre-Flight Check): " + "; ".join(errors),
+            identity.SEVERITY_ERROR,
+        )
+        identity.finalise(report)
+        if json_output:
+            _emit_report(report)
+        else:
+            _err("Error: Manifest validation failed (Pre-Flight Check):")
+            for err in errors:
+                _err(f"  - {err}")
+        return EXIT_USER_ERROR
+
     payload = {
         "name": manifest.name,
         "owner": owner,
@@ -238,6 +249,7 @@ def publish_capability(
         "dependencies": manifest.dependencies or {},
         "replaces": manifest.replaces or [],
         "previous_identities": manifest.previous_identities or [],
+        "canonical_listing_id": canonical,
         "operator_meta": manifest.operator_meta or {},
         "checkpoint_meta": manifest.checkpoint_meta or {},
         "policy_meta": manifest.policy_meta or {},
@@ -264,7 +276,23 @@ def publish_capability(
         canonical_result = result.get("canonical_name", canonical)
 
         if json_output:
-            _emit_receipt_json(client, result, canonical_result, manifest)
+            report["canonical_name"] = canonical_result
+            report["name"] = _pick(result, "name", manifest.name)
+            report["version"] = _pick(result, "version", manifest.version)
+            if "publication_id" in result:
+                report["publication_id"] = result["publication_id"]
+            if "publication_digest" in result:
+                report["publication_digest"] = result["publication_digest"]
+            created = _ever_created(result, client)
+            if "created" in result:
+                report["created"] = bool(result["created"])
+            elif created is not None:
+                report["created"] = bool(created)
+            if "idempotent" in result:
+                report["idempotent"] = bool(result["idempotent"])
+            if "status" in result:
+                report["status"] = result["status"]
+            _emit_report(report)
         else:
             print(f"Published: {canonical_result}")
             print(f"  Kind: {result.get('kind', manifest.kind)}")
@@ -284,34 +312,82 @@ def publish_capability(
         msg = str(e)
 
         if code == 409:
-            _err(f"Already exists: {canonical}")
-            _err("The same name and version is already published with different metadata.")
-            _err(f"To inspect the existing publication, look it up: cap search {canonical}")
+            identity.add_diagnostic(
+                report, "publish.registry.conflict", "registry",
+                f"Already exists: {canonical}",
+                identity.SEVERITY_ERROR,
+            )
+        elif code == 401:
+            identity.add_diagnostic(
+                report, "publish.registry.unauthorized", "registry",
+                "Unauthorized (401)",
+                identity.SEVERITY_ERROR,
+            )
+        elif code == 403:
+            identity.add_diagnostic(
+                report, "publish.registry.forbidden", "registry",
+                f"Forbidden (403): token not bound to {owner}",
+                identity.SEVERITY_ERROR,
+            )
+        elif code == 422:
+            identity.add_diagnostic(
+                report, "publish.registry.validation", "registry",
+                f"Invalid publication request (422): {msg}",
+                identity.SEVERITY_ERROR,
+            )
+        else:
+            identity.add_diagnostic(
+                report, "publish.registry.error", "registry",
+                f"Registry error: {msg}",
+                identity.SEVERITY_ERROR,
+            )
+
+        identity.finalise(report)
+        if json_output:
+            _emit_report(report)
+        else:
+            if code == 409:
+                _err(f"Already exists: {canonical}")
+                _err("The same name and version is already published with different metadata.")
+                _err(f"To inspect the existing publication, look it up: cap search {canonical}")
+            elif code == 401:
+                _err("Error: Unauthorized (401)")
+                _err("Set CAPACIUM_API_TOKEN in your environment or pass --token.")
+                _err("Trusted publishing: the token is bound to the publishing owner; it is not a"
+                     " shared server-wide secret that must match the Exchange.")
+            elif code == 403:
+                _err("Error: Forbidden (403)")
+                _err(f"The token is valid but is not bound to publisher {owner}.")
+                _err(f"Use a token scoped for publish:{canonical}.")
+            elif code == 422:
+                _err(f"Error: Invalid publication request (422): {msg}")
+                _err("No publication row was created.")
+            else:
+                _err(f"Error: {msg}")
+
+        if code == 409:
             return EXIT_CONFLICT
         if code == 401:
-            _err("Error: Unauthorized (401)")
-            _err("Set CAPACIUM_API_TOKEN in your environment or pass --token.")
-            _err("Trusted publishing: the token is bound to the publishing owner; it is not a"
-                 " shared server-wide secret that must match the Exchange.")
             return EXIT_UNAUTHORIZED
         if code == 403:
-            _err("Error: Forbidden (403)")
-            _err(f"The token is valid but is not bound to publisher {owner}.")
-            _err(f"Use a token scoped for publish:{canonical}.")
             return EXIT_FORBIDDEN
         if code == 422:
-            _err(f"Error: Invalid publication request (422): {msg}")
-            _err("No publication row was created.")
             return EXIT_VALIDATION
         if code is None:
             return _transport_uncertain(canonical, manifest.version, msg)
         if code >= 400:
-            _err(f"Error ({code}): {msg}")
             return EXIT_HTTP_OTHER
-        _err(f"Error: {msg}")
         return EXIT_TRANSPORT_UNCERTAIN
 
     except Exception as e:
+        identity.add_diagnostic(
+            report, "publish.registry.error", "registry",
+            f"Transport uncertain: {e}",
+            identity.SEVERITY_ERROR,
+        )
+        identity.finalise(report)
+        if json_output:
+            _emit_report(report)
         return _transport_uncertain(canonical, manifest.version, str(e))
 
 

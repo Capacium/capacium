@@ -53,7 +53,7 @@ def test_rmtree_wrapper_retry_arguments_do_not_collide_with_stdlib():
     # them so a caller written for another version works, and forwards them
     # only when the real callable understands them. Private retry kwargs must
     # never collide with a stdlib parameter.
-    assert extra <= {"_attempts", "_delay", "onexc", "dir_fd"}, \
+    assert extra <= {"_attempts", "_delay", "onexc", "dir_fd", "_onexc_kwargs"}, \
         f"unexpected extra params: {extra}"
     assert {"_attempts", "_delay"} <= extra, f"retry params missing: {extra}"
 
