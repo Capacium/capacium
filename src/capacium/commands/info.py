@@ -92,39 +92,64 @@ def _wrap_description(text: str, width: int, indent: int = 2) -> str:
     return "\n".join(prefix + line for line in wrapped.splitlines())
 
 
+# Criterion 3: observed local-state layers reported in the JSON projection.
+_STATE_KEYS = ("desired", "installed", "verified", "drifted", "unavailable")
+
+
+def _state_fields(detail: Dict[str, Any]) -> Dict[str, List[str]]:
+    """State layers for the resolved capability, as top-level JSON keys.
+
+    ``installed`` and ``verified`` are attestations recorded by an install or
+    observed on disk; the manifest's recommended frameworks never enter them.
+    An unknown or remote identity has no local state, so every layer is empty.
+    """
+    fields: Dict[str, List[str]] = {key: [] for key in _STATE_KEYS}
+    owner = detail.get("owner", "")
+    name = detail.get("name", "")
+    if not owner or not name:
+        return fields
+    from ..registry import Registry
+
+    registry = Registry()
+    layers = registry.get_state_layers(f"{owner}/{name}", detail.get("version") or None)
+    for key in _STATE_KEYS:
+        value = layers.get(key)
+        if isinstance(value, list):
+            fields[key] = value
+    return fields
+
+
 def _to_info_json(detail: Dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "$schema": _JSON_SCHEMA,
-            "name": detail.get("name", ""),
-            "owner": detail.get("owner", ""),
-            "kind": detail.get("kind") or "unknown",
-            "trust": detail.get("trust", "discovered"),
-            "version": detail.get("version", ""),
-            "description": detail.get("description", ""),
-            "stars": detail.get("stars"),
-            "forks": detail.get("forks"),
-            "license": detail.get("license", ""),
-            "categories": detail.get("categories", []),
-            "tags": detail.get("tags", []),
-            "frameworks": detail.get("frameworks", []),
-            "runtimes": detail.get("runtimes", {}),
-            "dependencies": detail.get("dependencies", {}),
-            "fingerprint": detail.get("fingerprint", ""),
-            "source_url": detail.get("source_url", ""),
-            "source_ref": detail.get("source_ref", ""),
-            "source_commit": detail.get("source_commit", ""),
-            "publisher": detail.get("publisher", ""),
-            "updated_at": detail.get("updated_at", ""),
-            "aliases": detail.get("aliases", []),
-        },
-        indent=2,
-        default=str,
-    )
+    payload = {
+        "$schema": _JSON_SCHEMA,
+        "name": detail.get("name", ""),
+        "owner": detail.get("owner", ""),
+        "kind": detail.get("kind") or "unknown",
+        "trust": detail.get("trust", "discovered"),
+        "version": detail.get("version", ""),
+        "description": detail.get("description", ""),
+        "stars": detail.get("stars"),
+        "forks": detail.get("forks"),
+        "license": detail.get("license", ""),
+        "categories": detail.get("categories", []),
+        "tags": detail.get("tags", []),
+        "frameworks": detail.get("frameworks", []),
+        "runtimes": detail.get("runtimes", {}),
+        "dependencies": detail.get("dependencies", {}),
+        "fingerprint": detail.get("fingerprint", ""),
+        "source_url": detail.get("source_url", ""),
+        "source_ref": detail.get("source_ref", ""),
+        "source_commit": detail.get("source_commit", ""),
+        "publisher": detail.get("publisher", ""),
+        "updated_at": detail.get("updated_at", ""),
+        "aliases": detail.get("aliases", []),
+    }
+    payload.update(_state_fields(detail))
+    return json.dumps(payload, indent=2, default=str)
 
 
 def _render_info(detail: Dict[str, Any]) -> str:
-    w = term_width()
+    w = min(term_width(), 80)
     name = detail.get("name", "")
     owner = detail.get("owner", "")
     cap_id = f"{owner}/{name}" if owner else name
@@ -146,70 +171,80 @@ def _render_info(detail: Dict[str, Any]) -> str:
     runtimes = detail.get("runtimes", {})
     dependencies = detail.get("dependencies", {})
 
-    rule = _DIM + "─" * min(w, 70) + _RESET
+    rule = _DIM + "─" * w + _RESET
 
-    lines = []
+    def _section_title(s: str) -> str:
+        return f"\n{_BOLD}{s}{_RESET}"
+
+    lines: "list[str]" = []
     lines.append("")
-    lines.append(f"✦ {_BOLD}{cap_id}{_RESET}                                    {KindPill.render(kind)}")
+    lines.append(f"{_BOLD}{cap_id}{_RESET}  {KindPill.render(kind)}")
     lines.append(rule)
 
     if description:
-        lines.append(_wrap_description(description, min(w, 70)))
+        lines.append(_wrap_description(description, w))
 
-    lines.append("")
-    lines.append(
-        f"  {_DIM}Trust:{_RESET} {TrustBadge.label(trust)}        "
-        f"{_DIM}Publisher:{_RESET} {publisher or '—'}         "
-        f"{_DIM}Fingerprint:{_RESET} {_fingerprint_status(detail)}"
-    )
-    lines.append(
-        f"  {_DIM}Stars:{_RESET} ★ {_stars_label(stars)}         "
-        f"{_DIM}Forks:{_RESET} {forks if forks is not None else '—'}            "
-        f"{_DIM}License:{_RESET} {license_val or '—'}"
-    )
-
+    # --- Publisher Recommendations ---
+    lines.append(_section_title("Publisher recommendations"))
+    lines.append(f"  {_DIM}Version:{_RESET}      {version or '—'}")
+    lines.append(f"  {_DIM}Trust:{_RESET}        {TrustBadge.label(trust)}")
+    lines.append(f"  {_DIM}Publisher:{_RESET}    {publisher or '—'}")
+    lines.append(f"  {_DIM}Stars:{_RESET}        ★ {_stars_label(stars)}")
+    lines.append(f"  {_DIM}Forks:{_RESET}        {forks if forks is not None else '—'}")
+    lines.append(f"  {_DIM}License:{_RESET}      {license_val or '—'}")
+    lines.append(f"  {_DIM}Updated:{_RESET}      {updated_at or '—'}")
     if isinstance(categories, list) and categories:
-        cat_str = " → ".join(categories)
-        lines.append(f"  {_DIM}Category:{_RESET} {cat_str}")
-
+        lines.append(f"  {_DIM}Categories:{_RESET}   {' → '.join(categories)}")
     if isinstance(tags, list) and tags:
-        tags_str = "  ".join(f"{_DIM}#{tag}{_RESET}" for tag in tags[:10])
-        lines.append(f"  {_DIM}Tags:{_RESET} {tags_str}")
-
+        lines.append(f"  {_DIM}Tags:{_RESET}         {', '.join(tags[:10])}")
     if isinstance(frameworks, list) and frameworks:
-        lines.append(f"  {_DIM}Frameworks:{_RESET} {'  '.join(frameworks)}")
+        lines.append(f"  {_DIM}Frameworks:{_RESET}   {', '.join(frameworks)}")
 
-    if isinstance(runtimes, dict) and runtimes:
-        rt_parts = []
-        for k, v in runtimes.items():
-            constraint = v.lstrip(">=") if isinstance(v, str) else str(v)
-            rt_parts.append(f"{k} ≥{constraint}")
-        lines.append(f"  {_DIM}Runtimes:{_RESET} {', '.join(rt_parts)}")
+    # --- Bindings ---
+    lines.append(_section_title("Bindings"))
+    state_layers = _state_fields(detail)
+    desired_bindings = state_layers.get("desired", []) or []
+    verified_bindings = state_layers.get("verified", []) or []
+    drifted_bindings = state_layers.get("drifted", []) or []
+    lines.append(f"  {_DIM}Desired:{_RESET}      {', '.join(desired_bindings) if desired_bindings else '—'}")
+    lines.append(f"  {_DIM}Verified:{_RESET}     {', '.join(verified_bindings) if verified_bindings else '—'}")
+    if drifted_bindings:
+        lines.append(f"  {_DIM}Drifted:{_RESET}      {', '.join(drifted_bindings)}")
 
+    # --- Dependencies ---
+    lines.append(_section_title("Dependencies"))
     if isinstance(dependencies, dict) and dependencies:
-        dep_parts = []
-        for k, v in dependencies.items():
-            constraint = v.lstrip(">=") if isinstance(v, str) else str(v)
-            dep_parts.append(f"{k} ≥{constraint}")
-        lines.append(f"  {_DIM}Dependencies:{_RESET} {', '.join(dep_parts)}")
+        for dep_name, dep_version in dependencies.items():
+            lines.append(f"  {_DIM}{dep_name}{_RESET}  {dep_version}")
+    else:
+        lines.append(f"  {_DIM}(none){_RESET}")
 
-    if version or updated_at:
-        meta_parts = []
-        if version:
-            meta_parts.append(f"Version: {version}")
-        if updated_at:
-            meta_parts.append(f"Updated: {updated_at}")
-        lines.append(f"  {_DIM}{'  '.join(meta_parts)}{_RESET}")
-
+    # --- Provenance ---
+    lines.append(_section_title("Provenance"))
+    fp = detail.get("fingerprint", "")
+    if fp:
+        lines.append(f"  {_DIM}Fingerprint:{_RESET}  {fp}")
     if source_url:
-        lines.append(f"  {_DIM}Source:{_RESET} {source_url}")
+        lines.append(f"  {_DIM}Source:{_RESET}       {source_url}")
     if source_ref:
-        lines.append(f"  {_DIM}Source ref:{_RESET} {source_ref}")
+        lines.append(f"  {_DIM}Source ref:{_RESET}   {source_ref}")
     if source_commit:
-        lines.append(f"  {_DIM}Source commit:{_RESET} {source_commit}")
+        lines.append(f"  {_DIM}Source commit:{_RESET}{source_commit}")
+    if not fp and not source_url:
+        lines.append(f"  {_DIM}(none){_RESET}")
 
+    # --- Runtime Status ---
+    lines.append(_section_title("Runtime status"))
+    if isinstance(runtimes, dict) and runtimes:
+        for rt_name, rt_version in runtimes.items():
+            lines.append(f"  {_DIM}{rt_name}{_RESET}  {rt_version}")
+    else:
+        lines.append(f"  {_DIM}(none declared){_RESET}")
+
+    # --- Actions ---
+    lines.append("")
     lines.append(rule)
-    lines.append(f"  {_DIM}[i]{_RESET} install  {_DIM}[c]{_RESET} compare  {_DIM}[v]{_RESET} verify fingerprint  {_DIM}[q]{_RESET} back")
+    lines.append(f"  {_DIM}[i]{_RESET} install  {_DIM}[c]{_RESET} compare  {_DIM}[v]{_RESET} verify  {_DIM}[q]{_RESET} back")
     lines.append("")
 
     return "\n".join(lines)

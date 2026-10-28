@@ -9,12 +9,96 @@ from .commands.registry import add_registry_parser
 from .commands.init import VALID_TEMPLATES
 from .utils.errors import CapaciumError
 
+# ---------------------------------------------------------------------------
+# Criterion 1: top-level help grouped into six approved workflow groups.
+# Each group has a one-line purpose, a common next action and an example.
+# ---------------------------------------------------------------------------
+
+_CMD_GROUPS: "dict[str, str]" = {
+    "search": "Discover",
+    "browse": "Discover",
+    "info": "Discover",
+    "compare": "Discover",
+    "install": "Manage",
+    "update": "Manage",
+    "remove": "Manage",
+    "list": "Manage",
+    "gc": "Manage",
+    "clean": "Manage",
+    "host": "Connect",
+    "harness": "Connect",
+    "exec": "Connect",
+    "status": "Connect",
+    "rollback": "Connect",
+    "verify": "Diagnose",
+    "doctor": "Diagnose",
+    "repair": "Diagnose",
+    "reconcile": "Diagnose",
+    "lock": "Diagnose",
+    "init": "Publish",
+    "package": "Publish",
+    "publish": "Publish",
+    "sign": "Publish",
+    "key": "Publish",
+    "adapt": "Publish",
+    "submit": "Publish",
+    "submit-tarball": "Publish",
+}
+
+_GROUP_META: "dict[str, tuple[str, str]]" = {
+    "Discover": ("Find and inspect capabilities", "cap search pdf"),
+    "Manage": ("Install, update and remove capabilities", "cap list"),
+    "Connect": ("Connect capabilities to host frameworks", "cap host register owner/name"),
+    "Diagnose": ("Verify and repair installed capabilities", "cap doctor"),
+    "Publish": ("Create and share capabilities", "cap init --template skill"),
+    "Advanced": ("Advanced operations and utilities", "cap help"),
+}
+
+_GROUP_ORDER = ["Discover", "Manage", "Connect", "Diagnose", "Publish", "Advanced"]
+
+
+class _GroupedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that renders subcommands in the six workflow groups."""
+
+    def _format_action(self, action):
+        if isinstance(action, argparse._SubParsersAction):
+            return self._format_grouped_subcommands(action)
+        return super()._format_action(action)
+
+    def _format_grouped_subcommands(self, action):
+        # action.choices is an OrderedDict of command_name -> ArgumentParser.
+        # The human-readable help text for each subcommand is stored in the
+        # _choices_actions pseudo-actions, not on the parser objects.
+        choices = getattr(action, "choices", {}) or {}
+        help_map: "dict[str, str]" = {}
+        for ca in getattr(action, "_choices_actions", []) or []:
+            help_map[ca.dest] = getattr(ca, "help", "") or ""
+        grouped: "dict[str, list[tuple[str, str]]]" = {}
+        for cmd_name in choices:
+            grp = _CMD_GROUPS.get(cmd_name, "Advanced")
+            help_text = help_map.get(cmd_name, "")
+            grouped.setdefault(grp, []).append((cmd_name, help_text))
+
+        lines: "list[str]" = []
+        for grp_name in _GROUP_ORDER:
+            cmds = grouped.get(grp_name, [])
+            if not cmds:
+                continue
+            purpose, example = _GROUP_META.get(grp_name, ("", ""))
+            lines.append(f"\n{grp_name} — {purpose}")
+            for cmd_name, help_text in sorted(cmds):
+                lines.append(f"  {cmd_name:<18} {help_text}")
+            lines.append(f"  \u2192 Try: {example}")
+        lines.append("")
+        return "\n".join(lines)
+
 
 def main():
     parser = argparse.ArgumentParser(
         prog="cap",
-        description="Capacium - Capability Packaging System for AI agent capabilities",
-        epilog="For more information, visit https://github.com/Capacium/capacium"
+        description="Capacium — Capability Packaging System for AI agent capabilities",
+        epilog="For more information, visit https://github.com/Capacium/capacium",
+        formatter_class=_GroupedHelpFormatter,
     )
     parser.add_argument(
         "-v", "--version",
@@ -22,7 +106,7 @@ def main():
         version=f"%(prog)s {__version__}"
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", title="Workflow groups")
 
     install_parser = subparsers.add_parser("install", help="Install a capability")
     install_parser.add_argument("capability", nargs="?", help="Capability specification (owner/name[@version] or name[@version]). Optional when --from-tarball is used.")
@@ -84,6 +168,11 @@ def main():
         "--policy",
         help=argparse.SUPPRESS,
     )
+    install_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output plan and result as stable JSON",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update a capability")
     update_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
@@ -93,10 +182,13 @@ def main():
         action="store_true",
         help="Skip the pre-flight runtime check (advanced)",
     )
+    update_parser.add_argument("--json", action="store_true", help="Output plan and result as stable JSON")
 
     remove_parser = subparsers.add_parser("remove", help="Remove a capability")
     remove_parser.add_argument("capability", help="Capability specification (owner/name[@version] or name[@version])")
     remove_parser.add_argument("--force", action="store_true", help="Force removal including sub-capabilities with dependents")
+    remove_parser.add_argument("--cascade", action="store_true", help="Accept cascade plan and remove dependents")
+    remove_parser.add_argument("--json", action="store_true", help="Output plan and result as stable JSON")
 
     list_parser = subparsers.add_parser("list", help="List installed capabilities")
     list_parser.add_argument("--kind", help="Filter by kind (skill, bundle, tool, prompt, template, workflow, mcp-server)")
@@ -211,7 +303,17 @@ def main():
     publish_parser.add_argument(
         "--json",
         action="store_true",
-        help="Emit the machine-readable publication receipt as JSON on stdout",
+        dest="json",
+        help="Emit one stable JSON diagnostics document on stdout (prose moves to stderr)",
+    )
+    publish_parser.add_argument(
+        "--authority-events",
+        metavar="PATH",
+        help=(
+            "Path to a JSON file with the signed authority events that prove a "
+            "previous-identity transition (same object schema as the "
+            "publisher/listing API v1 transition_evidence entries)"
+        ),
     )
 
     marketplace_parser = subparsers.add_parser("marketplace", help="Open the Capacium marketplace in your browser")
@@ -295,6 +397,63 @@ def main():
         help="Output as JSON (for programmatic use)",
     )
 
+    # CAP117-HOST-012: cap host — host registration management
+    host_parser = subparsers.add_parser(
+        "host",
+        help="Manage host configuration registrations",
+    )
+    host_sub = host_parser.add_subparsers(dest="host_command", help="Host sub-commands")
+    host_register = host_sub.add_parser("register", help="Register a capability into a host")
+    host_register.add_argument("capability", help="Capability specification (owner/name)")
+    host_register.add_argument("--framework", help="Target framework (claude-code, claude-desktop, codex)", default="claude-code")
+    host_register.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_register.add_argument("--source", help="Source directory path", default=".")
+    host_register.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_register.add_argument("--json", action="store_true", help="Output as JSON")
+    host_inspect = host_sub.add_parser("inspect", help="Inspect host configuration")
+    host_inspect.add_argument("--framework", help="Target framework", default="claude-code")
+    host_inspect.add_argument("--json", action="store_true", help="Output as JSON")
+    host_verify = host_sub.add_parser("verify", help="Verify a capability registration")
+    host_verify.add_argument("capability", help="Capability specification (owner/name)")
+    host_verify.add_argument("--framework", help="Target framework", default="claude-code")
+    host_verify.add_argument("--json", action="store_true", help="Output as JSON")
+    host_repair = host_sub.add_parser("repair", help="Repair a broken host registration")
+    host_repair.add_argument("capability", help="Capability specification (owner/name)")
+    host_repair.add_argument("--framework", help="Target framework", default="claude-code")
+    host_repair.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_repair.add_argument("--source", help="Source directory path", default=".")
+    host_repair.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_repair.add_argument("--json", action="store_true", help="Output as JSON")
+    host_unregister = host_sub.add_parser("unregister", help="Remove a capability from host config")
+    host_unregister.add_argument("capability", help="Capability specification (owner/name)")
+    host_unregister.add_argument("--framework", help="Target framework", default="claude-code")
+    host_unregister.add_argument("--kind", help="Capability kind (skill, mcp-server)", default="skill")
+    host_unregister.add_argument("--dry-run", action="store_true", help="Show plan without applying")
+    host_unregister.add_argument("--json", action="store_true", help="Output as JSON")
+    host_status = host_sub.add_parser("status", help="Show host status (desired, verified, observed)")
+    host_status.add_argument("--framework", help="Target framework", default="claude-code")
+    host_status.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # Criterion 4: cap harness — desired-binding management.
+    harness_parser = subparsers.add_parser(
+        "harness",
+        help="Manage desired harness bindings (add, remove, replace)",
+    )
+    harness_sub = harness_parser.add_subparsers(dest="harness_command", help="Harness sub-commands")
+    harness_add = harness_sub.add_parser("add", help="Add a desired harness binding")
+    harness_add.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_add.add_argument("--framework", help="Target framework (e.g. claude-code, opencode)", default="claude-code")
+    harness_add.add_argument("--json", action="store_true", help="Output as JSON")
+    harness_remove = harness_sub.add_parser("remove", help="Remove a desired harness binding")
+    harness_remove.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_remove.add_argument("--framework", help="Target framework to remove", default="claude-code")
+    harness_remove.add_argument("--json", action="store_true", help="Output as JSON")
+    harness_replace = harness_sub.add_parser("replace", help="Replace a desired harness binding")
+    harness_replace.add_argument("capability", help="Capability specification (owner/name[@version])")
+    harness_replace.add_argument("--old-framework", required=True, help="Framework to replace")
+    harness_replace.add_argument("--new-framework", required=True, help="Framework to add instead")
+    harness_replace.add_argument("--json", action="store_true", help="Output as JSON")
+
     gc_parser = subparsers.add_parser(
         "gc",
         help="Prune superseded package versions and clean up drift "
@@ -351,6 +510,36 @@ def main():
     runtimes_sub = runtimes_parser.add_subparsers(
         dest="runtimes_command", help="Runtime subcommand"
     )
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execute an installed capability entrypoint (no build, no mutation)",
+    )
+    exec_parser.add_argument("capability", help="Capability specification (owner/name)")
+    exec_parser.add_argument("args", nargs=argparse.REMAINDER,
+                             help="Arguments forwarded to the entrypoint")
+    exec_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="MCP stdio mode: protocol bytes on stdout only, diagnostics on stderr",
+    )
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show separated package, runtime, binding and process status",
+    )
+    status_parser.add_argument("capability", help="Capability specification (owner/name)")
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output status as stable JSON",
+    )
+
+    rollback_parser = subparsers.add_parser(
+        "rollback",
+        help="Roll back a runtime generation to the previous verified generation",
+    )
+    rollback_parser.add_argument("capability", help="Capability specification (owner/name)")
+
     runtimes_sub.add_parser("list", help="List known runtimes and their detection state")
     runtimes_install_parser = runtimes_sub.add_parser(
         "install",
@@ -474,33 +663,6 @@ def main():
     export_parser.add_argument("--target", required=True, help="Export target (mcp-server, a2a-agent, aws-agentcore, opencode)")
     export_parser.add_argument("--output", help="Write to file instead of stdout")
 
-    license_parser = subparsers.add_parser("license", help="Manage license keys for paid capabilities")
-    license_sub = license_parser.add_subparsers(dest="license_command", help="License subcommand")
-
-    license_issue_parser = license_sub.add_parser("issue", help="Issue a new license")
-    license_issue_parser.add_argument("capability", help="Capability identifier (owner/name)")
-    license_issue_parser.add_argument("--publisher", required=True, help="Publisher identifier")
-    license_issue_parser.add_argument("--licensee", required=True, help="Licensee identifier")
-    license_issue_parser.add_argument("--type", choices=["free", "trial", "standard", "enterprise"], default="free", help="License type")
-    license_issue_parser.add_argument("--duration", type=int, help="Duration in days")
-    license_issue_parser.add_argument("--max-uses", type=int, help="Maximum uses")
-    license_issue_parser.add_argument("--registry", help="Registry URL")
-
-    license_validate_parser = license_sub.add_parser("validate", help="Validate a license token")
-    license_validate_parser.add_argument("token", help="License token to validate")
-    license_validate_parser.add_argument("--capability", required=True, help="Capability identifier")
-    license_validate_parser.add_argument("--registry", help="Registry URL")
-
-    license_revoke_parser = license_sub.add_parser("revoke", help="Revoke a license")
-    license_revoke_parser.add_argument("license_id", help="License ID to revoke")
-    license_revoke_parser.add_argument("--reason", default="", help="Revocation reason")
-    license_revoke_parser.add_argument("--registry", help="Registry URL")
-
-    license_list_parser = license_sub.add_parser("list", help="List licenses")
-    license_list_parser.add_argument("--licensee", help="Filter by licensee ID")
-    license_list_parser.add_argument("--capability", help="Filter by capability ID")
-    license_list_parser.add_argument("--registry", help="Registry URL")
-
     mcp_parser = subparsers.add_parser("mcp", help="Capacium MCP server for AI agents")
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", help="MCP subcommand")
     mcp_start_parser = mcp_sub.add_parser("start", help="Start the MCP server")
@@ -609,8 +771,9 @@ def main():
                 github_token=getattr(args, "token", None) or os.environ.get("GITHUB_TOKEN"),
                 registry_url=getattr(args, "registry", None),
                 project=getattr(args, "project", None),
+                json_output=getattr(args, "json", False),
             )
-            if success:
+            if success and not getattr(args, "json", False):
                 from .commands.reconcile import show_reconcile_summary
                 show_reconcile_summary()
             sys.exit(0 if success else 1)
@@ -621,12 +784,18 @@ def main():
                 args.capability,
                 force=getattr(args, "force", False),
                 skip_runtime_check=getattr(args, "skip_runtime_check", False),
+                json_output=getattr(args, "json", False),
             )
             sys.exit(0 if success else 1)
 
         elif args.command == "remove":
             from .commands.remove import remove_capability
-            success = remove_capability(args.capability, force=args.force)
+            success = remove_capability(
+                args.capability,
+                force=args.force,
+                cascade=getattr(args, "cascade", False),
+                json_output=getattr(args, "json", False),
+            )
             sys.exit(0 if success else 1)
 
         elif args.command == "list":
@@ -757,12 +926,16 @@ def main():
             registry_arg = args.registry
             if registry_arg and registry_arg.lower() == "false":
                 registry_arg = None
+            authority_events_path = getattr(args, "authority_events", None)
             sys.exit(
                 publish_capability(
                     Path(args.package_path),
                     registry_url=registry_arg,
                     token=token,
                     json_output=bool(getattr(args, "json", False)),
+                    authority_events_path=(
+                        Path(authority_events_path) if authority_events_path else None
+                    ),
                 )
             )
 
@@ -973,40 +1146,6 @@ def main():
             success = export_generic(args.capability, args.target, output=args.output)
             sys.exit(0 if success else 1)
 
-        elif args.command == "license":
-            from .commands.license import (
-                license_issue, license_validate, license_revoke, license_list,
-            )
-            sub = getattr(args, "license_command", None)
-            if sub == "issue":
-                success = license_issue(
-                    args.capability, args.publisher, args.licensee,
-                    license_type=args.type,
-                    duration_days=args.duration,
-                    max_uses=args.max_uses,
-                    registry_url=args.registry,
-                )
-            elif sub == "validate":
-                success = license_validate(
-                    args.token, args.capability,
-                    registry_url=args.registry,
-                )
-            elif sub == "revoke":
-                success = license_revoke(
-                    args.license_id, reason=args.reason,
-                    registry_url=args.registry,
-                )
-            elif sub == "list":
-                success = license_list(
-                    licensee_id=args.licensee,
-                    capability_id=args.capability,
-                    registry_url=args.registry,
-                )
-            else:
-                print("Error: specify a license subcommand (issue, validate, revoke, list)")
-                sys.exit(1)
-            sys.exit(0 if success else 1)
-
         elif args.command == "version":
             print(f"cap {__version__}")
             sys.exit(0)
@@ -1032,6 +1171,26 @@ def main():
             else:
                 mcp_parser.print_help()
                 sys.exit(1)
+
+        elif args.command == "exec":
+            from .commands.exec import handle_exec
+            sys.exit(handle_exec(args))
+
+        elif args.command == "status":
+            from .commands.exec import handle_status
+            sys.exit(handle_status(args))
+
+        elif args.command == "rollback":
+            from .commands.exec import handle_rollback
+            sys.exit(handle_rollback(args))
+
+        elif args.command == "host":
+            from .commands.host_register import handle_host
+            sys.exit(handle_host(args))
+
+        elif args.command == "harness":
+            from .commands.harness import handle_harness
+            sys.exit(handle_harness(args))
 
         elif args.command == "skills-mcp":
             # P1-003: skills MCP wrapper management
@@ -1068,8 +1227,9 @@ def main():
 
     except KeyboardInterrupt:
         # A user interrupt must not leave a traceback or a half-finished
-        # multi-step command; mutating commands (install/remove) already
-        # roll back via their own journals, so exiting cleanly is sufficient.
+        # multi-step command; mutating commands (install/remove) catch
+        # BaseException and roll back via their own journals, so exiting
+        # cleanly is sufficient.
         print("Interrupted.", file=sys.stderr)
         sys.exit(130)
     except ImportError as e:

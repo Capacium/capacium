@@ -1,0 +1,15 @@
+{
+  "package": "@twigpine/openclaude",
+  "version": "0.32.0",
+  "binary": "openclaude",
+  "registry": "https://registry.npmjs.org/",
+  "tarball": "https://registry.npmjs.org/@twigpine/openclaude/-/openclaude-0.32.0.tgz",
+  "integrity": "sha512-yKXnC/IzrCu+Xa+gD0GcbpJlZVQayIUTJtxNOAMOzGmAbzGwi+N36qqd8RAMzUckPPHRatJ6BuazSC4qZ+Vrnw==",
+  "obsolete_scopes": [
+    "@gitlawb/openclaude"
+  ],
+  "obsolete_versions": [
+    "0.31.0"
+  ],
+  "change_policy": "Changing this pin requires a new compatibility run and reviewed evidence."
+}

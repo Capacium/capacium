@@ -36,11 +36,13 @@ def test_update_reconciles_unique_unqualified_mcp_name(tmp_home, tmp_path):
     assert update_capability("mempalace", skip_runtime_check=True) is True
 
     data = json.loads(config_path.read_text())
-    assert data["mcp"]["mempalace"] == {
-        "type": "local",
-        "command": ["uvx", "mempalace-mcp"],
-        "enabled": True,
-    }
+    entry = data["mcp"]["mempalace"]
+    assert entry["type"] == "local"
+    assert entry["enabled"] is True
+    assert "_capacium_owner" in entry
+    assert "cap" in entry["command"][0] or "capacium" in " ".join(entry["command"])
+    assert "exec" in entry["command"]
+    assert "mempalace" in entry["command"]
 
 
 def test_update_reports_ambiguous_unqualified_name(tmp_home, tmp_path, capsys):
@@ -215,4 +217,7 @@ def test_reconcile_rewrites_entry_for_new_entrypoint(tmp_home, tmp_path, monkeyp
     full_entry = data["mcp"]["entry-evolve"]
     assert full_entry["type"] == "local"
     assert full_entry["enabled"] is True
-    assert full_entry["command"][0] == "npx"
+    assert "_capacium_owner" in full_entry
+    assert "cap" in full_entry["command"][0] or "capacium" in " ".join(full_entry["command"])
+    assert "exec" in full_entry["command"]
+    assert "entry-evolve" in full_entry["command"]

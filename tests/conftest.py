@@ -150,7 +150,7 @@ def _call_real_rmtree(path, ignore_errors: bool, onerror, onexc, dir_fd) -> None
 
 
 def _rmtree_retry(path, ignore_errors: bool = False, onerror=None, *,
-                  onexc=None, dir_fd=None,
+                  onexc=None, dir_fd=None, _onexc_kwargs=None,
                   _attempts: int = 5, _delay: float = 0.25) -> None:
     """shutil.rmtree replacement that retries on transient Windows handle
     contention before falling back to an ignoring best-effort removal.

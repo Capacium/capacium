@@ -125,6 +125,72 @@ class TestChangelogExtraction:
         assert result.returncode == 0
         assert result.stdout.startswith("If you publish capabilities")
 
+    # --- 1.1.7 heading forms (B2: bracketed headings) ---
+
+    def test_extracts_bracketed_heading_form(self):
+        """The `## [X.Y.Z] - date` form yields the same body."""
+        extractor = _load_extractor()
+        content = (
+            "## [1.2.3] - 2026-10-23\n\n"
+            "### Fixed\n- thing\n\n"
+            "## Capacium v1.2.2 — Older (2026-01-01)\n\nnotes\n"
+        )
+        notes = extractor.extract_notes(content, "1.2.3")
+        assert notes == "### Fixed\n- thing"
+
+    def test_real_changelog_1_1_7_extracts_nonempty_body(self):
+        """The live 1.1.7 entry is reachable and non-empty."""
+        extractor = _load_extractor()
+        notes = extractor.extract_notes_for_tag("v1.1.7", CHANGELOG)
+        assert "Neutral-Core Boundary" in notes
+        assert "commercial license command removed" in notes.lower()
+        assert "OpenClaude" in notes
+        # The Unreleased section must not leak into the 1.1.7 body.
+        assert "Release notes come from the changelog" not in notes
+        assert "External-audience gate" not in notes
+
+    def test_cli_1_1_7_exits_zero_and_yields_body(self):
+        result = _run_step_script(
+            "python scripts/extract_changelog_notes.py v1.1.7"
+        )
+        assert result.returncode == 0
+        assert "Neutral-Core Boundary" in result.stdout
+        assert "commercial license command removed" in result.stdout.lower()
+
+    def test_missing_version_still_rejected(self):
+        extractor = _load_extractor()
+        with pytest.raises(extractor.MissingChangelogEntryError):
+            extractor.extract_notes(
+                "## [1.2.3] - 2026-10-23\n\nnotes\n", "9.9.9"
+            )
+
+    def test_unreleased_is_section_boundary(self):
+        """## Unreleased terminates the preceding version section."""
+        extractor = _load_extractor()
+        content = (
+            "## [1.1.7] - 2026-10-23\n\n"
+            "### Fixed\n- thing\n\n"
+            "## Unreleased\n\n"
+            "### Added\n- future\n\n"
+            "## Capacium v1.1.6 — Release (2026-01-01)\n\nnotes\n"
+        )
+        notes = extractor.extract_notes(content, "1.1.7")
+        assert notes == "### Fixed\n- thing"
+        assert "future" not in notes
+
+    def test_both_heading_forms_merge_ordered(self):
+        """When both forms appear, the Capacium form takes precedence for the
+        same version but both contribute boundary markers."""
+        extractor = _load_extractor()
+        content = (
+            "## Capacium v1.0.0 — First (2026-01-01)\n\n"
+            "first notes\n\n"
+            "## [1.1.0] - 2026-06-15\n\n"
+            "second notes\n"
+        )
+        assert extractor.extract_notes(content, "1.0.0") == "first notes"
+        assert extractor.extract_notes(content, "1.1.0") == "second notes"
+
 
 class TestExtractorIsSyntacticallyValid:
     def test_extractor_parses_as_python(self):

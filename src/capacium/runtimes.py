@@ -10,6 +10,7 @@ This module provides:
 * a small registry mapping well-known runtime names → detection + install hints,
 * a stdlib-only ``RuntimeResolver`` that probes the host with ``shutil.which``
   and a version subprocess call,
+* typed runtime-unit, source-lock and generation models for CAP117-RUNTIME-010,
 * helpers used by ``cap install`` (pre-flight) and ``cap doctor``.
 
 Conventions
@@ -25,12 +26,366 @@ Conventions
 
 from __future__ import annotations
 
+import enum
+import hashlib
+import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# SourceType — one source contract for all artifact forms (Criterion 4)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class SourceType(str, enum.Enum):
+    """Every runtime source form uses the same SourceType contract.
+
+    Registry artifacts, package indexes, exact Git commits, release assets,
+    authenticated sources and verified local cache are all represented with
+    the same ``SourceLock`` model distinguished by this type field.
+    """
+
+    REGISTRY_ARTIFACT = "registry_artifact"
+    PACKAGE_INDEX = "package_index"
+    GIT_COMMIT = "git_commit"
+    RELEASE_ASSET = "release_asset"
+    AUTHENTICATED_SOURCE = "authenticated_source"
+    VERIFIED_LOCAL_CACHE = "verified_local_cache"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# RuntimeUnit, SourceLock, RuntimeGeneration (CAP117-RUNTIME-010)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SourceLock:
+    """Exact source binding for a runtime generation.
+
+    Every field is digest-bound: source artifacts, interpreter/platform
+    constraints, dependency lock, build inputs, probes and entrypoints all
+    carry content-addressable digests so offline replay verifies identical
+    bytes and no branch head can satisfy an exact runtime lock.
+
+    ``source_type`` distinguishes the source form (registry artifact, Git
+    commit, authenticated source, …) while keeping the same contract.
+    Defaults to ``VERIFIED_LOCAL_CACHE`` for backward compat.
+    """
+
+    source_url: str
+    digest: str
+    source_type: SourceType = SourceType.VERIFIED_LOCAL_CACHE
+    interpreter: str = ""
+    platforms: List[str] = field(default_factory=list)
+    dependency_lock_digest: str = ""
+    build_inputs: Dict[str, str] = field(default_factory=dict)
+    probes: Dict[str, str] = field(default_factory=dict)
+    entrypoints: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
+
+    def to_descriptor(self) -> str:
+        """Canonical JSON descriptor for digest computation."""
+        return json.dumps({
+            "source_url": self.source_url,
+            "digest": self.digest,
+            "source_type": self.source_type.value,
+            "interpreter": self.interpreter,
+            "platforms": sorted(self.platforms),
+            "dependency_lock_digest": self.dependency_lock_digest,
+            "build_inputs": dict(sorted(self.build_inputs.items())),
+            "probes": dict(sorted(self.probes.items())),
+            "entrypoints": dict(sorted(
+                (k, list(v)) for k, v in self.entrypoints.items()
+            )),
+        }, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class RuntimeGeneration:
+    """An immutable, content-addressed runtime generation.
+
+    Identified by its content digest. Carries the full ``SourceLock`` that
+    produced it so offline verification and replay are deterministic.
+    """
+
+    digest: str
+    source_lock: SourceLock
+
+
+@dataclass(frozen=True)
+class RuntimeUnit:
+    """Typed component representing an executable runtime.
+
+    A ``RuntimeUnit`` models an executable component with identity
+    (owner/name), a descriptor digest (SHA-256 of the canonical descriptor),
+    entrypoints and an optional generation identity.  Public package kinds
+    remain ``capability`` and ``bundle`` — ``RuntimeUnit`` is a typed
+    component, not a public Kind.
+    """
+
+    owner: str
+    name: str
+    descriptor_digest: str = ""
+    entrypoints: Dict[str, str] = field(default_factory=dict)
+    generation_id: Optional[str] = None
+    is_mcp: bool = False
+
+    @property
+    def id(self) -> str:
+        return f"{self.owner}/{self.name}"
+
+    @classmethod
+    def from_manifest(
+        cls,
+        owner: str,
+        name: str,
+        version: str,
+        runtimes: Dict[str, str],
+        mcp_command: Optional[str] = None,
+        mcp_args: Optional[List[str]] = None,
+    ) -> "RuntimeUnit":
+        """Build a RuntimeUnit from a capability manifest.
+
+        Computes the descriptor digest from the canonical descriptor JSON,
+        populates entrypoints from the MCP command when available.
+        """
+        entrypoints: Dict[str, str] = {}
+        is_mcp = False
+        if mcp_command:
+            cmd = mcp_command
+            if mcp_args:
+                cmd = " ".join([mcp_command] + list(mcp_args))
+            entrypoints["main"] = cmd
+            is_mcp = True
+
+        descriptor = json.dumps({
+            "owner": owner,
+            "name": name,
+            "version": version,
+            "runtimes": dict(sorted(runtimes.items())),
+            "entrypoints": dict(sorted(entrypoints.items())),
+        }, sort_keys=True, separators=(",", ":"))
+
+        descriptor_digest = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
+
+        return cls(
+            owner=owner,
+            name=name,
+            descriptor_digest=descriptor_digest,
+            entrypoints=entrypoints,
+            generation_id=None,
+            is_mcp=is_mcp,
+        )
+
+    @staticmethod
+    def needed_for(
+        runtimes: Dict[str, str],
+        kind: Optional[str] = None,
+        mcp_command: Optional[str] = None,
+    ) -> bool:
+        """Return True if this capability requires a RuntimeUnit.
+
+        Simple skills and recipes install without a runtime unit: only
+        capabilities with declared runtimes or an MCP command need one.
+        """
+        if runtimes:
+            return True
+        if mcp_command:
+            return True
+        return False
+
+
+def needs_runtime_unit(
+    runtimes: Dict[str, str],
+    mcp_command: Optional[str] = None,
+) -> bool:
+    """Return True if the given runtime requirements need a RuntimeUnit.
+
+    Simple skills and recipes with no runtimes and no MCP command install
+    without a runtime unit.
+    """
+    return RuntimeUnit.needed_for(runtimes, mcp_command=mcp_command)
+
+
+def verify_cache_digest(expected: str, actual: str) -> None:
+    """Verify that two digests match. Raises ValueError on mismatch.
+
+    Offline cache mismatch must fail closed: a digest mismatch is an
+    integrity error, not a silent fallback.
+    """
+    if expected != actual:
+        raise ValueError(
+            f"digest mismatch: expected {expected}, got {actual}"
+        )
+
+
+def is_exact_lock_satisfied(reference: str) -> bool:
+    """Return True only if *reference* is a full SHA-256 hex digest.
+
+    No branch head (main, feature/foo, HEAD) can satisfy an exact runtime
+    lock. Only a full 64-character hex SHA-256 qualifies.
+    """
+    if not reference:
+        return False
+    return bool(re.fullmatch(r"[0-9a-f]{64}", reference))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Source contract validation (Criterion 4)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def validate_source_contract(lock: SourceLock) -> None:
+    """Validate that a SourceLock has all required fields populated.
+
+    Raises ValueError if source_url, digest or source_type are empty/missing.
+    """
+    if not lock.source_url:
+        raise ValueError("source_url is required in source contract")
+    if not lock.digest:
+        raise ValueError("digest is required in source contract")
+    if lock.source_type is None:
+        raise ValueError("source_type is required in source contract")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# BuildResult, RuntimeBuilder — isolated builds (Criterion 5)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """The result of an isolated runtime build.
+
+    ``digest`` is the content hash of the build output.
+    ``build_dir`` is the isolated directory where the output lives.
+    ``generation`` is the ``RuntimeGeneration`` that was built.
+    ``metadata`` carries optional diagnostic information (builder version,
+    elapsed time, etc.).
+    """
+
+    digest: str
+    build_dir: str
+    generation: "RuntimeGeneration" = field(default_factory=lambda: RuntimeGeneration(digest="", source_lock=SourceLock(source_url="", digest="")))
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+
+class RuntimeBuilder:
+    """Build runtimes in isolated output directories.
+
+    Every build creates a fresh output directory under ``generations_dir``.
+    Builds never mutate an existing generation.  Concurrent builds with the
+    same input digest converge to the same output digest and the same
+    filesystem state (the first build wins, subsequent builds detect the
+    existing generation and return immediately).
+    """
+
+    def __init__(self, generations_dir: str):
+        self.generations_dir = generations_dir
+        self._lock = threading.Lock()
+
+    def build(self, source_lock: SourceLock) -> BuildResult:
+        """Perform an isolated build for the given source lock.
+
+        The output digest is deterministic from the source-lock descriptor.
+        Concurrent builds of the same digest converge: only one build
+        actually runs, others detect the pre-existing output directory.
+        """
+        # The output digest is the SHA-256 of the canonical descriptor
+        output_digest = hashlib.sha256(
+            source_lock.to_descriptor().encode("utf-8")
+        ).hexdigest()
+
+        output_dir = os.path.join(self.generations_dir, output_digest)
+
+        generation = RuntimeGeneration(
+            digest=output_digest,
+            source_lock=source_lock,
+        )
+
+        with self._lock:
+            if os.path.isdir(output_dir):
+                # Converge: another thread already built this digest
+                return BuildResult(
+                    digest=output_digest,
+                    build_dir=output_dir,
+                    generation=generation,
+                    metadata={"converged": True},
+                )
+
+            # Create the output directory and a marker file
+            os.makedirs(output_dir, exist_ok=True)
+            manifest = {
+                "digest": output_digest,
+                "source_digest": source_lock.digest,
+                "source_url": source_lock.source_url,
+                "source_type": source_lock.source_type.value,
+            }
+            with open(os.path.join(output_dir, ".generation.json"), "w") as f:
+                json.dump(manifest, f, sort_keys=True)
+
+            # Create entrypoint scripts from the source lock entrypoints.
+            # Each entrypoint is written as a proper shebang shell script
+            # so probes (version, CLI, protocol) can execute it directly.
+            for entry_name, entry_cmd in source_lock.entrypoints.items():
+                script_path = os.path.join(output_dir, entry_name)
+                if isinstance(entry_cmd, (list, tuple)):
+                    cmd_str = " ".join(str(c) for c in entry_cmd)
+                else:
+                    cmd_str = str(entry_cmd)
+                with open(script_path, "w") as f:
+                    f.write(f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && exec {cmd_str} \"$@\"\n")
+                os.chmod(script_path, 0o755)
+
+        return BuildResult(
+            digest=output_digest,
+            build_dir=output_dir,
+            generation=generation,
+            metadata={"converged": False},
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# RuntimeLock — exact lock verification (Criterion 6)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RuntimeLock:
+    """An exact runtime lock binding a digest to a source lock.
+
+    The ``digest`` field MUST be a full 64-char SHA-256 hex digest.
+    Branch heads (main, HEAD, …) are never valid.
+    """
+
+    digest: str
+    source_lock: SourceLock
+
+
+def verify_runtime_lock(lock: RuntimeLock, actual_digest: str) -> None:
+    """Verify that a RuntimeLock is valid and matches the actual cache digest.
+
+    Raises ValueError if:
+    - The lock digest is empty or not a full SHA-256 hex digest
+    - The actual digest does not match the lock digest
+    """
+    if not lock.digest:
+        raise ValueError("runtime lock digest is empty")
+    if not re.fullmatch(r"[0-9a-f]{64}", lock.digest):
+        raise ValueError(
+            f"runtime lock digest is not an exact digest (branch head?): "
+            f"{lock.digest}"
+        )
+    if lock.digest != actual_digest:
+        raise ValueError(
+            f"digest mismatch: expected {lock.digest}, got {actual_digest}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -523,3 +878,240 @@ def prompt_and_resolve_runtimes(
 
 def known_runtime_names() -> List[str]:
     return sorted(RUNTIMES.keys())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Criterion 7: Generation GC — rollback retention and safe deletion
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class GenerationLease:
+    """A lease that prevents GC from deleting a generation during use.
+
+    Acquired before a concurrent build/activation and released when done.
+    """
+
+    lease_id: str
+    generation_id: str
+
+
+def _store_path() -> str:
+    return os.path.join(os.path.expanduser("~"), ".capacium", "generations", "store.json")
+
+
+class GenerationStore:
+    """Persistent store for runtime generations with active/reference/lease tracking.
+
+    Holds RuntimeGeneration objects and tracks:
+    - Which generation is currently active
+    - References between generations (e.g. parent -> child)
+    - Active leases that prevent GC
+
+    Persisted to ``~/.capacium/generations/store.json`` so generations
+    survive across CLI process invocations.
+    """
+
+    def __init__(self) -> None:
+        self._generations: Dict[str, RuntimeGeneration] = {}
+        self._active_generation_id: Optional[str] = None
+        self._references: Dict[str, set] = {}  # parent_id -> set of child_ids
+        self._leases: Dict[str, GenerationLease] = {}  # generation_id -> lease
+        self._lease_counter: int = 0
+
+    def add(self, gen: RuntimeGeneration) -> None:
+        """Add a generation to the store and persist."""
+        self._generations[gen.digest] = gen
+        self.save()
+
+    def get(self, digest: str) -> Optional[RuntimeGeneration]:
+        """Retrieve a generation by digest."""
+        return self._generations.get(digest)
+
+    def remove(self, digest: str) -> Optional[RuntimeGeneration]:
+        """Remove a generation from the store and persist. Returns the removed gen or None."""
+        removed = self._generations.pop(digest, None)
+        if removed is not None:
+            self.save()
+        return removed
+
+    def save(self) -> None:
+        """Persist the store to disk."""
+        sp = _store_path()
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        data: Dict[str, Any] = {
+            "active_generation_id": self._active_generation_id,
+            "generations": {
+                digest: {
+                    "digest": gen.digest,
+                    "source_lock": {
+                        "source_url": gen.source_lock.source_url,
+                        "digest": gen.source_lock.digest,
+                        "source_type": gen.source_lock.source_type.value,
+                        "interpreter": gen.source_lock.interpreter,
+                        "platforms": gen.source_lock.platforms,
+                        "dependency_lock_digest": gen.source_lock.dependency_lock_digest,
+                        "build_inputs": gen.source_lock.build_inputs,
+                        "probes": gen.source_lock.probes,
+                        "entrypoints": {
+                            k: list(v) for k, v in gen.source_lock.entrypoints.items()
+                        },
+                    },
+                }
+                for digest, gen in self._generations.items()
+            },
+        }
+        with open(sp, "w") as f:
+            json.dump(data, f, sort_keys=True, indent=2)
+
+    def load(self) -> bool:
+        """Load the store from disk. Returns True if a file existed and was loaded."""
+        sp = _store_path()
+        if not os.path.isfile(sp):
+            return False
+        try:
+            with open(sp, "r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return False
+        self._active_generation_id = data.get("active_generation_id")
+        for digest, gen_data in data.get("generations", {}).items():
+            sl = gen_data.get("source_lock", {})
+            entrypoints_raw = sl.get("entrypoints", {})
+            source_lock = SourceLock(
+                source_url=sl.get("source_url", ""),
+                digest=sl.get("digest", ""),
+                source_type=SourceType(sl.get("source_type", "verified_local_cache")),
+                interpreter=sl.get("interpreter", ""),
+                platforms=sl.get("platforms", []),
+                dependency_lock_digest=sl.get("dependency_lock_digest", ""),
+                build_inputs=sl.get("build_inputs", {}),
+                probes=sl.get("probes", {}),
+                entrypoints={
+                    k: tuple(v) for k, v in entrypoints_raw.items()
+                },
+            )
+            gen = RuntimeGeneration(
+                digest=gen_data.get("digest", digest),
+                source_lock=source_lock,
+            )
+            self._generations[digest] = gen
+        return True
+
+    @property
+    def active_generation_id(self) -> Optional[str]:
+        return self._active_generation_id
+
+    def set_active(self, digest: str) -> None:
+        """Mark a generation as the currently active one and persist."""
+        self._active_generation_id = digest
+        self.save()
+
+    def is_active(self, digest: str) -> bool:
+        """Return True if the given digest is the active generation."""
+        return self._active_generation_id == digest
+
+    def add_reference(self, parent_id: str, child_id: str) -> None:
+        """Record that *parent_id* references *child_id*."""
+        if parent_id not in self._references:
+            self._references[parent_id] = set()
+        self._references[parent_id].add(child_id)
+
+    def is_referenced(self, digest: str) -> bool:
+        """Return True if any generation references *digest*."""
+        return any(digest in refs for refs in self._references.values())
+
+    def acquire_lease(self, generation_id: str) -> GenerationLease:
+        """Acquire a lease on a generation, preventing GC deletion.
+
+        Returns a GenerationLease that must be released when done.
+        """
+        self._lease_counter += 1
+        lease = GenerationLease(
+            lease_id=f"lease-{self._lease_counter}",
+            generation_id=generation_id,
+        )
+        self._leases[generation_id] = lease
+        return lease
+
+    def release_lease(self, lease: GenerationLease) -> None:
+        """Release a previously acquired lease. Idempotent — missing leases
+        are silently ignored."""
+        if lease.generation_id in self._leases:
+            existing = self._leases[lease.generation_id]
+            if existing.lease_id == lease.lease_id:
+                del self._leases[lease.generation_id]
+
+    def is_leased(self, generation_id: str) -> bool:
+        """Return True if *generation_id* has an active lease."""
+        return generation_id in self._leases
+
+    def _is_protected(self, digest: str) -> bool:
+        """Return True if a generation is active, referenced or leased."""
+        if self.is_active(digest):
+            return True
+        if self.is_referenced(digest):
+            return True
+        if self.is_leased(digest):
+            return True
+        return False
+
+
+class RuntimeGarbageCollector:
+    """Basic GC for runtime generations.
+
+    Only deletes generations that are:
+    - Unreferenced (no other generation references them)
+    - Inactive (not the current active generation)
+    - Unleashed (no concurrent build/activation lease)
+    """
+
+    def __init__(self, store: GenerationStore):
+        self._store = store
+
+    def dry_run(self) -> Dict[str, bool]:
+        """Report which generations would be deleted, without deleting.
+
+        Returns a dict mapping generation digest -> True for each candidate.
+        Active, leased and referenced generations are excluded.
+        """
+        candidates: Dict[str, bool] = {}
+        for digest, gen in list(self._store._generations.items()):
+            if not self._store._is_protected(digest):
+                candidates[digest] = True
+        return candidates
+
+    def collect(self) -> Dict[str, bool]:
+        """Delete unreferenced, inactive, unleased generations.
+
+        Returns a dict mapping deleted generation digest -> True.
+        Protected generations (active, referenced, leased) are never deleted.
+        """
+        deleted: Dict[str, bool] = {}
+        for digest in list(self._store._generations.keys()):
+            if not self._store._is_protected(digest):
+                self._store.remove(digest)
+                deleted[digest] = True
+        return deleted
+
+
+class GenerationManager:
+    """Orchestrates the generation lifecycle: store, dry-run and GC collect.
+
+    On construction, loads the persistent store from
+    ``~/.capacium/generations/store.json`` so generations survive across
+    CLI process invocations.
+    """
+
+    def __init__(self) -> None:
+        self.store = GenerationStore()
+        self.store.load()
+        self._gc = RuntimeGarbageCollector(self.store)
+
+    def dry_run_gc(self) -> Dict[str, bool]:
+        """Report which generations would be collected by GC."""
+        return self._gc.dry_run()
+
+    def collect_gc(self) -> Dict[str, bool]:
+        """Run GC collection, deleting unprotected generations."""
+        return self._gc.collect()

@@ -23,6 +23,7 @@ from .roo_code import RooCodeAdapter
 from .goose import GooseAdapter
 from .aider import AiderAdapter
 from .openclaw import OpenClawAdapter
+from .openclaude import OpenClaudeAdapter
 from .hermes import HermesAdapter
 from .qwen import QwenAdapter
 from .copilot import CopilotAdapter
@@ -117,6 +118,7 @@ register_adapter("roo-code", RooCodeAdapter)
 register_adapter("goose", GooseAdapter)
 register_adapter("aider", AiderAdapter)
 register_adapter("openclaw", OpenClawAdapter)
+register_adapter("openclaude", OpenClaudeAdapter)
 
 # ── Tier 3c: Junie ──────────────────────────────────────────────────────
 register_adapter("junie", JunieAdapter)

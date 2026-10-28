@@ -29,11 +29,6 @@ except ImportError:
         output must not depend on which dependency version is installed."""
         return trust.replace("_", " ").title()
 
-_RESET = "\033[0m"
-_BOLD = "\033[1m"
-_DIM = "\033[2m"
-_REVERSE = "\033[7m"
-
 _TRUST_BADGE_SYMBOLS = {
     "discovered": "○",
     "audited": "◉",
@@ -95,18 +90,25 @@ _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _color_support() -> int:
+    # NO_COLOR and non-TTY detection — criterion 5.
+    if os.environ.get("NO_COLOR", "") != "":
+        return 0
+    if not sys.stdout.isatty():
+        return 0
     term = os.environ.get("TERM", "")
     colorterm = os.environ.get("COLORTERM", "")
     if "256color" in term or "truecolor" in colorterm.lower():
         return 256
     if term and "color" in term.lower():
         return 16
-    if not sys.stdout.isatty():
-        return 0
-    return 16
+    return 0
 
 
 _COLOR_DEPTH = _color_support()
+_RESET = "\033[0m" if _COLOR_DEPTH > 0 else ""
+_BOLD = "\033[1m" if _COLOR_DEPTH > 0 else ""
+_DIM = "\033[2m" if _COLOR_DEPTH > 0 else ""
+_REVERSE = "\033[7m" if _COLOR_DEPTH > 0 else ""
 
 _KIND_COLORS_256 = {k.value: v for k, v in _KIND_COLOR_HEX.items()}
 _KIND_COLORS_16 = {k.value: v for k, v in _KIND_COLOR_16.items()}
@@ -114,7 +116,7 @@ _KIND_COLORS_16 = {k.value: v for k, v in _KIND_COLOR_16.items()}
 
 class TrustBadge:
     _symbols = _TRUST_BADGE_SYMBOLS
-    _colors = _TRUST_COLORS_256 if _COLOR_DEPTH >= 256 else _TRUST_COLORS_16
+    _colors = _TRUST_COLORS_256 if _COLOR_DEPTH >= 256 else (_TRUST_COLORS_16 if _COLOR_DEPTH > 0 else {})
 
     @classmethod
     def render(cls, trust: str) -> str:
@@ -133,7 +135,7 @@ class TrustBadge:
 
 
 class KindPill:
-    _colors = _KIND_COLORS_256 if _COLOR_DEPTH >= 256 else _KIND_COLORS_16
+    _colors = _KIND_COLORS_256 if _COLOR_DEPTH >= 256 else (_KIND_COLORS_16 if _COLOR_DEPTH > 0 else {})
 
     @classmethod
     def render(cls, kind: str) -> str:

@@ -66,7 +66,9 @@ class TestEnvLandsInConfigs:
             mcp_meta=manifest.get_mcp_metadata(),
         )
         entry = json.loads(config_path.read_text())["mcpServers"]["envful"]
-        assert entry["env"] == {"PERPLEXITY_COOKIES": "${PERPLEXITY_COOKIES}"}
+        # After Fix A: cap exec manages the env; entry carries ownership marker
+        assert entry["_capacium_owner"] == "capacium:envful:mcp-server"
+        assert entry["args"] == ["exec", "envful", "--mcp"]
 
     def test_opencode_entry_contains_env_block(self, tmp_path):
         pkg = self._pkg(tmp_path)
@@ -74,7 +76,11 @@ class TestEnvLandsInConfigs:
         entry = McpConfigPatcher.build_opencode_mcp_entry(
             "envful", pkg, manifest.get_mcp_metadata()
         )
-        assert entry["env"] == {"PERPLEXITY_COOKIES": "${PERPLEXITY_COOKIES}"}
+        # After Fix A: cap exec manages the env; entry carries ownership marker
+        assert entry["type"] == "local"
+        assert entry["enabled"] is True
+        assert "exec" in entry["command"]
+        assert "envful" in entry["command"]
 
     def test_no_plaintext_secret_in_written_config(self, tmp_path):
         pkg = tmp_path / "leaky"
@@ -97,7 +103,9 @@ class TestEnvLandsInConfigs:
         raw = config_path.read_text()
         assert "sk-live-supersecret" not in raw
         entry = json.loads(raw)["mcpServers"]["leaky"]
-        assert entry["env"]["MY_API_KEY"] == "${MY_API_KEY}"
+        # After Fix A: cap exec manages the env; entry carries ownership marker
+        assert entry["_capacium_owner"] == "capacium:leaky:mcp-server"
+        assert entry["args"] == ["exec", "leaky", "--mcp"]
 
 
 class TestUnknownEnvVarWarning:

@@ -83,7 +83,9 @@ class TestLibreChatAdapter:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         adapter = get_adapter("librechat")
         adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
-        adapter.config_path.write_text(json.dumps({"mcpServers": {"libre-test": {"command": "echo"}}}))
+        adapter.config_path.write_text(json.dumps(
+            {"mcpServers": {"libre-test": {"command": "echo", "_capacium_owner": "capacium:libre-test:mcp-server"}}}
+        ))
         assert adapter.remove_mcp_server("libre-test") is True
         data = json.loads(adapter.config_path.read_text())
         assert "libre-test" not in data.get("mcpServers", {})
@@ -92,7 +94,9 @@ class TestLibreChatAdapter:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         adapter = get_adapter("librechat")
         adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
-        adapter.config_path.write_text(json.dumps({"mcpServers": {"libre-test": {"command": "echo"}}}))
+        adapter.config_path.write_text(json.dumps(
+            {"mcpServers": {"libre-test": {"command": "echo", "_capacium_owner": "capacium:libre-test:mcp-server"}}}
+        ))
         assert adapter.capability_exists("libre-test") is True
         assert adapter.capability_exists("nope") is False
 
