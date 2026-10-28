@@ -21,7 +21,7 @@ jobs:
       - name: Install build backend
         run: python -m pip install --upgrade build
       - name: Build sdist and wheel
-        run: python -m build
+        run: SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0 python -m build
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
