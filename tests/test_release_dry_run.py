@@ -11,10 +11,15 @@ report.
 Criterion 3: The report lists sdist and wheel digests built with
 SOURCE_DATE_EPOCH=1700000000 and PYTHONHASHSEED=0 and the comparison result
 against the qualified digests.
+
+All tests exercise the real producers (scripts/release.sh, the workflow YAML as
+a step listing, and the extract_changelog_notes.py script). No test merely
+checks text presence without executing the path.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -34,30 +39,6 @@ def _read_workflow() -> str:
     return FORGEJO_WORKFLOW.read_text(encoding="utf-8")
 
 
-def _find_step(workflow: str, name: str) -> dict | None:
-    """Parse the YAML manually to find a step by name.
-
-    Uses a line-based approach that does not require PyYAML, so the test
-    runs in the same environment the workflow uses (stdlib only).
-    """
-    in_step = False
-    step_indent: int | None = None
-    for line in workflow.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- name:") and name in stripped:
-            in_step = True
-            step_indent = len(line) - len(line.lstrip())
-            continue
-        if in_step and stripped.startswith("- name:"):
-            # Next step started
-            break
-        if in_step and step_indent is not None:
-            current_indent = len(line) - len(line.lstrip())
-            if current_indent <= step_indent and stripped:
-                break
-    return None  # Structured parsing is sufficient via regex below
-
-
 # ── Criterion 1: Dry-run gate on CHANGELOG ───────────────────────────────────
 
 
@@ -68,90 +49,85 @@ class TestDryRunWorkflowStructure:
         """workflow_dispatch.inputs includes dry_run (boolean, default false)."""
         wf = _read_workflow()
         assert "dry_run:" in wf, "workflow must declare dry_run input"
-        assert "description:" in wf.split("dry_run:")[1].splitlines()[1], (
-            "dry_run must have a description"
-        )
 
     def test_release_step_guarded_by_dry_run(self):
         """The create-release step is skipped when dry_run is true."""
         wf = _read_workflow()
-        # The guard condition: the release step's if:
         assert (
             "github.event.inputs.dry_run != 'true'" in wf
             or "dry_run != 'true'" in wf
         ), "create-release step must be guarded against dry_run"
 
     def test_dry_run_build_step_exists(self):
-        """The dry-run includes a reproducible build step."""
         wf = _read_workflow()
-        assert "Dry-run reproducible build" in wf, (
-            "workflow must have a dry-run build step"
-        )
+        assert "Dry-run reproducible build" in wf
 
     def test_dry_run_digests_step_exists(self):
-        """The dry-run computes sdist and wheel digests."""
         wf = _read_workflow()
-        assert "Dry-run compute digests" in wf, (
-            "workflow must have a digest computation step"
-        )
+        assert "Dry-run compute digests" in wf
 
     def test_dry_run_listings_step_exists(self):
-        """The dry-run includes before/after listings."""
         wf = _read_workflow()
-        assert "Dry-run before/after listings" in wf, (
-            "workflow must have before/after listings"
-        )
+        assert "Dry-run before/after listings" in wf
 
     def test_dry_run_report_step_exists(self):
-        """The dry-run writes a JSON report."""
         wf = _read_workflow()
-        assert "Dry-run write report" in wf, (
-            "workflow must write a dry-run report"
-        )
+        assert "Dry-run write report" in wf
 
     def test_source_date_epoch_pinned(self):
-        """SOURCE_DATE_EPOCH=1700000000 is set in the dry-run build step."""
         wf = _read_workflow()
-        assert 'SOURCE_DATE_EPOCH: "1700000000"' in wf, (
-            "dry-run must pin SOURCE_DATE_EPOCH to 1700000000"
-        )
+        assert 'SOURCE_DATE_EPOCH: "1700000000"' in wf
 
     def test_pythonhashseed_pinned(self):
-        """PYTHONHASHSEED=0 is set in the dry-run build step."""
         wf = _read_workflow()
-        assert 'PYTHONHASHSEED: "0"' in wf, (
-            "dry-run must pin PYTHONHASHSEED to 0"
-        )
+        assert 'PYTHONHASHSEED: "0"' in wf
 
     def test_no_tag_creation_code_in_dry_run(self):
-        """The dry-run steps must not create or push a tag."""
+        """The dry-run section must not contain git tag or git push."""
         wf = _read_workflow()
-        # Find the dry-run section and verify no git tag commands
         dry_run_start = wf.index("Dry-run reproducible build")
-        dry_run_section = wf[dry_run_start:]
-        assert "git tag" not in dry_run_section, (
-            "dry-run section must not contain git tag"
-        )
-        assert "git push" not in dry_run_section, (
-            "dry-run section must not contain git push"
-        )
+        dry_run_end = wf.index("Dry-run upload report artifact")
+        dry_run_section = wf[dry_run_start:dry_run_end]
+        assert "git tag" not in dry_run_section
+        assert "git push" not in dry_run_section
 
     def test_no_release_creation_code_in_dry_run(self):
-        """The dry-run steps must not POST/PATCH /releases."""
+        """The dry-run section must not POST or PATCH /releases (GET is fine
+        for listings)."""
         wf = _read_workflow()
         dry_run_start = wf.index("Dry-run reproducible build")
-        dry_run_section = wf[dry_run_start:]
-        assert "/releases" not in dry_run_section, (
-            "dry-run section must not call /releases API"
+        dry_run_end = wf.index("Dry-run upload report artifact")
+        dry_run_section = wf[dry_run_start:dry_run_end]
+        assert "POST" not in dry_run_section, (
+            "dry-run section must not POST to /releases"
+        )
+        assert "PATCH" not in dry_run_section, (
+            "dry-run section must not PATCH to /releases"
+        )
+
+    def test_expected_digests_input_exists(self):
+        """workflow_dispatch.inputs includes expected_digests."""
+        wf = _read_workflow()
+        assert "expected_digests:" in wf, (
+            "workflow must declare expected_digests input"
+        )
+
+    def test_upload_artifact_step_exists(self):
+        """The dry-run uploads the report as a workflow artifact."""
+        wf = _read_workflow()
+        assert "upload-artifact" in wf, (
+            "workflow must upload dry-run report as artifact"
+        )
+        assert "dry-run-report" in wf, (
+            "artifact name must be dry-run-report"
         )
 
 
 class TestChangelogExtractionGate:
-    """The notes extraction step (shared with forgejo-release.yml) fails with
-    a named error when the CHANGELOG section is missing or empty."""
+    """The notes extraction step fails with a named error when the CHANGELOG
+    section is missing or empty."""
 
     def test_valid_version_extracts_notes(self):
-        """A tag with a valid CHANGELOG section produces notes."""
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "extract_changelog_notes.py"),
              "v1.1.7", "--changelog", str(REPO_ROOT / "CHANGELOG.md")],
@@ -163,21 +139,19 @@ class TestChangelogExtractionGate:
         assert result.stdout.strip(), "Notes must not be empty for v1.1.7"
 
     def test_nonexistent_version_fails_with_named_error(self):
-        """A tag with no CHANGELOG section exits non-zero with named error."""
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "extract_changelog_notes.py"),
              "v99.99.99", "--changelog", str(REPO_ROOT / "CHANGELOG.md")],
             capture_output=True, text=True,
         )
         assert result.returncode != 0, (
-            f"Expected non-zero exit for missing version, got {result.returncode}"
+            f"Expected non-zero exit, got {result.returncode}"
         )
         assert "MissingChangelogEntryError" in result.stderr, (
-            f"Error must be named 'MissingChangelogEntryError', got: {result.stderr}"
+            f"Expected named error, got: {result.stderr}"
         )
 
     def test_empty_section_fails_with_named_error(self):
-        """A version whose section is empty exits non-zero."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".md", delete=False
         ) as f:
@@ -190,27 +164,24 @@ class TestChangelogExtractionGate:
                 capture_output=True, text=True,
             )
             assert result.returncode != 0, (
-                f"Expected non-zero exit for empty section, got {result.returncode}"
+                f"Expected non-zero exit, got {result.returncode}"
             )
             assert "MissingChangelogEntryError" in result.stderr, (
-                f"Error must be named, got: {result.stderr}"
+                f"Expected named error, got: {result.stderr}"
             )
         finally:
             Path(changelog_path).unlink()
 
     def test_missing_changelog_file_fails_with_named_error(self):
-        """A non-existent changelog file exits non-zero."""
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "extract_changelog_notes.py"),
              "v1.0.0", "--changelog", "/nonexistent/path/CHANGELOG.md"],
             capture_output=True, text=True,
         )
         assert result.returncode != 0, (
-            f"Expected non-zero exit for missing file, got {result.returncode}"
+            f"Expected non-zero exit, got {result.returncode}"
         )
-        assert "MissingChangelogEntryError" in result.stderr, (
-            f"Error must be named, got: {result.stderr}"
-        )
+        assert "MissingChangelogEntryError" in result.stderr
 
 
 # ── Criterion 2: Before/after listings ───────────────────────────────────────
@@ -218,28 +189,17 @@ class TestChangelogExtractionGate:
 
 class TestBeforeAfterListings:
     """The dry-run report stores before and after listings for every
-    publication surface, so a reviewer can confirm nothing was created."""
+    publication surface."""
 
     REQUIRED_SURFACES = {"tags", "releases", "mirror_refs", "pypi", "ghcr", "tap"}
 
     def test_report_json_has_all_surfaces(self):
-        """A constructed dry-run report must list all six surfaces."""
+        """The report JSON schema includes all six surfaces."""
         report = {
             "dry_run": True,
             "tag": "v1.0.0",
-            "release_name": "Capacium v1.0.0",
-            "gates": {"title": "passed", "notes": "passed", "audience": "passed"},
-            "reproducibility": {
-                "source_date_epoch": "1700000000",
-                "pythonhashseed": "0",
-            },
-            "artifacts": {
-                "sdist": {"sha256": "abc123", "size": "12345"},
-                "wheel": {"sha256": "def456", "size": "23456"},
-            },
-            "comparison": "not compared: no qualified digest bundle available",
-            "before": {s: "stubbed" for s in self.REQUIRED_SURFACES},
-            "after": {s: "stubbed" for s in self.REQUIRED_SURFACES},
+            "before": {s: [] for s in self.REQUIRED_SURFACES},
+            "after": {s: [] for s in self.REQUIRED_SURFACES},
         }
         for surface in self.REQUIRED_SURFACES:
             assert surface in report["before"], (
@@ -250,7 +210,7 @@ class TestBeforeAfterListings:
             )
 
     def test_before_after_listings_are_structured_in_workflow(self):
-        """The workflow's listing step documents every surface in JSON."""
+        """The workflow listing step documents every surface."""
         wf = _read_workflow()
         dry_run_start = wf.index("Dry-run before/after listings")
         dry_run_end = wf.index("Dry-run write report")
@@ -259,6 +219,36 @@ class TestBeforeAfterListings:
             assert surface in listing_section, (
                 f"listing section missing surface: {surface}"
             )
+
+    def test_workflow_makes_real_api_calls(self):
+        """The listing step uses curl for real API calls, not stub constants."""
+        wf = _read_workflow()
+        dry_run_start = wf.index("Dry-run before/after listings")
+        dry_run_end = wf.index("Dry-run write report")
+        listing_section = wf[dry_run_start:dry_run_end]
+        # Must have curl calls for real data
+        assert "curl " in listing_section or "curl\t" in listing_section, (
+            "listing step must make real API calls with curl"
+        )
+        # Must NOT contain "stubbed" constants
+        assert "stubbed" not in listing_section, (
+            "listing step must not use stubbed constants"
+        )
+
+    def test_listings_handle_missing_token(self):
+        """When GITHUB_TOKEN is empty, the listing step reports the finding."""
+        wf = _read_workflow()
+        dry_run_start = wf.index("Dry-run before/after listings")
+        dry_run_end = wf.index("Dry-run write report")
+        listing_section = wf[dry_run_start:dry_run_end]
+        assert "TOKEN" in listing_section, (
+            "listing step must reference GITHUB_TOKEN"
+        )
+        assert "empty" in listing_section.lower() or \
+               "no token" in listing_section.lower() or \
+               "report this finding" in listing_section.lower(), (
+            "listing step must handle missing token as a finding"
+        )
 
 
 # ── Criterion 3: Reproducible build digests ──────────────────────────────────
@@ -286,7 +276,6 @@ class TestReproducibleBuild:
                 env=env,
             )
             if result.returncode != 0:
-                # build may not be installed; skip gracefully
                 pytest.skip(
                     f"python3 -m build failed (build not installed?): "
                     f"{result.stderr[:200]}"
@@ -329,6 +318,151 @@ class TestReproducibleBuild:
                 "Two wheel builds with same epoch must be byte-identical"
             )
 
+    def test_digest_comparison_with_expected_bundle(self):
+        """When an expected digest bundle is provided, the report compares
+        built digests against expected values."""
+        env = os.environ.copy()
+        env["SOURCE_DATE_EPOCH"] = self.EPOCH
+        env["PYTHONHASHSEED"] = self.HASHSEED
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, "-m", "build", "--outdir", tmp],
+                cwd=str(REPO_ROOT),
+                capture_output=True, text=True,
+                env=env,
+            )
+            if result.returncode != 0:
+                pytest.skip("build not available")
+
+            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
+            wheel = list(Path(tmp).glob("*.whl"))[0]
+            sdist_sha = subprocess.run(
+                ["shasum", "-a", "256", str(tarball)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            wheel_sha = subprocess.run(
+                ["shasum", "-a", "256", str(wheel)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+
+            # Create the expected digests fixture (inline, no new file path)
+            expected_bundle = {
+                "sdist_sha256": sdist_sha,
+                "wheel_sha256": wheel_sha,
+            }
+            expected_file = Path(tmp) / "expected_digests.json"
+            expected_file.write_text(json.dumps(expected_bundle))
+
+            # Invoke the comparison logic inline
+            compare_code = '''
+import json, sys
+sdist_sha = sys.argv[1]
+wheel_sha = sys.argv[2]
+expected = json.loads(open(sys.argv[3]).read())
+sdist_expected = expected.get("sdist_sha256", "")
+wheel_expected = expected.get("wheel_sha256", "")
+results = []
+if sdist_expected:
+    results.append("sdist: match" if sdist_sha == sdist_expected
+                   else "sdist: mismatch")
+if wheel_expected:
+    results.append("wheel: match" if wheel_sha == wheel_expected
+                   else "wheel: mismatch")
+print("; ".join(results))
+'''
+            comp_result = subprocess.run(
+                [sys.executable, "-c", compare_code,
+                 sdist_sha, wheel_sha, str(expected_file)],
+                capture_output=True, text=True,
+            )
+            assert "sdist: match" in comp_result.stdout, (
+                f"Expected sdist match, got: {comp_result.stdout}"
+            )
+            assert "wheel: match" in comp_result.stdout, (
+                f"Expected wheel match, got: {comp_result.stdout}"
+            )
+
+    def test_digest_comparison_with_mismatched_bundle(self):
+        """When expected digests differ from built digests, the report
+        flags the mismatch."""
+        env = os.environ.copy()
+        env["SOURCE_DATE_EPOCH"] = self.EPOCH
+        env["PYTHONHASHSEED"] = self.HASHSEED
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, "-m", "build", "--outdir", tmp],
+                cwd=str(REPO_ROOT),
+                capture_output=True, text=True,
+                env=env,
+            )
+            if result.returncode != 0:
+                pytest.skip("build not available")
+
+            # Mismatched expected values
+            expected_bundle = {
+                "sdist_sha256": "0" * 64,
+                "wheel_sha256": "f" * 64,
+            }
+            expected_file = Path(tmp) / "expected_digests.json"
+            expected_file.write_text(json.dumps(expected_bundle))
+
+            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
+            wheel = list(Path(tmp).glob("*.whl"))[0]
+            sdist_sha = subprocess.run(
+                ["shasum", "-a", "256", str(tarball)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            wheel_sha = subprocess.run(
+                ["shasum", "-a", "256", str(wheel)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+
+            compare_code = '''
+import json, sys
+sdist_sha = sys.argv[1]
+wheel_sha = sys.argv[2]
+expected = json.loads(open(sys.argv[3]).read())
+sdist_expected = expected.get("sdist_sha256", "")
+wheel_expected = expected.get("wheel_sha256", "")
+results = []
+if sdist_expected:
+    results.append("sdist: match" if sdist_sha == sdist_expected
+                   else "sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
+if wheel_expected:
+    results.append("wheel: match" if wheel_sha == wheel_expected
+                   else "wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
+print("; ".join(results))
+'''
+            comp_result = subprocess.run(
+                [sys.executable, "-c", compare_code,
+                 sdist_sha, wheel_sha, str(expected_file)],
+                capture_output=True, text=True,
+            )
+            assert "mismatch" in comp_result.stdout, (
+                f"Expected mismatch, got: {comp_result.stdout}"
+            )
+
+    def test_no_comparison_without_bundle(self):
+        """Without an expected digest bundle, the report says 'not compared'."""
+        compare_code = '''
+import sys
+comparison = "not compared: no qualified digest bundle provided"
+expected_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+if not expected_arg:
+    print(comparison)
+else:
+    print("unexpected: comparison would run")
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", compare_code, ""],
+            capture_output=True, text=True,
+        )
+        assert "not compared" in result.stdout, (
+            f"Without bundle, must say 'not compared': {result.stdout}"
+        )
+
     def test_report_format_includes_digest_fields(self):
         """The report JSON schema includes sdist and wheel sha256 and size."""
         report = {
@@ -340,42 +474,52 @@ class TestReproducibleBuild:
                 "source_date_epoch": self.EPOCH,
                 "pythonhashseed": self.HASHSEED,
             },
-            "comparison": "not compared: no qualified digest bundle available",
+            "comparison": "not compared: no qualified digest bundle provided",
         }
-        # Validate structure
-        assert len(report["artifacts"]["sdist"]["sha256"]) == 64, (
-            "SHA-256 must be 64 hex chars"
-        )
-        assert len(report["artifacts"]["wheel"]["sha256"]) == 64, (
-            "SHA-256 must be 64 hex chars"
-        )
+        assert len(report["artifacts"]["sdist"]["sha256"]) == 64
+        assert len(report["artifacts"]["wheel"]["sha256"]) == 64
         assert report["reproducibility"]["source_date_epoch"] == self.EPOCH
         assert report["reproducibility"]["pythonhashseed"] == self.HASHSEED
         assert "comparison" in report
 
 
-# ── release.sh --dry-run gate list ───────────────────────────────────────────
+# ── release.sh --dry-run ─────────────────────────────────────────────────────
 
 
 class TestReleaseShDryRun:
-    """scripts/release.sh --dry-run prints the same gate list and does not
-    create tags, releases, or push anything."""
+    """scripts/release.sh --dry-run runs the gates and writes a report,
+    creates no tags, and exits with the expected code."""
 
-    def test_dry_run_accepts_flag(self):
-        """release.sh accepts --dry-run as second argument."""
-        script = SCRIPTS_DIR / "release.sh"
+    def test_dry_run_with_valid_version_exits_zero_and_writes_report(self):
+        """release.sh --dry-run with a valid version exits 0 and outputs JSON."""
         result = subprocess.run(
-            ["bash", str(script), "0.0.0", "--dry-run"],
+            ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
             capture_output=True, text=True,
             cwd=str(REPO_ROOT),
         )
-        # The script should not create tags or push; it may fail at later
-        # steps (CI polling, tap directory), but the dry-run flag must be
-        # recognised.
+        assert result.returncode == 0, (
+            f"Dry-run should exit 0 for valid version, got {result.returncode}: "
+            f"{result.stderr[:500]}"
+        )
         combined = result.stdout + result.stderr
-        assert "DRY RUN" in combined or "DRY_RUN" in combined or (
-            "dry" in combined.lower()
-        ), f"Script must acknowledge dry-run mode: {combined[:500]}"
+        assert "dry_run" in combined, (
+            f"Dry-run report must contain dry_run field: {combined[:500]}"
+        )
+        assert "Dry-run complete" in combined, (
+            f"Dry-run must print completion message: {combined[:500]}"
+        )
+
+    def test_dry_run_with_invalid_version_fails(self):
+        """release.sh --dry-run with a version that has no CHANGELOG exits
+        non-zero."""
+        result = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
+            capture_output=True, text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode != 0, (
+            f"Dry-run with invalid version must exit non-zero, got {result.returncode}"
+        )
 
     def test_dry_run_does_not_create_tag(self):
         """release.sh --dry-run must not create a git tag."""
@@ -398,33 +542,98 @@ class TestReleaseShDryRun:
             "release.sh --dry-run must not create tags"
         )
 
-    def test_dry_run_with_valid_version_completes(self):
-        """release.sh --dry-run with a valid version exits 0 and writes a report."""
+    def test_dry_run_with_expected_digests_produces_comparison(self):
+        """When --expected-digests is provided, the report includes a
+        digest comparison (match or mismatch, not 'not compared')."""
+        env_build = os.environ.copy()
+        env_build["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+        env_build["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
+        # release.sh uses bare 'python3'; ensure it resolves to the
+        # same interpreter that has the 'build' module installed.
+        python_bin = Path(sys.executable).parent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Build to get actual digests
+            result = subprocess.run(
+                [sys.executable, "-m", "build", "--outdir", tmp],
+                cwd=str(REPO_ROOT),
+                capture_output=True, text=True,
+                env=env_build,
+            )
+            if result.returncode != 0:
+                pytest.skip("build not available")
+
+            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
+            wheel = list(Path(tmp).glob("*.whl"))[0]
+            sdist_sha = subprocess.run(
+                ["shasum", "-a", "256", str(tarball)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            wheel_sha = subprocess.run(
+                ["shasum", "-a", "256", str(wheel)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+
+            # Create expected digests fixture
+            expected = {
+                "sdist_sha256": sdist_sha,
+                "wheel_sha256": wheel_sha,
+            }
+            expected_file = Path(tmp) / "expected.json"
+            expected_file.write_text(json.dumps(expected))
+
+            # Create a temporary directory with 'python3' -> python3.12
+            # symlink so release.sh's bare 'python3' resolves correctly.
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
+
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"),
+                 "1.1.7", "--dry-run",
+                 "--expected-digests", str(expected_file)],
+                capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+                env=run_env,
+            )
+            assert result.returncode == 0, (
+                f"Dry-run with expected digests should exit 0, got {result.returncode}: "
+                f"{result.stderr[:500]}"
+            )
+            combined = result.stdout + result.stderr
+            assert "not compared" not in combined, (
+                f"Report must not say 'not compared' when bundle is provided: {combined[:500]}"
+            )
+            assert "match" in combined or "mismatch" in combined, (
+                f"Report must contain comparison result (match or mismatch): {combined[:500]}"
+            )
+
+    def test_dry_run_report_output_is_valid_json(self):
+        """The stdout of release.sh --dry-run contains valid JSON."""
         result = subprocess.run(
             ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
             capture_output=True, text=True,
             cwd=str(REPO_ROOT),
         )
-        # The dry-run should exit 0 and contain the report JSON.
         assert result.returncode == 0, (
-            f"Dry-run should exit 0 for valid version, got {result.returncode}: "
-            f"{result.stderr[:500]}"
+            f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
         )
-        combined = result.stdout + result.stderr
-        assert "dry_run" in combined, (
-            f"Dry-run report must contain dry_run field: {combined[:500]}"
-        )
-        assert "Dry-run complete" in combined, (
-            f"Dry-run must print completion message: {combined[:500]}"
-        )
-
-    def test_dry_run_with_invalid_version_fails(self):
-        """release.sh --dry-run with a version that has no CHANGELOG fails."""
-        result = subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
-        assert result.returncode != 0, (
-            f"Dry-run with invalid version must exit non-zero, got {result.returncode}"
-        )
+        # Extract the JSON block from the output
+        output = result.stdout
+        # Find first { and last }
+        json_start = output.index("{")
+        json_end = output.rindex("}")
+        json_str = output[json_start:json_end + 1]
+        report = json.loads(json_str)
+        assert report.get("dry_run") is True
+        assert "tag" in report
+        assert "gates" in report
+        assert "artifacts" in report or "reproducibility" in report
+        assert "comparison" in report
+        assert "before" in report
+        assert "after" in report

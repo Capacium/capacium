@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Capacium Release Script — one command to rule them all
-# Usage: ./scripts/release.sh <version> [--dry-run]
+# Usage: ./scripts/release.sh <version> [--dry-run] [--expected-digests FILE]
 #
 # Flow: bump → verify → commit → push → wait CI → tag → tarball → tap → brew → release
 #
@@ -10,6 +10,11 @@
 #   No tag, release, mirror push, PyPI upload, GHCR push or tap commit is created.
 #   The dry-run stops after the local verification and gate listing; it never
 #   pushes to any remote.
+#
+# --expected-digests FILE: path to a JSON file with sdist_sha256 and wheel_sha256
+#   keys. When provided, the report includes a match/mismatch comparison per
+#   artifact. Without it, comparison is "not compared: no qualified digest bundle
+#   provided".
 
 set -euo pipefail
 
@@ -19,7 +24,27 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 VERSION="${1:-}"
-DRY_RUN="${2:-}"
+shift || true
+
+DRY_RUN=""
+EXPECTED_DIGESTS_FILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN="--dry-run"
+            ;;
+        --expected-digests)
+            shift
+            EXPECTED_DIGESTS_FILE="${1:-}"
+            ;;
+        --expected-digests=*)
+            EXPECTED_DIGESTS_FILE="${1#--expected-digests=}"
+            ;;
+        *)
+            ;;
+    esac
+    shift
+done
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_DIR="/opt/homebrew/Library/Taps/capacium/homebrew-tap"
 if [ ! -d "$TAP_DIR" ]; then
@@ -117,10 +142,51 @@ TITLE_GATE_PY
     fi
     echo ""
 
+    # Digest comparison
+    COMPARISON="not compared: no qualified digest bundle provided"
+    if [ -n "${EXPECTED_DIGESTS_FILE:-}" ] && [ -f "${EXPECTED_DIGESTS_FILE:-}" ]; then
+        if $BUILD_OK; then
+            COMPARISON=$(python3 - "$SDIST_SHA256" "$WHEEL_SHA256" "$EXPECTED_DIGESTS_FILE" <<'COMPARE_PY'
+import json, sys
+sdist_sha = sys.argv[1]
+wheel_sha = sys.argv[2]
+try:
+    expected = json.loads(open(sys.argv[3]).read())
+except (json.JSONDecodeError, FileNotFoundError) as e:
+    print("comparison error: %s" % e)
+    sys.exit(0)
+
+sdist_expected = expected.get("sdist_sha256", "")
+wheel_expected = expected.get("wheel_sha256", "")
+
+results = []
+if sdist_expected:
+    if sdist_sha == sdist_expected:
+        results.append("sdist: match")
+    else:
+        results.append("sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
+else:
+    results.append("sdist: no expected digest in bundle")
+if wheel_expected:
+    if wheel_sha == wheel_expected:
+        results.append("wheel: match")
+    else:
+        results.append("wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
+else:
+    results.append("wheel: no expected digest in bundle")
+
+print("; ".join(results))
+COMPARE_PY
+        )
+        else
+            COMPARISON="not compared: build not available locally"
+        fi
+    fi
+
     # Report
     echo -e "${GREEN}=== Dry-run report ===${NC}"
     if $BUILD_OK; then
-        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$WHEEL_SHA256" "$SDIST_SIZE" "$WHEEL_SIZE" <<'REPORT_PY'
+        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$SDIST_SIZE" "$WHEEL_SHA256" "$WHEEL_SIZE" "$COMPARISON" <<'REPORT_PY'
 import json, sys
 report = {
     "dry_run": True,
@@ -139,7 +205,7 @@ report = {
         "sdist": {"sha256": sys.argv[3], "size": sys.argv[4]},
         "wheel": {"sha256": sys.argv[5], "size": sys.argv[6]},
     },
-    "comparison": "not compared: no qualified digest bundle available",
+    "comparison": sys.argv[7],
     "before": {
         "tags": "not listed (local dry-run)",
         "releases": "not listed (local dry-run)",
@@ -160,7 +226,7 @@ report = {
 print(json.dumps(report, indent=2))
 REPORT_PY
     else
-        python3 - "$TAG" "$RELEASE_NAME" <<'REPORT_NOBUILD_PY'
+        python3 - "$TAG" "$RELEASE_NAME" "$COMPARISON" <<'REPORT_NOBUILD_PY'
 import json, sys
 report = {
     "dry_run": True,
@@ -179,7 +245,7 @@ report = {
         "sdist": {"sha256": "not built (build module unavailable locally)", "size": "0"},
         "wheel": {"sha256": "not built (build module unavailable locally)", "size": "0"},
     },
-    "comparison": "not compared: no qualified digest bundle available",
+    "comparison": sys.argv[3],
     "before": {
         "tags": "not listed (local dry-run)",
         "releases": "not listed (local dry-run)",

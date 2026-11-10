@@ -31,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      expected_digests:
+        description: "JSON bundle of expected sdist/wheel SHA-256 digests for comparison (optional)"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   release:
@@ -220,8 +225,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== Dry-run digest computation ==="
-          SDIST="$RUNNER_TEMP/dist/"*.tar.gz
-          WHEEL="$RUNNER_TEMP/dist/"*.whl
+          for f in "$RUNNER_TEMP/dist/"*.tar.gz; do SDIST="$f"; break; done
+          for f in "$RUNNER_TEMP/dist/"*.whl; do WHEEL="$f"; break; done
+          if [ ! -f "${SDIST:-}" ] || [ ! -f "${WHEEL:-}" ]; then
+            echo "Build artifacts not found in $RUNNER_TEMP/dist/"
+            ls -la "$RUNNER_TEMP/dist/" || true
+            exit 1
+          fi
           SDIST_SHA256=$(shasum -a 256 "$SDIST" | awk '{print $1}')
           WHEEL_SHA256=$(shasum -a 256 "$WHEEL" | awk '{print $1}')
           SDIST_SIZE=$(stat -c%s "$SDIST" 2>/dev/null || stat -f%z "$SDIST")
@@ -231,40 +241,79 @@ jobs:
           echo "sdist_size=${SDIST_SIZE}" >> "$GITHUB_OUTPUT"
           echo "wheel_size=${WHEEL_SIZE}" >> "$GITHUB_OUTPUT"
 
-      - name: Dry-run before/after listings (stubbed — lane has no tokens)
+      - name: Dry-run before/after listings
         id: dry_run_listings
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
         env:
           TAG_NAME: "${{ github.event.inputs.tag_name }}"
+          FORGEJO_API_URL: "${{ env.GITHUB_API_URL }}"
+          FORGEJO_REPO: "${{ env.GITHUB_REPOSITORY }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "=== Dry-run before/after listings ==="
-          # This lane has no forge tokens. The before/after listings are
-          # recorded as stubbed — the report documents that no live API
-          # calls were made and the dry-run guard prevents any mutation.
-          #
-          # The listing structure documents what the live check would
-          # query, so a reviewer can verify the dry-run did not bypass
-          # any check.
-          BEFORE=$(jq -n \
-            --arg tags "stubbed: no token" \
-            --arg releases "stubbed: no token" \
-            --arg mirror_refs "stubbed: no token" \
-            --arg pypi "stubbed: no token" \
-            --arg ghcr "stubbed: no token" \
-            --arg tap "stubbed: no token" \
-            '{tags: $tags, releases: $releases, mirror_refs: $mirror_refs, pypi: $pypi, ghcr: $ghcr, tap: $tap}')
-          echo "before=${BEFORE}" >> "$GITHUB_OUTPUT"
+          API_URL="${FORGEJO_API_URL:-${GITHUB_API_URL:-https://code.langevc.com/api/v1}}"
+          REPO="${FORGEJO_REPO:-${GITHUB_REPOSITORY:-capacium/capacium}}"
+          TOKEN="${GITHUB_TOKEN:-}"
 
-          AFTER=$(jq -n \
-            --arg tags "stubbed: no token" \
-            --arg releases "stubbed: no token" \
-            --arg mirror_refs "stubbed: no token" \
-            --arg pypi "stubbed: no token" \
-            --arg ghcr "stubbed: no token" \
-            --arg tap "stubbed: no token" \
-            '{tags: $tags, releases: $releases, mirror_refs: $mirror_refs, pypi: $pypi, ghcr: $ghcr, tap: $tap}')
-          echo "after=${AFTER}" >> "$GITHUB_OUTPUT"
+          _listing() {
+            local label="$1"
+            local tags=""
+            local releases=""
+            local mirror_refs=""
+            local pypi=""
+            local ghcr=""
+            local tap=""
+
+            # tags: git ls-remote (no auth needed)
+            tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort || echo 'error: git ls-remote failed')"
+
+            # releases: Forgejo API (needs token)
+            if [ -n "$TOKEN" ]; then
+              releases="$(curl -sSf -H "Authorization: token ${TOKEN}" \
+                "${API_URL}/repos/${REPO}/releases?per_page=100" 2>/dev/null | \
+                jq -c '[.[] | {id, tag_name, name, draft, prerelease}]' 2>/dev/null || \
+                echo '"'"error: Forgejo release API call failed"'"')"
+            else
+              releases='"listing not available: GITHUB_TOKEN is empty — report this finding"'
+            fi
+
+            # mirror refs: git ls-remote github mirror
+            mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort || echo 'error: mirror ls-remote failed')"
+
+            # PyPI: no API token in lane, document surface as not queried
+            pypi='"not queried: no PyPI token in lane context"'
+
+            # GHCR: no API token in lane, document surface as not queried
+            ghcr='"not queried: no GHCR token in lane context"'
+
+            # Tap: git ls-remote on the tap repo
+            tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort || echo 'error: tap ls-remote failed')"
+
+            jq -n -c \
+              --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+              --argjson releases_arg "$(echo "$releases" | jq -c '.' 2>/dev/null || echo '"'"$releases"'"')" \
+              --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+              --arg pypi_arg "$pypi" \
+              --arg ghcr_arg "$ghcr" \
+              --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+              '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}'
+          }
+
+          echo "Recording before snapshot..."
+          BEFORE="$(_listing "before")"
+          # Compact JSON on a single line so GITHUB_OUTPUT multi-line works
+          BEFORE_COMPACT="$(echo "$BEFORE" | jq -c .)"
+          echo "before=${BEFORE_COMPACT}" >> "$GITHUB_OUTPUT"
+
+          # The dry-run guard ensures nothing mutates between snapshots.
+          # On a real run the build would happen here, but we capture
+          # after immediately to prove the listing itself is idempotent.
+
+          echo "Recording after snapshot..."
+          AFTER="$(_listing "after")"
+          AFTER_COMPACT="$(echo "$AFTER" | jq -c .)"
+          echo "after=${AFTER_COMPACT}" >> "$GITHUB_OUTPUT"
 
       - name: Dry-run write report
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
@@ -278,11 +327,50 @@ jobs:
           WHEEL_SIZE: "${{ steps.dry_run_digests.outputs.wheel_size }}"
           BEFORE: "${{ steps.dry_run_listings.outputs.before }}"
           AFTER: "${{ steps.dry_run_listings.outputs.after }}"
+          EXPECTED_DIGESTS: "${{ github.event.inputs.expected_digests }}"
           SOURCE_DATE_EPOCH: "1700000000"
           PYTHONHASHSEED: "0"
         run: |
           set -euo pipefail
           echo "=== Dry-run report ==="
+
+          # Compute digest comparison when an expected bundle is provided.
+          COMPARISON="not compared: no qualified digest bundle provided"
+          if [ -n "${EXPECTED_DIGESTS:-}" ] && [ "${EXPECTED_DIGESTS:-}" != '""' ]; then
+            COMPARISON=$(python3 - "$SDIST_SHA256" "$WHEEL_SHA256" "$EXPECTED_DIGESTS" <<'COMPARE_PY'
+          import json, sys
+          sdist_sha = sys.argv[1]
+          wheel_sha = sys.argv[2]
+          try:
+              expected = json.loads(sys.argv[3])
+          except json.JSONDecodeError:
+              print("comparison error: expected_digests is not valid JSON")
+              sys.exit(0)
+
+          sdist_expected = expected.get("sdist_sha256", "")
+          wheel_expected = expected.get("wheel_sha256", "")
+
+          results = []
+          if sdist_expected:
+              if sdist_sha == sdist_expected:
+                  results.append("sdist: match")
+              else:
+                  results.append("sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
+          else:
+              results.append("sdist: no expected digest in bundle")
+          if wheel_expected:
+              if wheel_sha == wheel_expected:
+                  results.append("wheel: match")
+              else:
+                  results.append("wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
+          else:
+              results.append("wheel: no expected digest in bundle")
+
+          print("; ".join(results))
+          COMPARE_PY
+            )
+          fi
+
           REPORT=$(jq -n \
             --arg tag_name "$TAG_NAME" \
             --arg release_name "$RELEASE_NAME" \
@@ -295,9 +383,9 @@ jobs:
             --arg wheel_sha256 "$WHEEL_SHA256" \
             --arg sdist_size "$SDIST_SIZE" \
             --arg wheel_size "$WHEEL_SIZE" \
+            --arg comparison "$COMPARISON" \
             --argjson before "$BEFORE" \
             --argjson after "$AFTER" \
-            --arg comparison "not compared: no qualified digest bundle available" \
             '{
               dry_run: true,
               tag: $tag_name,
@@ -320,4 +408,14 @@ jobs:
               after: $after
             }')
           echo "$REPORT" | tee dry-run-report.json
-          echo "report=$(cat dry-run-report.json)" >> "$GITHUB_OUTPUT"
+
+          # Upload the report as a workflow artifact.
+          echo "report=$(jq -c . dry-run-report.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run upload report artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        uses: https://github.com/actions/upload-artifact@v4
+        with:
+          name: dry-run-report
+          path: dry-run-report.json
+          retention-days: 30
