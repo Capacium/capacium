@@ -344,8 +344,14 @@ jobs:
           echo "=== Dry-run report ==="
 
           # Compute digest comparison when an expected bundle is provided.
-          COMPARISON="not compared: no qualified digest bundle provided"
+          # Qualified digests come from the test-lab qualification results
+          # (cap117f reports), not from a file in the repository. A missing
+          # or unreadable bundle, and a mismatch, exit non-zero — they are
+          # not silently recorded as report values.
+          COMPARISON=""
+          COMPARISON_EXIT=0
           if [ -n "${EXPECTED_DIGESTS:-}" ] && [ "${EXPECTED_DIGESTS:-}" != '""' ]; then
+            set +e
             COMPARISON=$(python3 - "$SDIST_SHA256" "$WHEEL_SHA256" "$EXPECTED_DIGESTS" <<'COMPARE_PY'
           import json, sys
           sdist_sha = sys.argv[1]
@@ -354,17 +360,23 @@ jobs:
               expected = json.loads(sys.argv[3])
           except json.JSONDecodeError:
               print("comparison error: expected_digests is not valid JSON")
-              sys.exit(0)
+              sys.exit(2)
 
           sdist_expected = expected.get("sdist_sha256", "")
           wheel_expected = expected.get("wheel_sha256", "")
 
+          if not sdist_expected and not wheel_expected:
+              print("comparison error: bundle has neither sdist_sha256 nor wheel_sha256")
+              sys.exit(2)
+
           results = []
+          mismatch = False
           if sdist_expected:
               if sdist_sha == sdist_expected:
                   results.append("sdist: match")
               else:
                   results.append("sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
+                  mismatch = True
           else:
               results.append("sdist: no expected digest in bundle")
           if wheel_expected:
@@ -372,12 +384,24 @@ jobs:
                   results.append("wheel: match")
               else:
                   results.append("wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
+                  mismatch = True
           else:
               results.append("wheel: no expected digest in bundle")
 
           print("; ".join(results))
+          if mismatch:
+              sys.exit(2)
           COMPARE_PY
             )
+            COMPARISON_EXIT=$?
+            set -e
+            if [ $COMPARISON_EXIT -ne 0 ]; then
+              echo "Digest comparison failed (exit $COMPARISON_EXIT): $COMPARISON"
+              exit $COMPARISON_EXIT
+            fi
+          else
+            echo "DigestComparisonError: no qualified digest bundle provided — refusing dry-run"
+            exit 2
           fi
 
           REPORT=$(jq -n \

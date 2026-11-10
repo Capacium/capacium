@@ -389,10 +389,11 @@ class TestReproducibleBuild:
             )
 
     def test_digest_comparison_with_mismatched_bundle(self):
-        """When expected digests differ from built digests, the report
-        flags the mismatch.
+        """When expected digests differ from built digests, the dry-run
+        exits non-zero with the mismatch recorded.
 
-        Invokes the real producer (scripts/release.sh --dry-run)."""
+        Invokes the real producer (scripts/release.sh --dry-run).
+        A digest mismatch is not a report value — it exits non-zero."""
         env = os.environ.copy()
         env["SOURCE_DATE_EPOCH"] = self.EPOCH
         env["PYTHONHASHSEED"] = self.HASHSEED
@@ -433,19 +434,22 @@ class TestReproducibleBuild:
                 cwd=str(REPO_ROOT),
                 env=run_env,
             )
-            assert result.returncode == 0, (
-                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
+            assert result.returncode == 2, (
+                f"Dry-run with mismatched digests must exit 2, got {result.returncode}: {result.stderr[:500]}"
             )
             combined = result.stdout + result.stderr
             assert "mismatch" in combined, (
-                f"Expected mismatch, got: {combined[:500]}"
+                f"Expected mismatch in output, got: {combined[:500]}"
             )
 
-    def test_no_comparison_without_bundle(self):
-        """Without an expected digest bundle, the report says 'not compared'.
+    def test_no_comparison_without_bundle_exits_nonzero(self):
+        """Without an expected digest bundle, the dry-run exits non-zero.
+        Qualified digests come from the test-lab qualification results
+        (cap117f reports), not from a file in the repository. A missing
+        or unreadable source is Exit != 0, not a report value.
 
         Invokes the real producer (scripts/release.sh --dry-run) without
-        --expected-digests, then checks the report output."""
+        --expected-digests, then checks that it exits 2 with the named error."""
         env = os.environ.copy()
         env["SOURCE_DATE_EPOCH"] = self.EPOCH
         env["PYTHONHASHSEED"] = self.HASHSEED
@@ -468,12 +472,12 @@ class TestReproducibleBuild:
                 cwd=str(REPO_ROOT),
                 env=run_env,
             )
-            assert result.returncode == 0, (
-                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
+            assert result.returncode == 2, (
+                f"Dry-run without expected digests must exit 2, got {result.returncode}: {result.stderr[:500]}"
             )
             combined = result.stdout + result.stderr
-            assert "not compared" in combined, (
-                f"Without bundle, must say 'not compared': {combined[:500]}"
+            assert "DigestComparisonError" in combined, (
+                f"Without bundle, must name DigestComparisonError: {combined[:500]}"
             )
 
     def test_report_format_includes_digest_fields(self):
@@ -504,13 +508,56 @@ class TestReleaseShDryRun:
     creates no tags, and exits with the expected code."""
 
     def test_dry_run_with_valid_version_exits_zero_and_writes_report(self):
-        """release.sh --dry-run with a valid version exits 0, outputs JSON,
-        and writes dry-run-report.json to disk."""
+        """release.sh --dry-run with a valid version and an expected-digests
+        bundle exits 0, outputs JSON, and writes dry-run-report.json to disk."""
+        env = os.environ.copy()
+        env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+        env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
         with tempfile.TemporaryDirectory() as tmp:
+            # Build to get actual digests for a matching bundle
             result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
+                [sys.executable, "-m", "build", "--outdir", tmp],
+                cwd=str(REPO_ROOT),
                 capture_output=True, text=True,
-                cwd=tmp,
+                env=env,
+            )
+            if result.returncode != 0:
+                pytest.skip("build not available")
+
+            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
+            wheel = list(Path(tmp).glob("*.whl"))[0]
+            sdist_sha = subprocess.run(
+                ["shasum", "-a", "256", str(tarball)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            wheel_sha = subprocess.run(
+                ["shasum", "-a", "256", str(wheel)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+
+            expected = {"sdist_sha256": sdist_sha, "wheel_sha256": wheel_sha}
+            expected_file = Path(tmp) / "expected.json"
+            expected_file.write_text(json.dumps(expected))
+
+            python_bin = Path(sys.executable).parent
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
+
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run",
+                 "--expected-digests", str(expected_file)],
+                capture_output=True, text=True,
+                cwd=str(run_dir),
+                env=run_env,
             )
             assert result.returncode == 0, (
                 f"Dry-run should exit 0 for valid version, got {result.returncode}: "
@@ -524,7 +571,7 @@ class TestReleaseShDryRun:
                 f"Dry-run must print completion message: {combined[:500]}"
             )
             # The script must write a report file to disk.
-            report_file = Path(tmp) / "dry-run-report.json"
+            report_file = Path(run_dir) / "dry-run-report.json"
             assert report_file.is_file(), (
                 "release.sh --dry-run must write dry-run-report.json to disk"
             )
@@ -644,13 +691,59 @@ class TestReleaseShDryRun:
             )
 
     def test_dry_run_report_output_is_valid_json(self):
-        """The stdout of release.sh --dry-run contains valid JSON, and
-        dry-run-report.json is written to disk."""
+        """The stdout of release.sh --dry-run with matching expected digests
+        contains valid JSON, and dry-run-report.json is written to disk."""
+        env = os.environ.copy()
+        env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+        env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
         with tempfile.TemporaryDirectory() as tmp:
+            # Build to get actual digests for a matching bundle
             result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
+                [sys.executable, "-m", "build", "--outdir", tmp],
+                cwd=str(REPO_ROOT),
                 capture_output=True, text=True,
-                cwd=tmp,
+                env=env,
+            )
+            if result.returncode != 0:
+                pytest.skip("build not available")
+
+            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
+            wheel = list(Path(tmp).glob("*.whl"))[0]
+            sdist_sha = subprocess.run(
+                ["shasum", "-a", "256", str(tarball)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+            wheel_sha = subprocess.run(
+                ["shasum", "-a", "256", str(wheel)],
+                capture_output=True, text=True,
+            ).stdout.split()[0]
+
+            expected = {"sdist_sha256": sdist_sha, "wheel_sha256": wheel_sha}
+            expected_file = Path(tmp) / "expected.json"
+            expected_file.write_text(json.dumps(expected))
+
+            python_bin = Path(sys.executable).parent
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
+
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
+            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run",
+                 "--expected-digests", str(expected_file)],
+                capture_output=True, text=True,
+                cwd=str(run_dir),
+                env=run_env,
+            )
+            assert result.returncode == 0, (
+                f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
             )
             assert result.returncode == 0, (
                 f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
@@ -670,7 +763,7 @@ class TestReleaseShDryRun:
             assert "before" in report
             assert "after" in report
             # Verify the report file was written to disk.
-            report_file = Path(tmp) / "dry-run-report.json"
+            report_file = Path(run_dir) / "dry-run-report.json"
             assert report_file.is_file(), (
                 "release.sh --dry-run must write dry-run-report.json to disk"
             )

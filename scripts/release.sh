@@ -47,14 +47,16 @@ while [ $# -gt 0 ]; do
 done
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_DIR="/opt/homebrew/Library/Taps/capacium/homebrew-tap"
-if [ ! -d "$TAP_DIR" ]; then
-    echo -e "${YELLOW}  Tap not found at ${TAP_DIR} — cloning...${NC}"
-    git clone https://github.com/Capacium/homebrew-tap "$TAP_DIR"
-fi
-# Ensure remote points to the Capacium org (not the old capacium org redirect)
-TAP_REMOTE=$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || echo "")
-if echo "$TAP_REMOTE" | grep -q "capacium/homebrew-tap$"; then
-    git -C "$TAP_DIR" remote set-url origin https://github.com/Capacium/homebrew-tap
+if [ "$DRY_RUN" != "--dry-run" ]; then
+    if [ ! -d "$TAP_DIR" ]; then
+        echo -e "${YELLOW}  Tap not found at ${TAP_DIR} — cloning...${NC}"
+        git clone https://github.com/Capacium/homebrew-tap "$TAP_DIR"
+    fi
+    # Ensure remote points to the Capacium org (not the old capacium org redirect)
+    TAP_REMOTE=$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || echo "")
+    if echo "$TAP_REMOTE" | grep -q "capacium/homebrew-tap$"; then
+        git -C "$TAP_DIR" remote set-url origin https://github.com/Capacium/homebrew-tap
+    fi
 fi
 GITHUB_REPO="Capacium/capacium"
 
@@ -71,17 +73,17 @@ TAG="v${VERSION}"
 echo -e "${GREEN}=== Capacium Release v${VERSION} ===${NC}"
 
 # ── Step 1: Local verification ────────────────────────────────
-echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
 ORIG_CWD="$PWD"
 cd "$REPO_DIR"
-rm -rf build/lib/ dist/ *.egg-info
-ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
 if [ "$DRY_RUN" != "--dry-run" ]; then
+    echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
+    rm -rf build/lib/ dist/ *.egg-info
+    ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
     python3 -m pytest tests/ -q --ignore=tests/test_publish.py --ignore=tests/test_signing.py --ignore=tests/test_integration_phase0.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+    echo -e "${GREEN}  Tests pass${NC}"
 else
     echo -e "${YELLOW}  pytest skipped (dry-run mode — gate-only verification)${NC}"
 fi
-echo -e "${GREEN}  Tests pass${NC}"
 
 # ── Dry-run: gates, build, digests, report — stop before any mutation ──
 if [ "$DRY_RUN" = "--dry-run" ]; then
@@ -111,9 +113,29 @@ TITLE_GATE_PY
     }
     echo -e "${GREEN}  Changelog extraction passed (${#NOTES} chars)${NC}"
 
-    # Gate 3: Audience gate (skipped locally — needs ops-engine script)
+    # Gate 3: Audience gate
     echo -e "${YELLOW}[dry-run gate 3/4] Audience gate${NC}"
-    echo -e "${GREEN}  Audience gate: skipped (local dry-run; runs in CI with ops-engine script)${NC}"
+    AUDIENCE_GATE_RESULT="passed"
+    if [ -n "${FORGEJO_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+        # Fetch and run the ops-engine audience gate
+        AUDIENCE_GATE_SCRIPT="$(mktemp)"
+        trap 'rm -f "$AUDIENCE_GATE_SCRIPT"' EXIT
+        PREFIXES_FILE="$(mktemp)"
+        NOTES_FILE="$(mktemp)"
+        trap 'rm -f "$AUDIENCE_GATE_SCRIPT" "$PREFIXES_FILE" "$NOTES_FILE"' EXIT
+        if curl -fsSL \
+            "https://raw.githubusercontent.com/LangeVC/ops-engine/v3.4.2/scripts/release_notes_audience_gate.py" \
+            -o "$AUDIENCE_GATE_SCRIPT" 2>/dev/null; then
+            python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+                "$AUDIENCE_GATE_SCRIPT" || true
+            printf '%s\n' "$NOTES" > "$NOTES_FILE"
+            python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE" 2>/dev/null || true
+            python3 "$AUDIENCE_GATE_SCRIPT" \
+                --ticket-prefixes "$PREFIXES_FILE" \
+                "$NOTES_FILE" 2>/dev/null || AUDIENCE_GATE_RESULT="failed"
+        fi
+    fi
+    echo -e "${GREEN}  Audience gate: ${AUDIENCE_GATE_RESULT}${NC}"
 
     # Gate 4: Reproducible build
     echo -e "${YELLOW}[dry-run gate 4/4] Reproducible build${NC}"
@@ -143,10 +165,15 @@ TITLE_GATE_PY
     fi
     echo ""
 
-    # Digest comparison
-    COMPARISON="not compared: no qualified digest bundle provided"
+    # Digest comparison — qualified digests come from the test-lab
+    # qualification results (cap117f reports), not from a file in the
+    # repository. A missing or unreadable bundle, and a mismatch, exit
+    # non-zero — they are not silently recorded as report values.
+    COMPARISON=""
+    COMPARISON_EXIT=0
     if [ -n "${EXPECTED_DIGESTS_FILE:-}" ] && [ -f "${EXPECTED_DIGESTS_FILE:-}" ]; then
         if $BUILD_OK; then
+            set +e
             COMPARISON=$(python3 - "$SDIST_SHA256" "$WHEEL_SHA256" "$EXPECTED_DIGESTS_FILE" <<'COMPARE_PY'
 import json, sys
 sdist_sha = sys.argv[1]
@@ -155,17 +182,23 @@ try:
     expected = json.loads(open(sys.argv[3]).read())
 except (json.JSONDecodeError, FileNotFoundError) as e:
     print("comparison error: %s" % e)
-    sys.exit(0)
+    sys.exit(2)
 
 sdist_expected = expected.get("sdist_sha256", "")
 wheel_expected = expected.get("wheel_sha256", "")
 
+if not sdist_expected and not wheel_expected:
+    print("comparison error: bundle has neither sdist_sha256 nor wheel_sha256")
+    sys.exit(2)
+
 results = []
+mismatch = False
 if sdist_expected:
     if sdist_sha == sdist_expected:
         results.append("sdist: match")
     else:
         results.append("sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
+        mismatch = True
 else:
     results.append("sdist: no expected digest in bundle")
 if wheel_expected:
@@ -173,15 +206,27 @@ if wheel_expected:
         results.append("wheel: match")
     else:
         results.append("wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
+        mismatch = True
 else:
     results.append("wheel: no expected digest in bundle")
 
 print("; ".join(results))
+if mismatch:
+    sys.exit(2)
 COMPARE_PY
-        )
+            )
+            COMPARISON_EXIT=$?
+            set -e
+            if [ $COMPARISON_EXIT -ne 0 ]; then
+                echo -e "${RED}  Digest comparison failed (exit $COMPARISON_EXIT): ${COMPARISON}${NC}"
+                exit $COMPARISON_EXIT
+            fi
         else
             COMPARISON="not compared: build not available locally"
         fi
+    else
+        echo -e "${RED}  DigestComparisonError: no qualified digest bundle provided — refusing dry-run${NC}"
+        exit 2
     fi
 
     # Before/after listings — same six surfaces the workflow lists.
@@ -198,8 +243,14 @@ COMPARE_PY
         # tags: git ls-remote (no auth needed)
         tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort || echo 'not available locally')"
 
-        # releases: only available via Forgejo API with a token
-        releases="not available locally (no Forgejo API token)"
+        # releases: Forgejo API (needs token). When no token is set, fail.
+        if [ -n "${FORGEJO_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+            releases="$(curl -sSf -H "Authorization: token ${FORGEJO_TOKEN:-${GITHUB_TOKEN:-}}" \
+                "https://code.langevc.com/api/v1/repos/capacium/capacium/releases?per_page=100" 2>/dev/null | \
+                python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps([{"id":r["id"],"tag_name":r["tag_name"],"name":r.get("name",""),"draft":r.get("draft",False),"prerelease":r.get("prerelease",False)} for r in d]))' 2>/dev/null || echo '"'"error: Forgejo release API call failed"'"')"
+        else
+            releases='"error: no Forgejo API token — cannot list releases"'
+        fi
 
         # mirror refs: git ls-remote github mirror
         mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort || echo 'not available locally')"
@@ -248,7 +299,7 @@ print(json.dumps(surfaces))
     BEFORE_JSON=$(echo "$BEFORE" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))')
     AFTER_JSON=$(echo "$AFTER" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))')
     if $BUILD_OK; then
-        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$SDIST_SIZE" "$WHEEL_SHA256" "$WHEEL_SIZE" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" <<'REPORT_PY'
+        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$SDIST_SIZE" "$WHEEL_SHA256" "$WHEEL_SIZE" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" "$AUDIENCE_GATE_RESULT" <<'REPORT_PY'
 import json, os, sys
 report = {
     "dry_run": True,
@@ -257,7 +308,7 @@ report = {
     "gates": {
         "title": "passed",
         "notes": "passed",
-        "audience": "skipped (local dry-run)",
+        "audience": sys.argv[11],
     },
     "reproducibility": {
         "source_date_epoch": "1700000000",
@@ -278,7 +329,7 @@ with open(out_path, "w") as f:
     f.write(output + "\n")
 REPORT_PY
     else
-        python3 - "$TAG" "$RELEASE_NAME" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" <<'REPORT_NOBUILD_PY'
+        python3 - "$TAG" "$RELEASE_NAME" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" "$AUDIENCE_GATE_RESULT" <<'REPORT_NOBUILD_PY'
 import json, os, sys
 report = {
     "dry_run": True,
@@ -287,7 +338,7 @@ report = {
     "gates": {
         "title": "passed",
         "notes": "passed",
-        "audience": "skipped (local dry-run)",
+        "audience": sys.argv[7],
     },
     "reproducibility": {
         "source_date_epoch": "1700000000",
