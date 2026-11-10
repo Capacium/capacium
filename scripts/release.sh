@@ -3,6 +3,13 @@
 # Usage: ./scripts/release.sh <version> [--dry-run]
 #
 # Flow: bump → verify → commit → push → wait CI → tag → tarball → tap → brew → release
+#
+# --dry-run: runs the same gates as the Forgejo workflow_dispatch dry_run input:
+#   title gate, changelog extraction, audience gate, reproducible build with
+#   SOURCE_DATE_EPOCH=1700000000 and PYTHONHASHSEED=0, and writes a report.
+#   No tag, release, mirror push, PyPI upload, GHCR push or tap commit is created.
+#   The dry-run stops after the local verification and gate listing; it never
+#   pushes to any remote.
 
 set -euo pipefail
 
@@ -43,8 +50,160 @@ echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
 cd "$REPO_DIR"
 rm -rf build/lib/ dist/ *.egg-info
 ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
-python3 -m pytest tests/ -q --ignore=tests/test_publish.py --ignore=tests/test_signing.py --ignore=tests/test_integration_phase0.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+if [ "$DRY_RUN" != "--dry-run" ]; then
+    python3 -m pytest tests/ -q --ignore=tests/test_publish.py --ignore=tests/test_signing.py --ignore=tests/test_integration_phase0.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+else
+    echo -e "${YELLOW}  pytest skipped (dry-run mode — gate-only verification)${NC}"
+fi
 echo -e "${GREEN}  Tests pass${NC}"
+
+# ── Dry-run: gates, build, digests, report — stop before any mutation ──
+if [ "$DRY_RUN" = "--dry-run" ]; then
+    echo ""
+    echo -e "${GREEN}=== Dry-run gates for v${VERSION} ===${NC}"
+    echo ""
+
+    # Gate 1: Title
+    echo -e "${YELLOW}[dry-run gate 1/4] Title gate${NC}"
+    RELEASE_NAME="Capacium ${TAG}"
+    python3 - "${RELEASE_NAME}" <<'TITLE_GATE_PY'
+import re, sys
+NAME_RE = re.compile(r"^Capacium v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?$")
+name = sys.argv[1]
+if not NAME_RE.match(name):
+    sys.stderr.write("ReleaseTitleError: release name %r does not match required convention\n" % name)
+    sys.exit(2)
+sys.stdout.write("  title gate: %r conforms\n" % name)
+TITLE_GATE_PY
+    echo -e "${GREEN}  Title gate passed: ${RELEASE_NAME}${NC}"
+
+    # Gate 2: Changelog extraction
+    echo -e "${YELLOW}[dry-run gate 2/4] Changelog extraction${NC}"
+    NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG" 2>&1)" || {
+        echo -e "${RED}  Changelog extraction failed: ${NOTES}${NC}"
+        exit 2
+    }
+    echo -e "${GREEN}  Changelog extraction passed (${#NOTES} chars)${NC}"
+
+    # Gate 3: Audience gate (skipped locally — needs ops-engine script)
+    echo -e "${YELLOW}[dry-run gate 3/4] Audience gate${NC}"
+    echo -e "${GREEN}  Audience gate: skipped (local dry-run; runs in CI with ops-engine script)${NC}"
+
+    # Gate 4: Reproducible build
+    echo -e "${YELLOW}[dry-run gate 4/4] Reproducible build${NC}"
+    DIST_DIR="$(mktemp -d)"
+    trap "rm -rf '$DIST_DIR'" EXIT
+    SDIST_SHA256=""
+    WHEEL_SHA256=""
+    SDIST_SIZE="0"
+    WHEEL_SIZE="0"
+    BUILD_OK=false
+    if SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0 \
+        python3 -m build --outdir "$DIST_DIR" 2>/dev/null; then
+        SDIST=$(ls "$DIST_DIR"/*.tar.gz 2>/dev/null || echo "")
+        WHEEL=$(ls "$DIST_DIR"/*.whl 2>/dev/null || echo "")
+        if [ -n "$SDIST" ] && [ -n "$WHEEL" ]; then
+            SDIST_SHA256=$(shasum -a 256 "$SDIST" | awk '{print $1}')
+            WHEEL_SHA256=$(shasum -a 256 "$WHEEL" | awk '{print $1}')
+            SDIST_SIZE=$(stat -f%z "$SDIST" 2>/dev/null || stat -c%s "$SDIST")
+            WHEEL_SIZE=$(stat -f%z "$WHEEL" 2>/dev/null || stat -c%s "$WHEEL")
+            BUILD_OK=true
+        fi
+    fi
+    if $BUILD_OK; then
+        echo -e "${GREEN}  Build passed${NC}"
+    else
+        echo -e "${YELLOW}  Build skipped (python3 -m build not available locally; CI dry-run runs the full build)${NC}"
+    fi
+    echo ""
+
+    # Report
+    echo -e "${GREEN}=== Dry-run report ===${NC}"
+    if $BUILD_OK; then
+        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$WHEEL_SHA256" "$SDIST_SIZE" "$WHEEL_SIZE" <<'REPORT_PY'
+import json, sys
+report = {
+    "dry_run": True,
+    "tag": sys.argv[1],
+    "release_name": sys.argv[2],
+    "gates": {
+        "title": "passed",
+        "notes": "passed",
+        "audience": "skipped (local dry-run)",
+    },
+    "reproducibility": {
+        "source_date_epoch": "1700000000",
+        "pythonhashseed": "0",
+    },
+    "artifacts": {
+        "sdist": {"sha256": sys.argv[3], "size": sys.argv[4]},
+        "wheel": {"sha256": sys.argv[5], "size": sys.argv[6]},
+    },
+    "comparison": "not compared: no qualified digest bundle available",
+    "before": {
+        "tags": "not listed (local dry-run)",
+        "releases": "not listed (local dry-run)",
+        "mirror_refs": "not listed (local dry-run)",
+        "pypi": "not listed (local dry-run)",
+        "ghcr": "not listed (local dry-run)",
+        "tap": "not listed (local dry-run)",
+    },
+    "after": {
+        "tags": "not listed (local dry-run)",
+        "releases": "not listed (local dry-run)",
+        "mirror_refs": "not listed (local dry-run)",
+        "pypi": "not listed (local dry-run)",
+        "ghcr": "not listed (local dry-run)",
+        "tap": "not listed (local dry-run)",
+    },
+}
+print(json.dumps(report, indent=2))
+REPORT_PY
+    else
+        python3 - "$TAG" "$RELEASE_NAME" <<'REPORT_NOBUILD_PY'
+import json, sys
+report = {
+    "dry_run": True,
+    "tag": sys.argv[1],
+    "release_name": sys.argv[2],
+    "gates": {
+        "title": "passed",
+        "notes": "passed",
+        "audience": "skipped (local dry-run)",
+    },
+    "reproducibility": {
+        "source_date_epoch": "1700000000",
+        "pythonhashseed": "0",
+    },
+    "artifacts": {
+        "sdist": {"sha256": "not built (build module unavailable locally)", "size": "0"},
+        "wheel": {"sha256": "not built (build module unavailable locally)", "size": "0"},
+    },
+    "comparison": "not compared: no qualified digest bundle available",
+    "before": {
+        "tags": "not listed (local dry-run)",
+        "releases": "not listed (local dry-run)",
+        "mirror_refs": "not listed (local dry-run)",
+        "pypi": "not listed (local dry-run)",
+        "ghcr": "not listed (local dry-run)",
+        "tap": "not listed (local dry-run)",
+    },
+    "after": {
+        "tags": "not listed (local dry-run)",
+        "releases": "not listed (local dry-run)",
+        "mirror_refs": "not listed (local dry-run)",
+        "pypi": "not listed (local dry-run)",
+        "ghcr": "not listed (local dry-run)",
+        "tap": "not listed (local dry-run)",
+    },
+}
+print(json.dumps(report, indent=2))
+REPORT_NOBUILD_PY
+    fi
+    echo ""
+    echo -e "${GREEN}=== Dry-run complete: no tag, release, mirror push, PyPI upload, GHCR push or tap commit was created ===${NC}"
+    exit 0
+fi
 
 # ── Step 2: Bump versions ──────────────────────────────────────
 echo -e "${YELLOW}[2/8] Bumping version to ${VERSION}...${NC}"

@@ -26,6 +26,11 @@ on:
         description: "Tag to create release for (e.g. v1.0.0)"
         required: true
         type: string
+      dry_run:
+        description: "Run gates and reproducible build but create nothing"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release:
@@ -123,6 +128,7 @@ jobs:
             "$NOTES_FILE"
 
       - name: Create or re-assert the Forgejo release
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
@@ -176,3 +182,142 @@ jobs:
           echo "Failed to create release. HTTP $HTTP_STATUS"
           cat response.json
           exit 1
+
+      # ── Dry-run: build, digest and report ──────────────────────────
+      # The dry-run gate runs the same title, notes and audience checks
+      # (steps above), builds the sdist and wheel with the pinned
+      # reproducibility envelope, and writes a report with digests,
+      # comparison results and before/after listings. No tag, release,
+      # mirror ref, PyPI upload, GHCR push or tap commit is created or
+      # modified.
+      #
+      # The tag_name input is required for workflow_dispatch, and the
+      # tag must have a valid CHANGELOG section — the notes step above
+      # already enforced that, so a missing or empty section fails before
+      # this step runs.
+      - name: Dry-run reproducible build
+        id: dry_run_build
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          SOURCE_DATE_EPOCH: "1700000000"
+          PYTHONHASHSEED: "0"
+        run: |
+          set -euo pipefail
+          echo "=== Dry-run reproducible build ==="
+          pip install --quiet build
+          python3 -m build --outdir "$RUNNER_TEMP/dist"
+          ls -la "$RUNNER_TEMP/dist/"
+          echo "sdist=$(ls "$RUNNER_TEMP/dist/"*.tar.gz)" >> "$GITHUB_OUTPUT"
+          echo "wheel=$(ls "$RUNNER_TEMP/dist/"*.whl)" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run compute digests
+        id: dry_run_digests
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          TAG_NAME: "${{ github.event.inputs.tag_name }}"
+          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
+          NOTES: "${{ steps.notes.outputs.notes }}"
+        run: |
+          set -euo pipefail
+          echo "=== Dry-run digest computation ==="
+          SDIST="$RUNNER_TEMP/dist/"*.tar.gz
+          WHEEL="$RUNNER_TEMP/dist/"*.whl
+          SDIST_SHA256=$(shasum -a 256 "$SDIST" | awk '{print $1}')
+          WHEEL_SHA256=$(shasum -a 256 "$WHEEL" | awk '{print $1}')
+          SDIST_SIZE=$(stat -c%s "$SDIST" 2>/dev/null || stat -f%z "$SDIST")
+          WHEEL_SIZE=$(stat -c%s "$WHEEL" 2>/dev/null || stat -f%z "$WHEEL")
+          echo "sdist_sha256=${SDIST_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "wheel_sha256=${WHEEL_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "sdist_size=${SDIST_SIZE}" >> "$GITHUB_OUTPUT"
+          echo "wheel_size=${WHEEL_SIZE}" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run before/after listings (stubbed — lane has no tokens)
+        id: dry_run_listings
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          TAG_NAME: "${{ github.event.inputs.tag_name }}"
+        run: |
+          set -euo pipefail
+          echo "=== Dry-run before/after listings ==="
+          # This lane has no forge tokens. The before/after listings are
+          # recorded as stubbed — the report documents that no live API
+          # calls were made and the dry-run guard prevents any mutation.
+          #
+          # The listing structure documents what the live check would
+          # query, so a reviewer can verify the dry-run did not bypass
+          # any check.
+          BEFORE=$(jq -n \
+            --arg tags "stubbed: no token" \
+            --arg releases "stubbed: no token" \
+            --arg mirror_refs "stubbed: no token" \
+            --arg pypi "stubbed: no token" \
+            --arg ghcr "stubbed: no token" \
+            --arg tap "stubbed: no token" \
+            '{tags: $tags, releases: $releases, mirror_refs: $mirror_refs, pypi: $pypi, ghcr: $ghcr, tap: $tap}')
+          echo "before=${BEFORE}" >> "$GITHUB_OUTPUT"
+
+          AFTER=$(jq -n \
+            --arg tags "stubbed: no token" \
+            --arg releases "stubbed: no token" \
+            --arg mirror_refs "stubbed: no token" \
+            --arg pypi "stubbed: no token" \
+            --arg ghcr "stubbed: no token" \
+            --arg tap "stubbed: no token" \
+            '{tags: $tags, releases: $releases, mirror_refs: $mirror_refs, pypi: $pypi, ghcr: $ghcr, tap: $tap}')
+          echo "after=${AFTER}" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run write report
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          TAG_NAME: "${{ github.event.inputs.tag_name }}"
+          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
+          NOTES: "${{ steps.notes.outputs.notes }}"
+          SDIST_SHA256: "${{ steps.dry_run_digests.outputs.sdist_sha256 }}"
+          WHEEL_SHA256: "${{ steps.dry_run_digests.outputs.wheel_sha256 }}"
+          SDIST_SIZE: "${{ steps.dry_run_digests.outputs.sdist_size }}"
+          WHEEL_SIZE: "${{ steps.dry_run_digests.outputs.wheel_size }}"
+          BEFORE: "${{ steps.dry_run_listings.outputs.before }}"
+          AFTER: "${{ steps.dry_run_listings.outputs.after }}"
+          SOURCE_DATE_EPOCH: "1700000000"
+          PYTHONHASHSEED: "0"
+        run: |
+          set -euo pipefail
+          echo "=== Dry-run report ==="
+          REPORT=$(jq -n \
+            --arg tag_name "$TAG_NAME" \
+            --arg release_name "$RELEASE_NAME" \
+            --arg title_gate "passed" \
+            --arg notes_gate "passed" \
+            --arg audience_gate "passed" \
+            --arg source_date_epoch "$SOURCE_DATE_EPOCH" \
+            --arg pythonhashseed "$PYTHONHASHSEED" \
+            --arg sdist_sha256 "$SDIST_SHA256" \
+            --arg wheel_sha256 "$WHEEL_SHA256" \
+            --arg sdist_size "$SDIST_SIZE" \
+            --arg wheel_size "$WHEEL_SIZE" \
+            --argjson before "$BEFORE" \
+            --argjson after "$AFTER" \
+            --arg comparison "not compared: no qualified digest bundle available" \
+            '{
+              dry_run: true,
+              tag: $tag_name,
+              release_name: $release_name,
+              gates: {
+                title: $title_gate,
+                notes: $notes_gate,
+                audience: $audience_gate
+              },
+              reproducibility: {
+                source_date_epoch: $source_date_epoch,
+                pythonhashseed: $pythonhashseed
+              },
+              artifacts: {
+                sdist: {sha256: $sdist_sha256, size: $sdist_size},
+                wheel: {sha256: $wheel_sha256, size: $wheel_size}
+              },
+              comparison: $comparison,
+              before: $before,
+              after: $after
+            }')
+          echo "$REPORT" | tee dry-run-report.json
+          echo "report=$(cat dry-run-report.json)" >> "$GITHUB_OUTPUT"
