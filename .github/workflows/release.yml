@@ -16,10 +16,10 @@ jobs:
   # ═══════════════════════════════════════════
   #
   # ADR 2026-08-13-release-distribution-boundary: this 3x3 matrix is a gate on
-  # the ref, not a `needs:` input to the distribution steps. The GH Release and
-  # winget depend on `build-binaries`/`create-release` below succeeding, not on
-  # the full matrix, so a Windows test failure no longer silently skips Linux
-  # and macOS distribution (CAP-CI-003).
+  # the ref, not a `needs:` input to the distribution steps. The asset attach
+  # and winget jobs depend on `attach-assets` below succeeding, not on the full
+  # matrix, so a Windows test failure no longer silently skips Linux and macOS
+  # distribution (CAP-CI-003).
   build:
     # Hybrid mirror: this GitHub-only release pipeline is skipped on the
     # self-hosted Forgejo (no macOS/Windows runners). Runs on GitHub only.
@@ -68,13 +68,23 @@ jobs:
           path: dist/
 
   # ═══════════════════════════════════════════
-  # Stage 2: Create GitHub Release
+  # Stage 2: Attach distribution assets
   # ═══════════════════════════════════════════
   #
+  # The release OBJECT — title and notes — is owned by the ops-engine layover
+  # running on Forgejo (lvc-ops docs/release-flow-division.md). A per-repo
+  # workflow that creates, edits or deletes that object is the defect, not the
+  # rule: an object built here would race the engine's and, with different
+  # notes, make the engine mark the destination failed.
+  #
+  # This job therefore only ATTACHES the artefacts the Forgejo host cannot
+  # build, and it fails closed: if no release object exists for the tag yet the
+  # attach step raises AttachError and uploads nothing, and an asset that is
+  # already on the release is left untouched rather than overwritten.
+  #
   # Standalone binaries + deb/rpm are produced by binaries.yml (single owner);
-  # they are NOT built here. This job only assembles the GH Release object from
-  # artifacts binaries.yml already attached and the dist/ wheels built above.
-  create-release:
+  # they are NOT built here.
+  attach-assets:
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -100,6 +110,8 @@ jobs:
           cd release-assets
           sha256sum -- *.whl *.tar.gz 2>/dev/null > checksums.txt || true
           cat checksums.txt
+          # Absolute paths: the attach step runs from the workspace root.
+          printf '%s\n' "$PWD"/* | tee "$GITHUB_WORKSPACE/release-assets.txt"
 
       # Generic tooling lives in the open base. ops-engine is OSS and publicly
       # mirrored, so this needs no credential. Pinned to the v3.4.2 tag. The
@@ -119,85 +131,175 @@ jobs:
             || { echo "fetched file is not Python — first three lines:"; \
                  head -3 "$RUNNER_TEMP/release_notes_audience_gate.py"; exit 1; }
 
-      # The body is the CHANGELOG entry for this tag, never a commit-log dump.
-      # A tag whose version has no section — or an empty one — fails here,
-      # before the GitHub Release object is created. The extractor is the same
-      # committed implementation the Forgejo job uses, so the two forges cannot
-      # disagree on what the notes for vX.Y.Z are. The extracted section is then
-      # run through the same external-audience gate with the same committed
-      # tracker prefixes, so a mirrored tag cannot publish on GitHub when the
-      # Forgejo gate would have rejected its notes.
-      - name: Generate and gate release notes
-        id: release_notes
+      # The notes for this tag are the CHANGELOG entry, never a commit-log
+      # dump. This workflow no longer writes them anywhere — the release
+      # object and its notes belong to the engine — but it still refuses to
+      # attach artefacts for a tag whose notes would have been rejected: a
+      # missing or empty section fails here, and an entry naming this
+      # repository's tracker fails the same audience gate the Forgejo job
+      # enforces. The extractor and prefix parser are the committed
+      # implementations, so the two forges cannot disagree about what is
+      # acceptable for vX.Y.Z.
+      - name: Gate the changelog entry for this tag
+        id: changelog_gate
         run: |
           set -euo pipefail
           TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-
-          NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG")"
 
           NOTES_FILE="$(mktemp)"
           PREFIXES_FILE="$(mktemp)"
           trap 'rm -f "$NOTES_FILE" "$PREFIXES_FILE"' EXIT
-          printf '%s\n' "$NOTES" > "$NOTES_FILE"
+          python3 scripts/extract_changelog_notes.py "$TAG" > "$NOTES_FILE"
           python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE"
           python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
             --ticket-prefixes "$PREFIXES_FILE" \
             "$NOTES_FILE"
 
-          {
-            cat <<EOF
-          ## Capacium ${TAG}
+          echo "changelog entry for ${TAG} passed the audience gate"
 
-          ${NOTES}
-
-          ### Install
-
-          **Homebrew**
-          \`\`\`bash
-          brew update && brew upgrade capacium
-          cap -v  # → ${VERSION}
-          \`\`\`
-
-          **pip**
-          \`\`\`bash
-          pip install capacium==${VERSION}
-          \`\`\`
-
-          **Docker**
-          \`\`\`bash
-          docker pull ghcr.io/capacium/cap:${VERSION}
-          \`\`\`
-
-          **Standalone binaries** — attached below for macOS, Linux, and Windows.
-
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          EOF
-          } > release_notes.md
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "Capacium ${{ github.ref_name }}"
-          body_path: release_notes.md
-          generate_release_notes: false
-          files: release-assets/*
-
-      - name: Verify release title
+      - name: Attach assets to the engine-created release
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_FILE: ${{ github.workspace }}/release-assets.txt
         run: |
-          TAG="${{ github.ref_name }}"
-          EXPECTED="Capacium ${TAG}"
-          ACTUAL=$(gh release view "$TAG" --repo "${{ github.repository }}" --json name --jq '.name' 2>/dev/null || echo "")
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "Fixing release title: expected '${EXPECTED}', got '${ACTUAL}'"
-            gh release edit "$TAG" --repo "${{ github.repository }}" --title "$EXPECTED"
-          fi
-          echo "Release title: ${EXPECTED}"
+          set -euo pipefail
+          python3 - <<'PYATTACH'
+          """Attach build artefacts to an existing GitHub release.
+
+          The release object is created by the ops-engine layover on Forgejo;
+          this script must never create, edit or delete it. It resolves the
+          release for the tag, uploads only the assets that are not already
+          attached, and fails closed with AttachError when no release exists.
+          """
+
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+
+          class AttachError(Exception):
+              """A precondition for attaching failed; nothing was uploaded."""
+
+
+          def _token() -> str:
+              token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+              if not token:
+                  raise AttachError("GH_TOKEN is not set; cannot read or write releases")
+              return token
+
+
+          def _base(name: str, default: str) -> str:
+              return (os.environ.get(name) or default).rstrip("/")
+
+
+          def _request(url: str, token: str, *, method: str = "GET",
+                       data: bytes | None = None,
+                       content_type: str = "application/vnd.github+json"):
+              req = urllib.request.Request(url, data=data, method=method)
+              req.add_header("Authorization", "Bearer " + token)
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("X-GitHub-Api-Version", "2022-11-28")
+              if data is not None:
+                  req.add_header("Content-Type", content_type)
+              return urllib.request.urlopen(req, timeout=60)
+
+
+          def _release_for_tag(api: str, repo: str, tag: str, token: str) -> dict:
+              url = f"{api}/repos/{repo}/releases/tags/{urllib.parse.quote(tag)}"
+              try:
+                  with _request(url, token) as response:
+                      return json.loads(response.read().decode())
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      raise AttachError(
+                          f"no release object exists for tag {tag}; the ops-engine "
+                          "layover creates it before this step may attach"
+                      ) from None
+                  raise AttachError(
+                      f"could not read the release for tag {tag}: HTTP {exc.code}"
+                  ) from None
+
+
+          def _asset_paths() -> list[Path]:
+              manifest = os.environ.get("RELEASE_ASSETS_FILE")
+              if not manifest:
+                  raise AttachError("RELEASE_ASSETS_FILE is not set")
+              listing = Path(manifest)
+              if not listing.is_file():
+                  raise AttachError(f"asset manifest not found: {listing}")
+              paths = [
+                  Path(line.strip())
+                  for line in listing.read_text(encoding="utf-8").splitlines()
+                  if line.strip()
+              ]
+              if not paths:
+                  raise AttachError("the asset manifest is empty; nothing to attach")
+              missing = [str(p) for p in paths if not p.is_file()]
+              if missing:
+                  raise AttachError("asset file(s) missing: " + ", ".join(missing))
+              return paths
+
+
+          def _upload(upload: str, repo: str, release_id: int, path: Path,
+                      token: str) -> None:
+              query = urllib.parse.urlencode({"name": path.name})
+              url = f"{upload}/repos/{repo}/releases/{release_id}/assets?{query}"
+              payload = path.read_bytes()
+              with _request(url, token, method="POST", data=payload,
+                            content_type="application/octet-stream") as response:
+                  if response.status not in (200, 201):
+                      raise AttachError(
+                          f"upload of {path.name} returned HTTP {response.status}"
+                      )
+
+
+          def main() -> int:
+              try:
+                  token = _token()
+                  api = _base("RELEASE_API_BASE", "https://api.github.com")
+                  upload = _base("RELEASE_UPLOAD_BASE", "https://uploads.github.com")
+                  repo = os.environ.get("GITHUB_REPOSITORY")
+                  tag = os.environ.get("RELEASE_TAG")
+                  if not repo or not tag:
+                      raise AttachError(
+                          "GITHUB_REPOSITORY and RELEASE_TAG must both be set"
+                      )
+
+                  paths = _asset_paths()
+                  release = _release_for_tag(api, repo, tag, token)
+                  release_id = release.get("id")
+                  if not isinstance(release_id, int):
+                      raise AttachError(
+                          f"release for tag {tag} has no numeric id; refusing to guess"
+                      )
+
+                  attached = {
+                      asset.get("name") for asset in release.get("assets", [])
+                  }
+                  for path in paths:
+                      if path.name in attached:
+                          print(f"{path.name}: already attached, left untouched")
+                          continue
+                      _upload(upload, repo, release_id, path, token)
+                      print(f"{path.name}: attached")
+              except AttachError as exc:
+                  print(f"AttachError: {exc}", file=sys.stderr)
+                  return 2
+              return 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PYATTACH
 
   # ═══════════════════════════════════════════
-  # Stage 3: Verify distribution channels surface in the release itself
+  # Stage 3: Verify distribution channels published this tag
   # ═══════════════════════════════════════════
   #
   # CAP-OPS-A7: on v0.18.0 the Homebrew tap bump failed on an expired
@@ -206,17 +308,19 @@ jobs:
   # out the previous version with no signal anywhere. Each distribution channel
   # is a separate workflow (bump-tap.yml, publish.yml, docker.yml, binaries.yml)
   # and Forgejo/GitHub has no cross-workflow `needs:`, so a lone red row in the
-  # workflow list was invisible to whoever judged the release. This job runs
-  # after create-release, re-reads each channel's live public state, and writes a
-  # "Distribution channels" table INTO the release body — the one place a release
-  # reader looks — then fails the job if any channel did not actually publish the
-  # release tag. The failure surfaces here AND in the release body, not merely as
-  # one more red workflow row.
+  # workflow list was invisible to whoever judged the release. This job re-reads
+  # each channel's live public state after the attach step and fails if any
+  # channel did not publish the release tag.
+  #
+  # It is READ-ONLY with respect to the release object: the table goes to the
+  # job log and the step summary, never into the release body. Writing it into
+  # the body would edit an object the engine owns and make the engine mark the
+  # destination failed.
   verify-channels:
-    needs: create-release
+    needs: attach-assets
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Verify every distribution channel published this tag
@@ -286,21 +390,13 @@ jobs:
           # --- winget ---
           pass="${pass}| winget | :grey_question: | manual (see update-winget) |\n"
 
-          # Surface: append the table to the release body regardless of outcome,
-          # so a stale channel is visible where the release is judged.
-          OLD_BODY=$(gh release view "${TAG}" --repo "${{ github.repository }}" --json body --jq '.body // ""' 2>/dev/null || echo "")
-          printf -v BODY '%b' "${OLD_BODY}\n\n${pass}\n"
-          gh release edit "${TAG}" --repo "${{ github.repository }}" --notes "${BODY}" >/dev/null
-
           echo "----- channel report -----"
           printf '%b' "${pass}"
+          printf '%b' "${pass}" >> "${GITHUB_STEP_SUMMARY}"
           echo "failed=${failed}" >> "${GITHUB_OUTPUT}"
-          echo "::group::channel-report"
-          printf '%b' "${pass}"
-          echo "::endgroup::"
 
           if [ "${failed}" -gt 0 ]; then
-            echo "::error::${failed} distribution channel(s) did not publish ${TAG} — see the Distribution channels table on the release."
+            echo "::error::${failed} distribution channel(s) did not publish ${TAG} — see the Distribution channels table in this job's summary."
             exit 1
           fi
 
@@ -309,12 +405,12 @@ jobs:
   # ═══════════════════════════════════════════
   #
   # winget has no standalone workflow, so this job remains here. It runs after
-  # create-release (NOT after the full build matrix — a red Windows check must
-  # not skip it silently). The four distribution steps that PyPI/docker/binaries/
-  # bump-tap own were removed from this workflow to kill the duplication
-  # (CAP-CI-003).
+  # attach-assets (NOT after the full build matrix — a red Windows check must
+  # not skip it silently). The four distribution steps that PyPI/docker/
+  # binaries/bump-tap own were removed from this workflow to kill the
+  # duplication (CAP-CI-003).
   update-winget:
-    needs: create-release
+    needs: attach-assets
     runs-on: ubuntu-latest
 
     steps:

@@ -44,10 +44,17 @@ channel publication had occurred when they were written.
 
 ## Unreleased
 
-- **Release notes come from the changelog, not the commit log.** Both the
-  Forgejo and GitHub release jobs publish the release body from the matching
-  tag's `CHANGELOG.md` section and fail before creating or editing a release
-  object when the tag has no entry, instead of generating notes from `git log`.
+- **GitHub's release workflow is distribution only.** The release object —
+  title and notes — is created once by the ops-engine layover on Forgejo.
+  `.github/workflows/release.yml` no longer creates, edits or deletes it: the
+  attach step resolves the engine-created release for the tag, uploads only
+  the artefacts that are not already attached, and fails closed with a named
+  `AttachError` when no release exists yet. The channel verification table is
+  written to the job summary instead of the release body.
+- **Release notes come from the changelog, not the commit log.** The tag's
+  `CHANGELOG.md` section is the body the engine publishes, and both forges
+  refuse a tag whose section is missing or empty, instead of generating notes
+  from `git log`.
 - **External-audience gate on release notes.** A release body that names this
   repository's own tracker is refused before publication. The vocabulary is the
   committed `.ops.yaml` tracker-prefix list, parsed by one shared
