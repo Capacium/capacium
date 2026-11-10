@@ -58,6 +58,7 @@ def _subprocess_env() -> dict:
     )
     return env
 
+
 #: Required checks for a pull request to ``dev``. The key is the job id in
 #: ``.forgejo/workflows/ci.yml``; the documented check name is
 #: ``CI / <job id>``, asserted by ``test_required_checks_are_documented``.
