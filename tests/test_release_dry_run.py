@@ -320,7 +320,11 @@ class TestReproducibleBuild:
 
     def test_digest_comparison_with_expected_bundle(self):
         """When an expected digest bundle is provided, the report compares
-        built digests against expected values."""
+        built digests against expected values.
+
+        This test invokes the real producer: scripts/release.sh --dry-run
+        --expected-digests with a matching digest bundle. It does not
+        execute an inline copy of the comparison logic."""
         env = os.environ.copy()
         env["SOURCE_DATE_EPOCH"] = self.EPOCH
         env["PYTHONHASHSEED"] = self.HASHSEED
@@ -346,7 +350,6 @@ class TestReproducibleBuild:
                 capture_output=True, text=True,
             ).stdout.split()[0]
 
-            # Create the expected digests fixture (inline, no new file path)
             expected_bundle = {
                 "sdist_sha256": sdist_sha,
                 "wheel_sha256": wheel_sha,
@@ -354,38 +357,42 @@ class TestReproducibleBuild:
             expected_file = Path(tmp) / "expected_digests.json"
             expected_file.write_text(json.dumps(expected_bundle))
 
-            # Invoke the comparison logic inline
-            compare_code = '''
-import json, sys
-sdist_sha = sys.argv[1]
-wheel_sha = sys.argv[2]
-expected = json.loads(open(sys.argv[3]).read())
-sdist_expected = expected.get("sdist_sha256", "")
-wheel_expected = expected.get("wheel_sha256", "")
-results = []
-if sdist_expected:
-    results.append("sdist: match" if sdist_sha == sdist_expected
-                   else "sdist: mismatch")
-if wheel_expected:
-    results.append("wheel: match" if wheel_sha == wheel_expected
-                   else "wheel: mismatch")
-print("; ".join(results))
-'''
-            comp_result = subprocess.run(
-                [sys.executable, "-c", compare_code,
-                 sdist_sha, wheel_sha, str(expected_file)],
+            # Shim python3 so release.sh's bare 'python3' resolves.
+            python_bin = Path(sys.executable).parent
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
+
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
+            run_env["PYTHONHASHSEED"] = self.HASHSEED
+
+            # Invoke the real producer
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"),
+                 "1.1.7", "--dry-run",
+                 "--expected-digests", str(expected_file)],
                 capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+                env=run_env,
             )
-            assert "sdist: match" in comp_result.stdout, (
-                f"Expected sdist match, got: {comp_result.stdout}"
+            assert result.returncode == 0, (
+                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
             )
-            assert "wheel: match" in comp_result.stdout, (
-                f"Expected wheel match, got: {comp_result.stdout}"
+            combined = result.stdout + result.stderr
+            assert "sdist: match" in combined, (
+                f"Expected sdist match, got: {combined[:500]}"
+            )
+            assert "wheel: match" in combined, (
+                f"Expected wheel match, got: {combined[:500]}"
             )
 
     def test_digest_comparison_with_mismatched_bundle(self):
         """When expected digests differ from built digests, the report
-        flags the mismatch."""
+        flags the mismatch.
+
+        Invokes the real producer (scripts/release.sh --dry-run)."""
         env = os.environ.copy()
         env["SOURCE_DATE_EPOCH"] = self.EPOCH
         env["PYTHONHASHSEED"] = self.HASHSEED
@@ -408,60 +415,66 @@ print("; ".join(results))
             expected_file = Path(tmp) / "expected_digests.json"
             expected_file.write_text(json.dumps(expected_bundle))
 
-            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
-            wheel = list(Path(tmp).glob("*.whl"))[0]
-            sdist_sha = subprocess.run(
-                ["shasum", "-a", "256", str(tarball)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-            wheel_sha = subprocess.run(
-                ["shasum", "-a", "256", str(wheel)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
+            python_bin = Path(sys.executable).parent
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
 
-            compare_code = '''
-import json, sys
-sdist_sha = sys.argv[1]
-wheel_sha = sys.argv[2]
-expected = json.loads(open(sys.argv[3]).read())
-sdist_expected = expected.get("sdist_sha256", "")
-wheel_expected = expected.get("wheel_sha256", "")
-results = []
-if sdist_expected:
-    results.append("sdist: match" if sdist_sha == sdist_expected
-                   else "sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
-if wheel_expected:
-    results.append("wheel: match" if wheel_sha == wheel_expected
-                   else "wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
-print("; ".join(results))
-'''
-            comp_result = subprocess.run(
-                [sys.executable, "-c", compare_code,
-                 sdist_sha, wheel_sha, str(expected_file)],
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
+            run_env["PYTHONHASHSEED"] = self.HASHSEED
+
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"),
+                 "1.1.7", "--dry-run",
+                 "--expected-digests", str(expected_file)],
                 capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+                env=run_env,
             )
-            assert "mismatch" in comp_result.stdout, (
-                f"Expected mismatch, got: {comp_result.stdout}"
+            assert result.returncode == 0, (
+                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
+            )
+            combined = result.stdout + result.stderr
+            assert "mismatch" in combined, (
+                f"Expected mismatch, got: {combined[:500]}"
             )
 
     def test_no_comparison_without_bundle(self):
-        """Without an expected digest bundle, the report says 'not compared'."""
-        compare_code = '''
-import sys
-comparison = "not compared: no qualified digest bundle provided"
-expected_arg = sys.argv[1] if len(sys.argv) > 1 else ""
-if not expected_arg:
-    print(comparison)
-else:
-    print("unexpected: comparison would run")
-'''
-        result = subprocess.run(
-            [sys.executable, "-c", compare_code, ""],
-            capture_output=True, text=True,
-        )
-        assert "not compared" in result.stdout, (
-            f"Without bundle, must say 'not compared': {result.stdout}"
-        )
+        """Without an expected digest bundle, the report says 'not compared'.
+
+        Invokes the real producer (scripts/release.sh --dry-run) without
+        --expected-digests, then checks the report output."""
+        env = os.environ.copy()
+        env["SOURCE_DATE_EPOCH"] = self.EPOCH
+        env["PYTHONHASHSEED"] = self.HASHSEED
+
+        with tempfile.TemporaryDirectory() as tmp:
+            python_bin = Path(sys.executable).parent
+            shim_dir = Path(tmp) / "shim"
+            shim_dir.mkdir()
+            (shim_dir / "python3").symlink_to(sys.executable)
+
+            run_env = os.environ.copy()
+            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
+            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
+            run_env["PYTHONHASHSEED"] = self.HASHSEED
+
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"),
+                 "1.1.7", "--dry-run"],
+                capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+                env=run_env,
+            )
+            assert result.returncode == 0, (
+                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
+            )
+            combined = result.stdout + result.stderr
+            assert "not compared" in combined, (
+                f"Without bundle, must say 'not compared': {combined[:500]}"
+            )
 
     def test_report_format_includes_digest_fields(self):
         """The report JSON schema includes sdist and wheel sha256 and size."""
@@ -491,35 +504,51 @@ class TestReleaseShDryRun:
     creates no tags, and exits with the expected code."""
 
     def test_dry_run_with_valid_version_exits_zero_and_writes_report(self):
-        """release.sh --dry-run with a valid version exits 0 and outputs JSON."""
-        result = subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0, (
-            f"Dry-run should exit 0 for valid version, got {result.returncode}: "
-            f"{result.stderr[:500]}"
-        )
-        combined = result.stdout + result.stderr
-        assert "dry_run" in combined, (
-            f"Dry-run report must contain dry_run field: {combined[:500]}"
-        )
-        assert "Dry-run complete" in combined, (
-            f"Dry-run must print completion message: {combined[:500]}"
-        )
+        """release.sh --dry-run with a valid version exits 0, outputs JSON,
+        and writes dry-run-report.json to disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
+                capture_output=True, text=True,
+                cwd=tmp,
+            )
+            assert result.returncode == 0, (
+                f"Dry-run should exit 0 for valid version, got {result.returncode}: "
+                f"{result.stderr[:500]}"
+            )
+            combined = result.stdout + result.stderr
+            assert "dry_run" in combined, (
+                f"Dry-run report must contain dry_run field: {combined[:500]}"
+            )
+            assert "Dry-run complete" in combined, (
+                f"Dry-run must print completion message: {combined[:500]}"
+            )
+            # The script must write a report file to disk.
+            report_file = Path(tmp) / "dry-run-report.json"
+            assert report_file.is_file(), (
+                "release.sh --dry-run must write dry-run-report.json to disk"
+            )
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+            assert report.get("dry_run") is True
+            assert "tag" in report
+            assert "gates" in report
+            assert "artifacts" in report
+            assert "before" in report
+            assert "after" in report
+            assert "comparison" in report
 
     def test_dry_run_with_invalid_version_fails(self):
         """release.sh --dry-run with a version that has no CHANGELOG exits
         non-zero."""
-        result = subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
-        assert result.returncode != 0, (
-            f"Dry-run with invalid version must exit non-zero, got {result.returncode}"
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
+                capture_output=True, text=True,
+                cwd=tmp,
+            )
+            assert result.returncode != 0, (
+                f"Dry-run with invalid version must exit non-zero, got {result.returncode}"
+            )
 
     def test_dry_run_does_not_create_tag(self):
         """release.sh --dry-run must not create a git tag."""
@@ -528,11 +557,12 @@ class TestReleaseShDryRun:
             capture_output=True, text=True,
             cwd=str(REPO_ROOT),
         ).stdout
-        _ = subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            _ = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "99.99.99", "--dry-run"],
+                capture_output=True, text=True,
+                cwd=tmp,
+            )
         after_tags = subprocess.run(
             ["git", "tag", "--list"],
             capture_output=True, text=True,
@@ -549,8 +579,6 @@ class TestReleaseShDryRun:
         env_build["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
         env_build["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
 
-        # release.sh uses bare 'python3'; ensure it resolves to the
-        # same interpreter that has the 'build' module installed.
         python_bin = Path(sys.executable).parent
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -583,8 +611,7 @@ class TestReleaseShDryRun:
             expected_file = Path(tmp) / "expected.json"
             expected_file.write_text(json.dumps(expected))
 
-            # Create a temporary directory with 'python3' -> python3.12
-            # symlink so release.sh's bare 'python3' resolves correctly.
+            # Shim so release.sh's bare 'python3' resolves correctly.
             shim_dir = Path(tmp) / "shim"
             shim_dir.mkdir()
             (shim_dir / "python3").symlink_to(sys.executable)
@@ -593,12 +620,15 @@ class TestReleaseShDryRun:
             run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
             run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
             run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
             result = subprocess.run(
                 ["bash", str(SCRIPTS_DIR / "release.sh"),
                  "1.1.7", "--dry-run",
                  "--expected-digests", str(expected_file)],
                 capture_output=True, text=True,
-                cwd=str(REPO_ROOT),
+                cwd=str(run_dir),
                 env=run_env,
             )
             assert result.returncode == 0, (
@@ -614,26 +644,35 @@ class TestReleaseShDryRun:
             )
 
     def test_dry_run_report_output_is_valid_json(self):
-        """The stdout of release.sh --dry-run contains valid JSON."""
-        result = subprocess.run(
-            ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0, (
-            f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
-        )
-        # Extract the JSON block from the output
-        output = result.stdout
-        # Find first { and last }
-        json_start = output.index("{")
-        json_end = output.rindex("}")
-        json_str = output[json_start:json_end + 1]
-        report = json.loads(json_str)
-        assert report.get("dry_run") is True
-        assert "tag" in report
-        assert "gates" in report
-        assert "artifacts" in report or "reproducibility" in report
-        assert "comparison" in report
-        assert "before" in report
-        assert "after" in report
+        """The stdout of release.sh --dry-run contains valid JSON, and
+        dry-run-report.json is written to disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run"],
+                capture_output=True, text=True,
+                cwd=tmp,
+            )
+            assert result.returncode == 0, (
+                f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
+            )
+            # Extract the JSON block from the output
+            output = result.stdout
+            # Find first { and last }
+            json_start = output.index("{")
+            json_end = output.rindex("}")
+            json_str = output[json_start:json_end + 1]
+            report = json.loads(json_str)
+            assert report.get("dry_run") is True
+            assert "tag" in report
+            assert "gates" in report
+            assert "artifacts" in report or "reproducibility" in report
+            assert "comparison" in report
+            assert "before" in report
+            assert "after" in report
+            # Verify the report file was written to disk.
+            report_file = Path(tmp) / "dry-run-report.json"
+            assert report_file.is_file(), (
+                "release.sh --dry-run must write dry-run-report.json to disk"
+            )
+            disk_report = json.loads(report_file.read_text(encoding="utf-8"))
+            assert disk_report.get("dry_run") is True

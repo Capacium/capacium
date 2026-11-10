@@ -39,3 +39,4 @@ perplexity.log
 # SkillWeave runtime stays local; the organization planning helper is tracked.
 .skillweave/*
 !.skillweave/agents.md
+dry-run-report.json

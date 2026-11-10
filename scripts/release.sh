@@ -72,6 +72,7 @@ echo -e "${GREEN}=== Capacium Release v${VERSION} ===${NC}"
 
 # ── Step 1: Local verification ────────────────────────────────
 echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
+ORIG_CWD="$PWD"
 cd "$REPO_DIR"
 rm -rf build/lib/ dist/ *.egg-info
 ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
@@ -183,11 +184,72 @@ COMPARE_PY
         fi
     fi
 
+    # Before/after listings — same six surfaces the workflow lists.
+    # Each surface is queried honestly; if the network or tool is
+    # unavailable, the surface is recorded as "not available locally".
+    _listing() {
+        local tags=""
+        local releases=""
+        local mirror_refs=""
+        local pypi=""
+        local ghcr=""
+        local tap=""
+
+        # tags: git ls-remote (no auth needed)
+        tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort || echo 'not available locally')"
+
+        # releases: only available via Forgejo API with a token
+        releases="not available locally (no Forgejo API token)"
+
+        # mirror refs: git ls-remote github mirror
+        mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort || echo 'not available locally')"
+
+        # PyPI: JSON API is public, no token required
+        pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"releases": sorted(d.get("releases",{}).keys())}))' 2>/dev/null || echo '"'"not available locally"'"')"
+
+        # GHCR: anonymous pull token then tags/list
+        ghcr="$(ANON_TOKEN="$(curl -sSf "https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)"; if [ -n "${ANON_TOKEN:-}" ]; then curl -sSf -H "Authorization: Bearer ${ANON_TOKEN}" "https://ghcr.io/v2/capacium/cap/tags/list" 2>/dev/null || echo '"'"not available locally"'"'; else echo '"'"not available locally"'"'; fi)"
+
+        # Tap: git ls-remote on the tap repo
+        tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort || echo 'not available locally')"
+
+        python3 -c "
+import json
+surfaces = {
+    'tags': '''$tags''',
+    'releases': '''$releases''',
+    'mirror_refs': '''$mirror_refs''',
+    'pypi': '''$pypi''',
+    'ghcr': '''$ghcr''',
+    'tap': '''$tap''',
+}
+for k, v in surfaces.items():
+    v = v.strip()
+    if v.startswith('[') or v.startswith('{'):
+        try:
+            surfaces[k] = json.loads(v)
+        except json.JSONDecodeError:
+            surfaces[k] = v
+    elif '\n' in v:
+        surfaces[k] = [line for line in v.splitlines() if line]
+    else:
+        surfaces[k] = v
+print(json.dumps(surfaces))
+"
+    }
+
+    echo -e "${YELLOW}  Capturing before snapshot...${NC}"
+    BEFORE="$(_listing)"
+    echo -e "${YELLOW}  Capturing after snapshot...${NC}"
+    AFTER="$(_listing)"
+
     # Report
     echo -e "${GREEN}=== Dry-run report ===${NC}"
+    BEFORE_JSON=$(echo "$BEFORE" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))')
+    AFTER_JSON=$(echo "$AFTER" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))')
     if $BUILD_OK; then
-        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$SDIST_SIZE" "$WHEEL_SHA256" "$WHEEL_SIZE" "$COMPARISON" <<'REPORT_PY'
-import json, sys
+        python3 - "$TAG" "$RELEASE_NAME" "$SDIST_SHA256" "$SDIST_SIZE" "$WHEEL_SHA256" "$WHEEL_SIZE" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" <<'REPORT_PY'
+import json, os, sys
 report = {
     "dry_run": True,
     "tag": sys.argv[1],
@@ -206,28 +268,18 @@ report = {
         "wheel": {"sha256": sys.argv[5], "size": sys.argv[6]},
     },
     "comparison": sys.argv[7],
-    "before": {
-        "tags": "not listed (local dry-run)",
-        "releases": "not listed (local dry-run)",
-        "mirror_refs": "not listed (local dry-run)",
-        "pypi": "not listed (local dry-run)",
-        "ghcr": "not listed (local dry-run)",
-        "tap": "not listed (local dry-run)",
-    },
-    "after": {
-        "tags": "not listed (local dry-run)",
-        "releases": "not listed (local dry-run)",
-        "mirror_refs": "not listed (local dry-run)",
-        "pypi": "not listed (local dry-run)",
-        "ghcr": "not listed (local dry-run)",
-        "tap": "not listed (local dry-run)",
-    },
+    "before": json.loads(sys.argv[8]),
+    "after": json.loads(sys.argv[9]),
 }
-print(json.dumps(report, indent=2))
+output = json.dumps(report, indent=2)
+print(output)
+out_path = os.path.join(sys.argv[10], "dry-run-report.json")
+with open(out_path, "w") as f:
+    f.write(output + "\n")
 REPORT_PY
     else
-        python3 - "$TAG" "$RELEASE_NAME" "$COMPARISON" <<'REPORT_NOBUILD_PY'
-import json, sys
+        python3 - "$TAG" "$RELEASE_NAME" "$COMPARISON" "$BEFORE_JSON" "$AFTER_JSON" "$ORIG_CWD" <<'REPORT_NOBUILD_PY'
+import json, os, sys
 report = {
     "dry_run": True,
     "tag": sys.argv[1],
@@ -246,24 +298,14 @@ report = {
         "wheel": {"sha256": "not built (build module unavailable locally)", "size": "0"},
     },
     "comparison": sys.argv[3],
-    "before": {
-        "tags": "not listed (local dry-run)",
-        "releases": "not listed (local dry-run)",
-        "mirror_refs": "not listed (local dry-run)",
-        "pypi": "not listed (local dry-run)",
-        "ghcr": "not listed (local dry-run)",
-        "tap": "not listed (local dry-run)",
-    },
-    "after": {
-        "tags": "not listed (local dry-run)",
-        "releases": "not listed (local dry-run)",
-        "mirror_refs": "not listed (local dry-run)",
-        "pypi": "not listed (local dry-run)",
-        "ghcr": "not listed (local dry-run)",
-        "tap": "not listed (local dry-run)",
-    },
+    "before": json.loads(sys.argv[4]),
+    "after": json.loads(sys.argv[5]),
 }
-print(json.dumps(report, indent=2))
+output = json.dumps(report, indent=2)
+print(output)
+out_path = os.path.join(sys.argv[6], "dry-run-report.json")
+with open(out_path, "w") as f:
+    f.write(output + "\n")
 REPORT_NOBUILD_PY
     fi
     echo ""
