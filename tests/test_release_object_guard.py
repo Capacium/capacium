@@ -131,7 +131,7 @@ KNOWN_VIOLATIONS = (
         "file": ".github/workflows/prerelease.yml",
         "job": "prerelease",
         "forms": ("git tag", "git push tag", "gh release create"),
-        "ticket": None,
+        "ticket": "INFRA-012",
         "reason": (
             "GitHub-side RC channel: 'Create tag' runs git tag + git push "
             "origin \"$TAG\", then 'Create GitHub Pre-Release' runs gh "
@@ -277,6 +277,13 @@ def main(argv: list[str] | None = None) -> int:
         ticket = violation.get("ticket") or "NO TICKET ASSIGNED"
         print(f"KNOWN VIOLATION ({ticket}): {_describe(finding)}")
         print(f"  reason: {violation['reason']}")
+        if not violation.get("ticket"):
+            print(
+                f"  ERROR: KNOWN_VIOLATIONS entry for {violation['file']} / "
+                f"{violation['job']} has no ticket ID — every entry needs one",
+                file=sys.stderr,
+            )
+            return 1
 
     if result["unlisted"]:
         print(
@@ -475,6 +482,7 @@ def test_known_violation_entries_name_file_job_and_reason():
         assert entry["job"]
         assert entry["reason"].strip()
         assert entry["forms"]
+        assert entry.get("ticket"), f"{entry['file']} / {entry['job']} has no ticket ID"
         assert "ticket" in entry
 
 
@@ -521,6 +529,65 @@ def test_ci_runs_the_guard_on_pull_requests_to_dev():
         step.get("run", "") for step in guard.get("steps") or [] if isinstance(step, dict)
     )
     assert "test_release_object_guard.py" in commands
+
+
+def test_red_proof_ticketless_known_violation_fails(tmp_path):
+    """Proof: a KNOWN_VIOLATIONS entry without a ticket exits 1.
+
+    Write a workflow that would be caught, add a matching KNOWN_VIOLATIONS
+    entry with ``ticket: None``, and verify the guard exits 1 with the
+    ''NO TICKET ASSIGNED'' message.
+    """
+    import subprocess
+    import textwrap
+
+    # Write a workflow into tmp_path that triggers gh release create
+    _write_workflow(
+        tmp_path,
+        _fixture(
+            "      - name: Create\n"
+            "        run: gh release create \"$TAG\" --prerelease\n"
+        ),
+        name="prerelease.yml",
+    )
+
+    helper = tmp_path / "helper.py"
+    helper.write_text(textwrap.dedent(f"""\
+        import sys
+        from pathlib import Path
+
+        _tests = Path({str(REPO_ROOT)!r}) / "tests"
+        sys.path.insert(0, str(_tests))
+
+        import test_release_object_guard as guard
+        guard.REPO_ROOT = Path({str(tmp_path)!r})
+
+        # Inject a ticketless entry that matches the fixture
+        guard.KNOWN_VIOLATIONS = (
+            {{
+                "file": ".github/workflows/prerelease.yml",
+                "job": "fixture",
+                "forms": ("gh release create",),
+                "ticket": None,
+                "reason": "Red proof: entry without ticket",
+            }},
+        )
+        sys.exit(guard.main(["--root", str(guard.REPO_ROOT)]))
+    """))
+    completed = subprocess.run(
+        [sys.executable, str(helper)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_subprocess_env(),
+    )
+    assert completed.returncode == 1, (
+        f"expected exit 1 for ticketless entry, got {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert "NO TICKET ASSIGNED" in completed.stdout, (
+        f"expected 'NO TICKET ASSIGNED' in stdout:\n{completed.stdout}"
+    )
 
 
 def test_unparseable_workflow_fails_closed(tmp_path):
