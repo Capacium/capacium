@@ -1,10 +1,16 @@
 name: CI
 
+# Required checks for a pull request to `dev` (and to `main`). Forgejo reports
+# a check as `<workflow name> / <job id>`; `tests/test_release_object_guard.py`
+# asserts this list against the jobs defined below, so it cannot drift.
+#
+#   CI / test                  — ruff, the README release examples and the pytest suite
+#   CI / release-object-guard  — no GitHub workflow creates or edits a release object
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [dev, main]
 
 env:
   PYTHONUTF8: "1"  # Windows console defaults to cp1252 (charmap crashes on unicode output)
@@ -13,6 +19,21 @@ env:
 # is code.forgejo.org); runs-on ubuntu-latest → catthehacker act image.
 # capacium-models is pulled from its public GitHub mirror (no auth needed).
 jobs:
+  release-object-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: https://github.com/actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+      - name: Check that no GitHub workflow creates or edits a release object
+        run: python tests/test_release_object_guard.py
+
   test:
     runs-on: ubuntu-latest
     strategy:
