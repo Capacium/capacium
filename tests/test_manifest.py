@@ -1,4 +1,8 @@
-from capacium.manifest import Manifest, parse_cap_id, format_cap_id
+import sys
+
+import pytest
+
+from capacium.manifest import Manifest, ManifestYamlSupportError, parse_cap_id, format_cap_id
 
 
 class TestManifest:
@@ -224,3 +228,35 @@ class TestPricing:
 class TestFormatCapId:
     def test_format(self):
         assert format_cap_id("alice", "my-cap") == "alice/my-cap"
+
+
+class TestYamlSupportRequired:
+    """Reading YAML without PyYAML must fail loudly, not degrade silently."""
+
+    BUNDLE_YAML = (
+        "kind: bundle\nname: demo\nversion: 1.0.0\ncapabilities:\n"
+        "- name: a\n  source: ./a\n- name: b\n  source: ./b\n"
+    )
+
+    @pytest.fixture
+    def no_yaml(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "yaml", None)
+
+    def test_load_refuses_yaml_without_pyyaml(self, tmp_path, no_yaml):
+        path = tmp_path / "capability.yaml"
+        path.write_text(self.BUNDLE_YAML)
+        with pytest.raises(ManifestYamlSupportError, match="PyYAML"):
+            Manifest.load(path)
+
+    def test_loads_refuses_yaml_without_pyyaml(self, no_yaml):
+        with pytest.raises(ManifestYamlSupportError, match="PyYAML"):
+            Manifest.loads(self.BUNDLE_YAML)
+
+    def test_detect_from_directory_does_not_swallow_missing_pyyaml(self, tmp_path, no_yaml):
+        (tmp_path / "capability.yaml").write_text(self.BUNDLE_YAML)
+        with pytest.raises(ManifestYamlSupportError):
+            Manifest.detect_from_directory(tmp_path)
+
+    def test_json_manifest_still_loads_without_pyyaml(self, tmp_path, no_yaml):
+        (tmp_path / "capability.json").write_text('{"kind": "tool", "name": "j", "version": "1.0.0"}')
+        assert Manifest.detect_from_directory(tmp_path).name == "j"
