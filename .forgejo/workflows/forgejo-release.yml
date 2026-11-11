@@ -40,7 +40,7 @@ on:
         default: false
         type: boolean
       qualified_digests:
-        description: "Path to qualified-digests v1 bundle JSON for digest comparison"
+        description: "Path to qualified-digests v1 bundle JSON for digest comparison (required when dry_run is true)"
         required: false
         default: ""
         type: string
@@ -276,9 +276,14 @@ jobs:
       # ── Dry-run qualified-digests build and comparison ──────────
       # Builds sdist and wheel with SOURCE_DATE_EPOCH=1700000000 and
       # PYTHONHASHSEED=0, then compares both digests against the
-      # qualified-digests v1 bundle when provided. A build failure,
-      # empty bundle, source_tree mismatch or digest mismatch each exit
-      # non-zero with a distinct named error.
+      # qualified-digests v1 bundle. The bundle is required when
+      # dry_run is true; an empty bundle, a source_tree different from
+      # the built tree, an unavailable build and a digest mismatch each
+      # exit non-zero with a distinct named error.
+      - name: Install build package
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        run: pip install build
+
       - name: Dry-run qualified-digests build and compare
         id: dry_run_digests
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
@@ -287,14 +292,24 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${QUALIFIED_DIGESTS:-}" ]; then
-            echo "No qualified-digests bundle provided — skipping digest comparison"
-            exit 0
+            echo "QualifiedDigestBundleError: qualified-digests bundle is required for dry-run" >&2
+            exit 2
           fi
           echo "Building sdist and wheel with SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0"
+          SOURCE_TREE="$(git rev-parse HEAD)"
           BUILD_DIR="$(mktemp -d)"
           trap 'rm -rf "$BUILD_DIR"' EXIT
+          # Build from a git archive of the source tree so the built
+          # content matches the qualified source, not an uncommitted
+          # working tree.
+          ARCHIVE_DIR="$BUILD_DIR/src"
+          mkdir -p "$ARCHIVE_DIR"
+          git archive "$SOURCE_TREE" | tar -x -C "$ARCHIVE_DIR" || {
+            echo "BuildError: git archive of $SOURCE_TREE failed — build unavailable or broken" >&2
+            exit 2
+          }
           SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0 \
-            python3 -m build --sdist --wheel --outdir "$BUILD_DIR" > /dev/null 2>&1 || {
+            python3 -m build --sdist --wheel --outdir "$BUILD_DIR" "$ARCHIVE_DIR" > /dev/null 2>&1 || {
             echo "BuildError: python -m build failed — build unavailable or broken" >&2
             exit 2
           }
@@ -306,18 +321,23 @@ jobs:
           fi
           SDIST_SHA256="$(shasum -a 256 "$SDIST_FILE" | awk '{print $1}')"
           WHEEL_SHA256="$(shasum -a 256 "$WHEEL_FILE" | awk '{print $1}')"
-          SOURCE_TREE="$(git rev-parse HEAD)"
           echo "sdist_sha256=${SDIST_SHA256}" >> "$GITHUB_OUTPUT"
           echo "wheel_sha256=${WHEEL_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "sde=1700000000" >> "$GITHUB_OUTPUT"
+          echo "pythonhashseed=0" >> "$GITHUB_OUTPUT"
 
           echo "Comparing against qualified-digests bundle: ${QUALIFIED_DIGESTS}"
+          COMPARE_STDERR="$(mktemp)"
+          trap 'rm -rf "$BUILD_DIR" "$COMPARE_STDERR"' EXIT
           COMPARE_OUT="$(python3 scripts/qualified_digests.py compare \
             "$QUALIFIED_DIGESTS" \
             --sdist "$SDIST_SHA256" \
             --wheel "$WHEEL_SHA256" \
-            --source-tree "$SOURCE_TREE" 2>&1)" || {
-            echo "QualifiedDigestComparisonError: ${COMPARE_OUT}" >&2
+            --source-tree "$SOURCE_TREE" 2>"$COMPARE_STDERR")" || {
+            COMPARE_ERR="$(cat "$COMPARE_STDERR")"
             echo "digest_comparison=mismatch" >> "$GITHUB_OUTPUT"
+            echo "digest_error_name=QualifiedDigestComparisonError" >> "$GITHUB_OUTPUT"
+            echo "digest_error_text=${COMPARE_ERR}" >> "$GITHUB_OUTPUT"
             exit 2
           }
           echo "digest_comparison=matched" >> "$GITHUB_OUTPUT"
@@ -408,6 +428,10 @@ jobs:
           SDIST_SHA256: "${{ steps.dry_run_digests.outputs.sdist_sha256 }}"
           WHEEL_SHA256: "${{ steps.dry_run_digests.outputs.wheel_sha256 }}"
           DIGEST_COMPARISON: "${{ steps.dry_run_digests.outputs.digest_comparison }}"
+          SDE: "${{ steps.dry_run_digests.outputs.sde }}"
+          PYTHONHASHSEED: "${{ steps.dry_run_digests.outputs.pythonhashseed }}"
+          DIGEST_ERROR_NAME: "${{ steps.dry_run_digests.outputs.digest_error_name }}"
+          DIGEST_ERROR_TEXT: "${{ steps.dry_run_digests.outputs.digest_error_text }}"
         run: |
           set -euo pipefail
           echo "=== Dry-run report ==="
@@ -428,6 +452,18 @@ jobs:
           fi
           if [ -n "${DIGEST_COMPARISON:-}" ]; then
             REPORT_ARGS+=(--digest-comparison "$DIGEST_COMPARISON")
+          fi
+          if [ -n "${SDE:-}" ]; then
+            REPORT_ARGS+=(--sde "$SDE")
+          fi
+          if [ -n "${PYTHONHASHSEED:-}" ]; then
+            REPORT_ARGS+=(--pythonhashseed "$PYTHONHASHSEED")
+          fi
+          if [ -n "${DIGEST_ERROR_NAME:-}" ]; then
+            REPORT_ARGS+=(--digest-error-name "$DIGEST_ERROR_NAME")
+          fi
+          if [ -n "${DIGEST_ERROR_TEXT:-}" ]; then
+            REPORT_ARGS+=(--digest-error-text "$DIGEST_ERROR_TEXT")
           fi
           python3 scripts/dry_run_report.py \
             "${REPORT_ARGS[@]}" \

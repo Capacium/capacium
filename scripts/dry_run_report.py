@@ -36,6 +36,10 @@ def build_report(
     sdist_sha256: str | None = None,
     wheel_sha256: str | None = None,
     digest_comparison: str | None = None,
+    sde: str | None = None,
+    pythonhashseed: str | None = None,
+    digest_error_name: str | None = None,
+    digest_error_text: str | None = None,
 ) -> dict:
     report: dict = {
         "dry_run": True,
@@ -57,6 +61,14 @@ def build_report(
             report["digests"]["wheel_sha256"] = wheel_sha256
         if digest_comparison is not None:
             report["digests"]["comparison"] = digest_comparison
+        if sde is not None:
+            report["digests"]["source_date_epoch"] = sde
+        if pythonhashseed is not None:
+            report["digests"]["pythonhashseed"] = pythonhashseed
+        if digest_error_name is not None:
+            report["digests"]["error_name"] = digest_error_name
+        if digest_error_text is not None:
+            report["digests"]["error_text"] = digest_error_text
     return report
 
 
@@ -98,8 +110,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--digest-comparison", default=None,
-        help="qualified-digests comparison result: matched, mismatch, "
-             "or not compared"
+        help="qualified-digests comparison result: matched or mismatch"
+    )
+    parser.add_argument(
+        "--sde", default=None,
+        help="SOURCE_DATE_EPOCH value used during the build"
+    )
+    parser.add_argument(
+        "--pythonhashseed", default=None,
+        help="PYTHONHASHSEED value used during the build"
+    )
+    parser.add_argument(
+        "--digest-error-name", default=None,
+        help="name of the digest comparison error (only on mismatch)"
+    )
+    parser.add_argument(
+        "--digest-error-text", default=None,
+        help="full text of the digest comparison error"
     )
     parser.add_argument(
         "--output", default="dry-run-report.json",
@@ -134,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
         sdist_sha256=args.sdist_sha256,
         wheel_sha256=args.wheel_sha256,
         digest_comparison=args.digest_comparison,
+        sde=args.sde,
+        pythonhashseed=args.pythonhashseed,
+        digest_error_name=args.digest_error_name,
+        digest_error_text=args.digest_error_text,
     )
 
     output = json.dumps(report, indent=2)

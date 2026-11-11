@@ -73,18 +73,21 @@ class TestDryRunWorkflowStructure:
             "report step must use scripts/dry_run_report.py"
         )
 
-    def test_no_digest_or_build_steps_in_workflow(self):
-        """The workflow must not contain digest or build steps — those
-        belong to RELMODEL-007."""
+    def test_digest_build_steps_present(self):
+        """The workflow must contain the qualified-digests build and compare
+        steps added by RELMODEL-007."""
         wf = _read_workflow()
-        assert "reproducible build" not in wf.lower(), (
-            "workflow must not contain reproducible build (RELMODEL-007)"
+        assert "Install build package" in wf, (
+            "workflow must install build package (RELMODEL-007)"
         )
-        assert "compute digests" not in wf.lower(), (
-            "workflow must not contain digest computation (RELMODEL-007)"
+        assert "qualified-digests build and compare" in wf, (
+            "workflow must have qualified-digests build step (RELMODEL-007)"
         )
-        assert "expected_digests" not in wf, (
-            "workflow must not have expected_digests input (RELMODEL-007)"
+        assert "qualified_digests.py compare" in wf, (
+            "workflow must call qualified_digests.py compare"
+        )
+        assert "QualifiedDigestBundleError" in wf, (
+            "workflow must refuse empty bundle with named error"
         )
 
     def test_no_tag_creation_code_in_dry_run(self):
@@ -422,7 +425,10 @@ class TestReleaseShDryRun:
         assert "SDIST_SHA256" in content
         assert "WHEEL_SHA256" in content
         assert "DIGEST_COMPARISON" in content
-        assert "DigestMismatchError" in content
+        assert "QualifiedDigestBundleError" in content
+        assert "QualifiedDigestSourceTreeError" in content
+        assert "QualifiedDigestMismatchError" in content
+        assert "git archive" in content
 
 
 # ── dry_run_report.py (shared writer) ────────────────────────────────────────
