@@ -196,18 +196,41 @@ Before committing to `capacium` (core), you MUST run locally:
 ruff check src/ --fix && pytest tests/ -q
 ```
 
-## Release Process (Streamlined)
+## Release Process — ops-engine model
 
-**One command to release:** `./scripts/release.sh 0.10.9` (or `--dry-run` to preview).
+The release object (title, notes, tag) is created on **Forgejo** by the
+**ops-engine layover** (`ReleaseHandler`), not by any per-repo workflow.
+GitHub is **distribution only**: it builds artefacts the Forgejo Linux runner
+cannot (Windows/macOS installers, standalone binaries) and attaches them to the
+existing release — it never creates, edits or deletes the release object itself.
+This follows the standard model documented in
+[lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
-The script handles:
-1. ruff + pytest (local)
-2. Version bump in `pyproject.toml` + `README.md`
-3. Commit + push + wait for CI green
-4. Git tag + push tag
-5. Tarball hash + Homebrew Tap update (capacium/homebrew-tap, NOT fusionAIze)
-6. GitHub Release with release notes
-7. `brew upgrade capacium` (local)
+The local script (`scripts/release.sh`) is a convenience tool for version bump,
+commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
+runs the same gates the Forgejo workflow would run.
+
+### Dry-run
+
+```bash
+./scripts/release.sh 0.10.10 --dry-run --qualified-digests /path/to/qualified-digests.json
+```
+
+The dry-run path:
+- Runs the title gate, changelog extraction and audience gate, bracketed by
+  before/after listings of all six publication surfaces (tags, releases,
+  mirror refs, PyPI, GHCR, Homebrew tap).
+- Builds sdist and wheel with `SOURCE_DATE_EPOCH=1700000000` and
+  `PYTHONHASHSEED=0`, then compares both digests against a qualified-digests
+  v1 bundle.
+- Writes the report through `scripts/dry_run_report.py`, the same single
+  writer shared with the Forgejo workflow `dry_run` input.
+- Creates **no tag, no release, no mirror push, no PyPI upload, no GHCR push
+  and no Homebrew tap commit**.
+
+The qualified-digests v1 bundle is produced from the test-lab qualification
+result by `scripts/qualified_digests.py`. It contains `sdist_sha256`,
+`wheel_sha256`, `source_tree` and `qualification_run`.
 
 ### Post-Release Verification (MANDATORY)
 
@@ -234,11 +257,11 @@ After every release, you MUST verify:
    ```
    All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
 
-4. **Release title**: Verify via:
+4. **Release title**: Verify the engine-created release title matches
+   `Capacium vX.Y.Z`:
    ```bash
    gh release view v0.10.10 --json name
    ```
-   Must match `Capacium vX.Y.Z` format.
 
 **Guard rails enforced by CI:**
 - `validate-release-tag.yml` blocks any `v*.*.*` tag where `pyproject.toml` version ≠ tag version
@@ -265,13 +288,13 @@ rm -rf build/lib/ dist/ *.egg-info
 # 2. Local: verify
 ruff check src/ tests/ --fix && pytest tests/ -q
 
-# 3. Run release script
+# 3. Bump version, commit, push, wait for CI, Homebrew tap update
 ./scripts/release.sh 0.10.10
 
 # 4. Verify CI passed (ci.yml: success + codeql.yml: success)
 gh run list --repo Capacium/capacium --limit 3
 
-# 5. Verify release title matches "Capacium v0.10.10"
+# 5. Verify the engine-created release title
 gh release view v0.10.10 --json name
 ```
 
