@@ -15,6 +15,12 @@ name: Create Forgejo Release
 #
 # The extraction is one implementation shared with the GitHub release job
 # (scripts/extract_changelog_notes.py), not a second, drifting copy.
+#
+# The dry-run path (workflow_dispatch with dry_run: true) runs the same gates
+# bracketed by before/after listings of all six publication surfaces and writes
+# the report through scripts/dry_run_report.py, the single writer shared with
+# scripts/release.sh --dry-run. Qualified digest comparison is out of scope
+# here and belongs to RELMODEL-007.
 
 on:
   push:
@@ -27,15 +33,10 @@ on:
         required: true
         type: string
       dry_run:
-        description: "Run gates and reproducible build but create nothing"
+        description: "Run gates with before/after listings but create nothing"
         required: false
         default: false
         type: boolean
-      expected_digests:
-        description: "JSON bundle of expected sdist/wheel SHA-256 digests for comparison (optional)"
-        required: false
-        default: ""
-        type: string
 
 jobs:
   release:
@@ -44,6 +45,81 @@ jobs:
       - uses: https://github.com/actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # ── Dry-run before listing ──────────────────────────────────
+      # The before snapshot is taken before any gate runs. A listing
+      # query that fails (non-2xx, timeout, TLS error, missing token)
+      # exits non-zero with a named error and is never stored as a
+      # report value.
+      - name: Dry-run before snapshot
+        id: dry_run_before
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
+
+          # tags: git ls-remote (no auth needed)
+          tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed"
+            exit 2
+          }
+
+          # releases: Forgejo API (needs token)
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
+            exit 2
+          fi
+          releases="$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
+            "${API_URL}/repos/${REPO}/releases?per_page=100" | \
+            jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
+            echo "ListingError: Forgejo releases API query failed"
+            exit 2
+          }
+
+          # mirror refs: git ls-remote GitHub mirror
+          mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed"
+            exit 2
+          }
+
+          # PyPI: JSON API is public, no token required
+          pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" | \
+            jq -c '{releases: (.releases | keys | sort)}')" || {
+            echo "ListingError: PyPI API query failed"
+            exit 2
+          }
+
+          # GHCR: anonymous pull token then tags/list
+          ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
+          GHCR_BEARER="$(curl -sSf "$ghcr_token_url" | jq -r '.token // empty')" || {
+            echo "ListingError: GHCR anonymous token request failed"
+            exit 2
+          }
+          ghcr="$(curl -sSf \
+            -H "Authorization: Bearer ${GHCR_BEARER}" \
+            "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
+            echo "ListingError: GHCR tags/list query failed"
+            exit 2
+          }
+
+          # Tap: git ls-remote on the tap repo
+          tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed"
+            exit 2
+          }
+
+          BEFORE=$(jq -n -c \
+            --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson releases_arg "$(echo "$releases" | jq -c .)" \
+            --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson pypi_arg "$(echo "$pypi" | jq -c .)" \
+            --argjson ghcr_arg "$(echo "$ghcr" | jq -c .)" \
+            --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}')
+          echo "before=${BEFORE}" >> "$GITHUB_OUTPUT"
 
       # The release title is a gate, not an agreement. A tag whose rendered
       # title does not conform is refused here, before any release object
@@ -75,6 +151,7 @@ jobs:
           sys.stdout.write("title gate: %r conforms\n" % name)
           TITLE_GATE_PY
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "title_gate=passed" >> "$GITHUB_OUTPUT"
 
       # The body is the CHANGELOG entry for this version. A tag whose version
       # has no section — or an empty one — fails here, before any release
@@ -92,6 +169,7 @@ jobs:
             echo "${NOTES}"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "notes_gate=passed" >> "$GITHUB_OUTPUT"
 
       # Generic tooling lives in the open base. ops-engine is OSS and publicly
       # mirrored, so this needs no credential. Pinned to the v3.4.2 tag.
@@ -119,6 +197,7 @@ jobs:
       # That vocabulary is the committed .ops.yaml, not a shell literal, so a
       # reviewer can see and change the list.
       - name: Gate the release notes for an external audience
+        id: audience
         env:
           NOTES: "${{ steps.notes.outputs.notes }}"
         run: |
@@ -131,6 +210,7 @@ jobs:
           python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
             --ticket-prefixes "$PREFIXES_FILE" \
             "$NOTES_FILE"
+          echo "audience_gate=passed" >> "$GITHUB_OUTPUT"
 
       - name: Create or re-assert the Forgejo release
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true' }}
@@ -161,10 +241,6 @@ jobs:
           fi
 
           if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
-            # The release already exists. Forgejo has no `gh release edit`;
-            # PATCH by tag. Both the canonical title AND the extracted notes are
-            # written: repairing only the title is what left a stale body in
-            # place after a re-run.
             echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting canonical title and notes."
             PATCH_PAYLOAD=$(jq -n \
               --arg name "$RELEASE_NAME" \
@@ -188,262 +264,109 @@ jobs:
           cat response.json
           exit 1
 
-      # ── Dry-run: build, digest and report ──────────────────────────
-      # The dry-run gate runs the same title, notes and audience checks
-      # (steps above), builds the sdist and wheel with the pinned
-      # reproducibility envelope, and writes a report with digests,
-      # comparison results and before/after listings. No tag, release,
-      # mirror ref, PyPI upload, GHCR push or tap commit is created or
-      # modified.
-      #
-      # The tag_name input is required for workflow_dispatch, and the
-      # tag must have a valid CHANGELOG section — the notes step above
-      # already enforced that, so a missing or empty section fails before
-      # this step runs.
-      - name: Dry-run reproducible build
-        id: dry_run_build
+      # ── Dry-run after listing ───────────────────────────────────
+      # The after snapshot is taken after the gates ran, bracketing them
+      # together with the before snapshot. A listing query that fails
+      # exits non-zero — it is never stored as a report value.
+      - name: Dry-run after snapshot
+        id: dry_run_after
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
         env:
-          SOURCE_DATE_EPOCH: "1700000000"
-          PYTHONHASHSEED: "0"
-        run: |
-          set -euo pipefail
-          echo "=== Dry-run reproducible build ==="
-          pip install --quiet build
-          python3 -m build --outdir "$RUNNER_TEMP/dist"
-          ls -la "$RUNNER_TEMP/dist/"
-          echo "sdist=$(ls "$RUNNER_TEMP/dist/"*.tar.gz)" >> "$GITHUB_OUTPUT"
-          echo "wheel=$(ls "$RUNNER_TEMP/dist/"*.whl)" >> "$GITHUB_OUTPUT"
-
-      - name: Dry-run compute digests
-        id: dry_run_digests
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
-        env:
-          TAG_NAME: "${{ github.event.inputs.tag_name }}"
-          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
-          NOTES: "${{ steps.notes.outputs.notes }}"
-        run: |
-          set -euo pipefail
-          echo "=== Dry-run digest computation ==="
-          for f in "$RUNNER_TEMP/dist/"*.tar.gz; do SDIST="$f"; break; done
-          for f in "$RUNNER_TEMP/dist/"*.whl; do WHEEL="$f"; break; done
-          if [ ! -f "${SDIST:-}" ] || [ ! -f "${WHEEL:-}" ]; then
-            echo "Build artifacts not found in $RUNNER_TEMP/dist/"
-            ls -la "$RUNNER_TEMP/dist/" || true
-            exit 1
-          fi
-          SDIST_SHA256=$(shasum -a 256 "$SDIST" | awk '{print $1}')
-          WHEEL_SHA256=$(shasum -a 256 "$WHEEL" | awk '{print $1}')
-          SDIST_SIZE=$(stat -c%s "$SDIST" 2>/dev/null || stat -f%z "$SDIST")
-          WHEEL_SIZE=$(stat -c%s "$WHEEL" 2>/dev/null || stat -f%z "$WHEEL")
-          echo "sdist_sha256=${SDIST_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "wheel_sha256=${WHEEL_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "sdist_size=${SDIST_SIZE}" >> "$GITHUB_OUTPUT"
-          echo "wheel_size=${WHEEL_SIZE}" >> "$GITHUB_OUTPUT"
-
-      - name: Dry-run before/after listings
-        id: dry_run_listings
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
-        env:
-          TAG_NAME: "${{ github.event.inputs.tag_name }}"
-          FORGEJO_API_URL: "${{ env.GITHUB_API_URL }}"
-          FORGEJO_REPO: "${{ env.GITHUB_REPOSITORY }}"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "=== Dry-run before/after listings ==="
-          API_URL="${FORGEJO_API_URL:-${GITHUB_API_URL:-https://code.langevc.com/api/v1}}"
-          REPO="${FORGEJO_REPO:-${GITHUB_REPOSITORY:-capacium/capacium}}"
-          _listing() {
-            local label="$1"
-            local tags=""
-            local releases=""
-            local mirror_refs=""
-            local pypi=""
-            local ghcr=""
-            local tap=""
+          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
 
-            # tags: git ls-remote (no auth needed)
-            tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort || echo 'error: git ls-remote failed')"
-
-            # releases: Forgejo API (needs token)
-            if [ -n "${GITHUB_TOKEN:-}" ]; then
-              releases="$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
-                "${API_URL}/repos/${REPO}/releases?per_page=100" 2>/dev/null | \
-                jq -c '[.[] | {id, tag_name, name, draft, prerelease}]' 2>/dev/null || \
-                echo '"'"error: Forgejo release API call failed"'"')"
-            else
-              releases='"listing not available: GITHUB_TOKEN is empty — report this finding"'
-            fi
-
-            # mirror refs: git ls-remote github mirror
-            mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort || echo 'error: mirror ls-remote failed')"
-
-            # PyPI: JSON API is public, no token required
-            pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" 2>/dev/null | jq -c '{releases: (.releases | keys | sort)}' 2>/dev/null || echo '"'"error: PyPI API call failed"'"')"
-
-            # GHCR: anonymous pull token then tags/list.
-            # The bearer URL and the Authz header are on separate lines
-            # so the credential-scan test does not flag a false
-            # positive on the URL substring.
-            ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
-            GHCR_BEARER="$(curl -sSf "$ghcr_token_url" 2>/dev/null | jq -r '.token // empty' 2>/dev/null)"
-            if [ -n "${GHCR_BEARER:-}" ]; then
-              ghcr="$(curl -sSf \
-                -H "Authorization: Bearer ${GHCR_BEARER}" \
-                "https://ghcr.io/v2/capacium/cap/tags/list" 2>/dev/null | jq -c . 2>/dev/null || echo '"'"error: GHCR tags/list call failed"'"')"
-            else
-              ghcr='"error: GHCR anonymous pull token call failed"'
-            fi
-
-            # Tap: git ls-remote on the tap repo
-            tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort || echo 'error: tap ls-remote failed')"
-
-            jq -n -c \
-              --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
-              --argjson releases_arg "$(echo "$releases" | jq -c '.' 2>/dev/null || echo '"'"$releases"'"')" \
-              --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
-              --argjson pypi_arg "$(echo "$pypi" | jq -c '.' 2>/dev/null || echo '"'"$pypi"'"')" \
-              --argjson ghcr_arg "$(echo "$ghcr" | jq -c '.' 2>/dev/null || echo '"'"$ghcr"'"')" \
-              --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
-              '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}'
+          tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed"
+            exit 2
           }
 
-          echo "Recording before snapshot..."
-          BEFORE="$(_listing "before")"
-          # Compact JSON on a single line so GITHUB_OUTPUT multi-line works
-          BEFORE_COMPACT="$(echo "$BEFORE" | jq -c .)"
-          echo "before=${BEFORE_COMPACT}" >> "$GITHUB_OUTPUT"
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
+            exit 2
+          fi
+          releases="$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
+            "${API_URL}/repos/${REPO}/releases?per_page=100" | \
+            jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
+            echo "ListingError: Forgejo releases API query failed"
+            exit 2
+          }
 
-          # The dry-run guard ensures nothing mutates between snapshots.
-          # On a real run the build would happen here, but we capture
-          # after immediately to prove the listing itself is idempotent.
+          mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed"
+            exit 2
+          }
 
-          echo "Recording after snapshot..."
-          AFTER="$(_listing "after")"
-          AFTER_COMPACT="$(echo "$AFTER" | jq -c .)"
-          echo "after=${AFTER_COMPACT}" >> "$GITHUB_OUTPUT"
+          pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" | \
+            jq -c '{releases: (.releases | keys | sort)}')" || {
+            echo "ListingError: PyPI API query failed"
+            exit 2
+          }
 
+          ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
+          GHCR_BEARER="$(curl -sSf "$ghcr_token_url" | jq -r '.token // empty')" || {
+            echo "ListingError: GHCR anonymous token request failed"
+            exit 2
+          }
+          ghcr="$(curl -sSf \
+            -H "Authorization: Bearer ${GHCR_BEARER}" \
+            "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
+            echo "ListingError: GHCR tags/list query failed"
+            exit 2
+          }
+
+          tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed"
+            exit 2
+          }
+
+          AFTER=$(jq -n -c \
+            --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson releases_arg "$(echo "$releases" | jq -c .)" \
+            --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson pypi_arg "$(echo "$pypi" | jq -c .)" \
+            --argjson ghcr_arg "$(echo "$ghcr" | jq -c .)" \
+            --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}')
+          echo "after=${AFTER}" >> "$GITHUB_OUTPUT"
+
+      # ── Dry-run report: single writer shared with release.sh ─────
       - name: Dry-run write report
+        id: dry_run_report
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
         env:
           TAG_NAME: "${{ github.event.inputs.tag_name }}"
           RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
-          NOTES: "${{ steps.notes.outputs.notes }}"
-          SDIST_SHA256: "${{ steps.dry_run_digests.outputs.sdist_sha256 }}"
-          WHEEL_SHA256: "${{ steps.dry_run_digests.outputs.wheel_sha256 }}"
-          SDIST_SIZE: "${{ steps.dry_run_digests.outputs.sdist_size }}"
-          WHEEL_SIZE: "${{ steps.dry_run_digests.outputs.wheel_size }}"
-          BEFORE: "${{ steps.dry_run_listings.outputs.before }}"
-          AFTER: "${{ steps.dry_run_listings.outputs.after }}"
-          EXPECTED_DIGESTS: "${{ github.event.inputs.expected_digests }}"
-          SOURCE_DATE_EPOCH: "1700000000"
-          PYTHONHASHSEED: "0"
+          TITLE_GATE: "${{ steps.title.outputs.title_gate }}"
+          NOTES_GATE: "${{ steps.notes.outputs.notes_gate }}"
+          AUDIENCE_GATE: "${{ steps.audience.outputs.audience_gate }}"
+          BEFORE: "${{ steps.dry_run_before.outputs.before }}"
+          AFTER: "${{ steps.dry_run_after.outputs.after }}"
         run: |
           set -euo pipefail
           echo "=== Dry-run report ==="
+          python3 scripts/dry_run_report.py \
+            --tag "$TAG_NAME" \
+            --release-name "$RELEASE_NAME" \
+            --title-gate "${TITLE_GATE:-not run}" \
+            --notes-gate "${NOTES_GATE:-not run}" \
+            --audience-gate "${AUDIENCE_GATE:-not run}" \
+            --before "$BEFORE" \
+            --after "$AFTER" \
+            --output dry-run-report.json
 
-          # Compute digest comparison when an expected bundle is provided.
-          # Qualified digests come from the test-lab qualification results
-          # (cap117f reports), not from a file in the repository. A missing
-          # or unreadable bundle, and a mismatch, exit non-zero — they are
-          # not silently recorded as report values.
-          COMPARISON=""
-          COMPARISON_EXIT=0
-          if [ -n "${EXPECTED_DIGESTS:-}" ] && [ "${EXPECTED_DIGESTS:-}" != '""' ]; then
-            set +e
-            COMPARISON=$(python3 - "$SDIST_SHA256" "$WHEEL_SHA256" "$EXPECTED_DIGESTS" <<'COMPARE_PY'
-          import json, sys
-          sdist_sha = sys.argv[1]
-          wheel_sha = sys.argv[2]
-          try:
-              expected = json.loads(sys.argv[3])
-          except json.JSONDecodeError:
-              print("comparison error: expected_digests is not valid JSON")
-              sys.exit(2)
-
-          sdist_expected = expected.get("sdist_sha256", "")
-          wheel_expected = expected.get("wheel_sha256", "")
-
-          if not sdist_expected and not wheel_expected:
-              print("comparison error: bundle has neither sdist_sha256 nor wheel_sha256")
-              sys.exit(2)
-
-          results = []
-          mismatch = False
-          if sdist_expected:
-              if sdist_sha == sdist_expected:
-                  results.append("sdist: match")
-              else:
-                  results.append("sdist: mismatch (expected={} built={})".format(sdist_expected[:16], sdist_sha[:16]))
-                  mismatch = True
-          else:
-              results.append("sdist: no expected digest in bundle")
-          if wheel_expected:
-              if wheel_sha == wheel_expected:
-                  results.append("wheel: match")
-              else:
-                  results.append("wheel: mismatch (expected={} built={})".format(wheel_expected[:16], wheel_sha[:16]))
-                  mismatch = True
-          else:
-              results.append("wheel: no expected digest in bundle")
-
-          print("; ".join(results))
-          if mismatch:
-              sys.exit(2)
-          COMPARE_PY
-            )
-            COMPARISON_EXIT=$?
-            set -e
-            if [ $COMPARISON_EXIT -ne 0 ]; then
-              echo "Digest comparison failed (exit $COMPARISON_EXIT): $COMPARISON"
-              exit $COMPARISON_EXIT
-            fi
-          else
-            echo "DigestComparisonError: no qualified digest bundle provided — refusing dry-run"
-            exit 2
-          fi
-
-          REPORT=$(jq -n \
-            --arg tag_name "$TAG_NAME" \
-            --arg release_name "$RELEASE_NAME" \
-            --arg title_gate "passed" \
-            --arg notes_gate "passed" \
-            --arg audience_gate "passed" \
-            --arg source_date_epoch "$SOURCE_DATE_EPOCH" \
-            --arg pythonhashseed "$PYTHONHASHSEED" \
-            --arg sdist_sha256 "$SDIST_SHA256" \
-            --arg wheel_sha256 "$WHEEL_SHA256" \
-            --arg sdist_size "$SDIST_SIZE" \
-            --arg wheel_size "$WHEEL_SIZE" \
-            --arg comparison "$COMPARISON" \
-            --argjson before "$BEFORE" \
-            --argjson after "$AFTER" \
-            '{
-              dry_run: true,
-              tag: $tag_name,
-              release_name: $release_name,
-              gates: {
-                title: $title_gate,
-                notes: $notes_gate,
-                audience: $audience_gate
-              },
-              reproducibility: {
-                source_date_epoch: $source_date_epoch,
-                pythonhashseed: $pythonhashseed
-              },
-              artifacts: {
-                sdist: {sha256: $sdist_sha256, size: $sdist_size},
-                wheel: {sha256: $wheel_sha256, size: $wheel_size}
-              },
-              comparison: $comparison,
-              before: $before,
-              after: $after
-            }')
-          echo "$REPORT" | tee dry-run-report.json
-
-          # Upload the report as a workflow artifact.
+          # Check: a gate recorded as 'not run' means a step failed to
+          # produce its output, which must be refused.
           echo "report=$(jq -c . dry-run-report.json)" >> "$GITHUB_OUTPUT"
+          for gate in title notes audience; do
+            VAL="$(jq -r ".gates.${gate}" dry-run-report.json)"
+            if [ "$VAL" = "not run" ]; then
+              echo "GateRefusalError: ${gate} gate recorded as 'not run' — refusing dry-run"
+              exit 2
+            fi
+          done
 
       - name: Dry-run upload report artifact
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}

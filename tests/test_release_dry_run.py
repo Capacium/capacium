@@ -1,20 +1,21 @@
 """Tests for the release dry-run path (RELMODEL-004).
 
-Criterion 1: A dry-run on a commit with a valid CHANGELOG section ends green and
-writes the report; on a missing or empty section it fails with the gate's named
-error.
+Criterion 1: A dry-run on a commit with a valid CHANGELOG section ends green
+and writes the report; on a missing or empty section it fails with the gate's
+named error. Every gate field in the report is the measured result of the gate
+step that ran; a gate that did not run is recorded as 'not run' and the dry-run
+exits non-zero, never a literal 'passed'.
 
-Criterion 2: After a dry-run no new tag, release, mirror ref, PyPI file, GHCR
-tag or tap commit exists, shown by before and after API listings stored with the
-report.
+Criterion 2: The before and after listings bracket the gate steps, not each
+other; a listing query that fails (non-2xx, timeout, TLS error) exits non-zero
+with a named error and is never stored as a report value.
 
-Criterion 3: The report lists sdist and wheel digests built with
-SOURCE_DATE_EPOCH=1700000000 and PYTHONHASHSEED=0 and the comparison result
-against the qualified digests.
+Criterion 3: scripts/release.sh --dry-run writes its report through
+scripts/dry_run_report.py, the same writer the workflow uses; before the gates
+it performs no mutation (no ruff --fix, no rm -rf) and it prints 'Tests pass'
+only when tests ran.
 
-All tests exercise the real producers (scripts/release.sh, the workflow YAML as
-a step listing, and the extract_changelog_notes.py script). No test merely
-checks text presence without executing the path.
+All tests exercise the real producers. No network in tests.
 """
 
 from __future__ import annotations
@@ -43,83 +44,109 @@ def _read_workflow() -> str:
 
 
 class TestDryRunWorkflowStructure:
-    """Verify the workflow YAML contains the dry-run input and guard."""
+    """Verify the workflow YAML contains the dry-run input, before/after
+    listing steps, gate steps, and the shared report writer."""
 
     def test_dry_run_input_exists(self):
-        """workflow_dispatch.inputs includes dry_run (boolean, default false)."""
         wf = _read_workflow()
         assert "dry_run:" in wf, "workflow must declare dry_run input"
 
     def test_release_step_guarded_by_dry_run(self):
-        """The create-release step is skipped when dry_run is true."""
         wf = _read_workflow()
         assert (
             "github.event.inputs.dry_run != 'true'" in wf
             or "dry_run != 'true'" in wf
         ), "create-release step must be guarded against dry_run"
 
-    def test_dry_run_build_step_exists(self):
+    def test_before_listing_step_exists(self):
         wf = _read_workflow()
-        assert "Dry-run reproducible build" in wf
+        assert "Dry-run before snapshot" in wf, (
+            "workflow must have a before-snapshot listing step"
+        )
 
-    def test_dry_run_digests_step_exists(self):
+    def test_after_listing_step_exists(self):
         wf = _read_workflow()
-        assert "Dry-run compute digests" in wf
+        assert "Dry-run after snapshot" in wf, (
+            "workflow must have an after-snapshot listing step"
+        )
 
-    def test_dry_run_listings_step_exists(self):
+    def test_report_step_uses_shared_writer(self):
         wf = _read_workflow()
-        assert "Dry-run before/after listings" in wf
+        assert "scripts/dry_run_report.py" in wf, (
+            "report step must use scripts/dry_run_report.py"
+        )
 
-    def test_dry_run_report_step_exists(self):
+    def test_no_digest_or_build_steps_in_workflow(self):
+        """The workflow must not contain digest or build steps — those
+        belong to RELMODEL-007."""
         wf = _read_workflow()
-        assert "Dry-run write report" in wf
-
-    def test_source_date_epoch_pinned(self):
-        wf = _read_workflow()
-        assert 'SOURCE_DATE_EPOCH: "1700000000"' in wf
-
-    def test_pythonhashseed_pinned(self):
-        wf = _read_workflow()
-        assert 'PYTHONHASHSEED: "0"' in wf
+        assert "reproducible build" not in wf.lower(), (
+            "workflow must not contain reproducible build (RELMODEL-007)"
+        )
+        assert "compute digests" not in wf.lower(), (
+            "workflow must not contain digest computation (RELMODEL-007)"
+        )
+        assert "expected_digests" not in wf, (
+            "workflow must not have expected_digests input (RELMODEL-007)"
+        )
 
     def test_no_tag_creation_code_in_dry_run(self):
-        """The dry-run section must not contain git tag or git push."""
+        """The dry-run steps must not contain git tag or git push."""
         wf = _read_workflow()
-        dry_run_start = wf.index("Dry-run reproducible build")
+        dry_run_start = wf.index("Dry-run before snapshot")
         dry_run_end = wf.index("Dry-run upload report artifact")
         dry_run_section = wf[dry_run_start:dry_run_end]
         assert "git tag" not in dry_run_section
         assert "git push" not in dry_run_section
 
     def test_no_release_creation_code_in_dry_run(self):
-        """The dry-run section must not POST or PATCH /releases (GET is fine
-        for listings)."""
+        """The dry-run section must not POST or PATCH /releases."""
         wf = _read_workflow()
-        dry_run_start = wf.index("Dry-run reproducible build")
-        dry_run_end = wf.index("Dry-run upload report artifact")
-        dry_run_section = wf[dry_run_start:dry_run_end]
-        assert "POST" not in dry_run_section, (
-            "dry-run section must not POST to /releases"
-        )
-        assert "PATCH" not in dry_run_section, (
-            "dry-run section must not PATCH to /releases"
-        )
+        # The dry-run section spans the before/after listing steps plus
+        # the report and upload steps. The "Create or re-assert" step
+        # (which POSTs/PATCHes) sits between them in the YAML but is
+        # guarded by dry_run != 'true' — it is not a dry-run step.
+        # We test each dry-run-guarded region separately.
+        before_pos = wf.index("Dry-run before snapshot")
+        create_pos = wf.index("Create or re-assert the Forgejo release")
+        after_pos = wf.index("Dry-run after snapshot")
+        upload_pos = wf.index("Dry-run upload report artifact")
 
-    def test_expected_digests_input_exists(self):
-        """workflow_dispatch.inputs includes expected_digests."""
-        wf = _read_workflow()
-        assert "expected_digests:" in wf, (
-            "workflow must declare expected_digests input"
-        )
+        # Region 1: before snapshot through audience gate
+        pre_create = wf[before_pos:create_pos]
+        # Region 2: after snapshot through upload
+        post_create = wf[after_pos:upload_pos]
+
+        for region_name, region in [("before snapshot→gates", pre_create),
+                                     ("after snapshot→upload", post_create)]:
+            assert "POST" not in region, (
+                f"dry-run region '{region_name}' must not POST to /releases"
+            )
+            assert "PATCH" not in region, (
+                f"dry-run region '{region_name}' must not PATCH to /releases"
+            )
 
     def test_upload_artifact_step_exists(self):
-        """The dry-run uploads the report as a workflow artifact."""
         wf = _read_workflow()
         assert "upload-artifact" in wf, (
             "workflow must upload dry-run report as artifact"
         )
         assert "dry-run-report" in wf, (
             "artifact name must be dry-run-report"
+        )
+
+    def test_gate_not_run_refusal_in_workflow(self):
+        """The workflow report step refuses a 'not run' gate by exiting
+        non-zero."""
+        wf = _read_workflow()
+        dry_run_start = wf.index("Dry-run write report")
+        dry_run_end = wf.index("Dry-run upload report artifact")
+        report_section = wf[dry_run_start:dry_run_end]
+        assert "not run" in report_section, (
+            "workflow must check for 'not run' gates"
+        )
+        assert "GateRefusalError" in report_section, (
+            "workflow must name GateRefusalError for 'not run' gate"
         )
 
 
@@ -184,17 +211,16 @@ class TestChangelogExtractionGate:
         assert "MissingChangelogEntryError" in result.stderr
 
 
-# ── Criterion 2: Before/after listings ───────────────────────────────────────
+# ── Criterion 2: Before/after listings bracket gates ─────────────────────────
 
 
 class TestBeforeAfterListings:
     """The dry-run report stores before and after listings for every
-    publication surface."""
+    publication surface, and listing failures exit non-zero."""
 
     REQUIRED_SURFACES = {"tags", "releases", "mirror_refs", "pypi", "ghcr", "tap"}
 
     def test_report_json_has_all_surfaces(self):
-        """The report JSON schema includes all six surfaces."""
         report = {
             "dry_run": True,
             "tag": "v1.0.0",
@@ -209,380 +235,90 @@ class TestBeforeAfterListings:
                 f"after listing missing surface: {surface}"
             )
 
-    def test_before_after_listings_are_structured_in_workflow(self):
-        """The workflow listing step documents every surface."""
+    def test_workflow_before_after_bracket_gates(self):
+        """The before-snapshot step runs before the title/notes/audience
+        gates, and the after-snapshot step runs after them. The ordering
+        in the workflow YAML must enforce this."""
         wf = _read_workflow()
-        dry_run_start = wf.index("Dry-run before/after listings")
-        dry_run_end = wf.index("Dry-run write report")
-        listing_section = wf[dry_run_start:dry_run_end]
-        for surface in self.REQUIRED_SURFACES:
-            assert surface in listing_section, (
-                f"listing section missing surface: {surface}"
-            )
+        before_pos = wf.index("Dry-run before snapshot")
+        title_pos = wf.index("Gate the release title")
+        notes_pos = wf.index("Extract release notes from CHANGELOG")
+        audience_pos = wf.index("Gate the release notes for an external audience")
+        after_pos = wf.index("Dry-run after snapshot")
+        report_pos = wf.index("Dry-run write report")
 
-    def test_workflow_makes_real_api_calls(self):
+        # Before snapshot must come before any gate
+        assert before_pos < title_pos, (
+            "before snapshot must precede title gate"
+        )
+        assert before_pos < notes_pos, (
+            "before snapshot must precede notes gate"
+        )
+        assert before_pos < audience_pos, (
+            "before snapshot must precede audience gate"
+        )
+        # After snapshot must come after all gates
+        assert after_pos > audience_pos, (
+            "after snapshot must follow audience gate"
+        )
+        # Report must come after both snapshots
+        assert report_pos > after_pos, (
+            "report must follow after snapshot"
+        )
+
+    def test_listing_step_exits_on_error_no_echo_fallback(self):
+        """The listing steps must not use || echo to degrade errors into
+        report values. Every curl/git call must fail closed (exit non-zero)."""
+        wf = _read_workflow()
+        before_pos = wf.index("Dry-run before snapshot")
+        after_pos = wf.index("Dry-run after snapshot")
+        listing_section = wf[before_pos:after_pos]
+        # Must contain exit-on-error patterns
+        assert "|| {" in listing_section or "|| exit" in listing_section, (
+            "listing step must exit non-zero on failure, not degrade with || echo"
+        )
+        # Must NOT contain the degradation pattern
+        assert "|| echo '" not in listing_section, (
+            "listing step must not store errors as values with || echo"
+        )
+        assert "|| echo \"" not in listing_section, (
+            "listing step must not store errors as values with || echo"
+        )
+
+    def test_listing_step_uses_real_api_calls(self):
         """The listing step uses curl for real API calls, not stub constants."""
         wf = _read_workflow()
-        dry_run_start = wf.index("Dry-run before/after listings")
-        dry_run_end = wf.index("Dry-run write report")
-        listing_section = wf[dry_run_start:dry_run_end]
-        # Must have curl calls for real data
+        before_pos = wf.index("Dry-run before snapshot")
+        after_pos = wf.index("Dry-run after snapshot")
+        listing_section = wf[before_pos:after_pos]
         assert "curl " in listing_section or "curl\t" in listing_section, (
             "listing step must make real API calls with curl"
         )
-        # Must NOT contain "stubbed" constants
         assert "stubbed" not in listing_section, (
             "listing step must not use stubbed constants"
         )
 
-    def test_listings_handle_missing_token(self):
-        """When GITHUB_TOKEN is empty, the listing step reports the finding."""
+    def test_listings_check_token_before_releases_query(self):
+        """The releases listing must check that GITHUB_TOKEN is set before
+        querying the API, and fail with a named error when it is empty."""
         wf = _read_workflow()
-        dry_run_start = wf.index("Dry-run before/after listings")
-        dry_run_end = wf.index("Dry-run write report")
-        listing_section = wf[dry_run_start:dry_run_end]
-        assert "TOKEN" in listing_section, (
+        before_pos = wf.index("Dry-run before snapshot")
+        after_pos = wf.index("Dry-run after snapshot")
+        listing_section = wf[before_pos:after_pos]
+        assert "GITHUB_TOKEN" in listing_section, (
             "listing step must reference GITHUB_TOKEN"
         )
-        assert "empty" in listing_section.lower() or \
-               "no token" in listing_section.lower() or \
-               "report this finding" in listing_section.lower(), (
-            "listing step must handle missing token as a finding"
+        assert "ListingError" in listing_section, (
+            "listing step must name ListingError on token absence"
         )
 
 
-# ── Criterion 3: Reproducible build digests ──────────────────────────────────
-
-
-class TestReproducibleBuild:
-    """The dry-run builds with SOURCE_DATE_EPOCH=1700000000 and
-    PYTHONHASHSEED=0 and records sdist and wheel digests."""
-
-    EPOCH = "1700000000"
-    HASHSEED = "0"
-
-    def test_build_with_pinned_env_produces_artifacts(self):
-        """A build with the pinned reproducibility envelope produces sdist
-        and wheel artifacts."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = self.EPOCH
-        env["PYTHONHASHSEED"] = self.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                pytest.skip(
-                    f"python3 -m build failed (build not installed?): "
-                    f"{result.stderr[:200]}"
-                )
-            tarballs = list(Path(tmp).glob("*.tar.gz"))
-            wheels = list(Path(tmp).glob("*.whl"))
-            assert len(tarballs) == 1, f"Expected 1 sdist, got {len(tarballs)}"
-            assert len(wheels) == 1, f"Expected 1 wheel, got {len(wheels)}"
-
-    def test_two_builds_produce_same_digest(self):
-        """Two builds with the same pinned env produce identical digests."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = self.EPOCH
-        env["PYTHONHASHSEED"] = self.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp1, \
-             tempfile.TemporaryDirectory() as tmp2:
-            result1 = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp1],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            result2 = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp2],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result1.returncode != 0 or result2.returncode != 0:
-                pytest.skip("build not available")
-            sdist1 = list(Path(tmp1).glob("*.tar.gz"))[0]
-            sdist2 = list(Path(tmp2).glob("*.tar.gz"))[0]
-            wheel1 = list(Path(tmp1).glob("*.whl"))[0]
-            wheel2 = list(Path(tmp2).glob("*.whl"))[0]
-            assert sdist1.read_bytes() == sdist2.read_bytes(), (
-                "Two sdist builds with same epoch must be byte-identical"
-            )
-            assert wheel1.read_bytes() == wheel2.read_bytes(), (
-                "Two wheel builds with same epoch must be byte-identical"
-            )
-
-    def test_digest_comparison_with_expected_bundle(self):
-        """When an expected digest bundle is provided, the report compares
-        built digests against expected values.
-
-        This test invokes the real producer: scripts/release.sh --dry-run
-        --expected-digests with a matching digest bundle. It does not
-        execute an inline copy of the comparison logic."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = self.EPOCH
-        env["PYTHONHASHSEED"] = self.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                pytest.skip("build not available")
-
-            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
-            wheel = list(Path(tmp).glob("*.whl"))[0]
-            sdist_sha = subprocess.run(
-                ["shasum", "-a", "256", str(tarball)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-            wheel_sha = subprocess.run(
-                ["shasum", "-a", "256", str(wheel)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-
-            expected_bundle = {
-                "sdist_sha256": sdist_sha,
-                "wheel_sha256": wheel_sha,
-            }
-            expected_file = Path(tmp) / "expected_digests.json"
-            expected_file.write_text(json.dumps(expected_bundle))
-
-            # Shim python3 so release.sh's bare 'python3' resolves.
-            python_bin = Path(sys.executable).parent
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
-            run_env["PYTHONHASHSEED"] = self.HASHSEED
-
-            # Invoke the real producer
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"),
-                 "1.1.7", "--dry-run",
-                 "--expected-digests", str(expected_file)],
-                capture_output=True, text=True,
-                cwd=str(REPO_ROOT),
-                env=run_env,
-            )
-            assert result.returncode == 0, (
-                f"Dry-run should exit 0, got {result.returncode}: {result.stderr[:500]}"
-            )
-            combined = result.stdout + result.stderr
-            assert "sdist: match" in combined, (
-                f"Expected sdist match, got: {combined[:500]}"
-            )
-            assert "wheel: match" in combined, (
-                f"Expected wheel match, got: {combined[:500]}"
-            )
-
-    def test_digest_comparison_with_mismatched_bundle(self):
-        """When expected digests differ from built digests, the dry-run
-        exits non-zero with the mismatch recorded.
-
-        Invokes the real producer (scripts/release.sh --dry-run).
-        A digest mismatch is not a report value — it exits non-zero."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = self.EPOCH
-        env["PYTHONHASHSEED"] = self.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                pytest.skip("build not available")
-
-            # Mismatched expected values
-            expected_bundle = {
-                "sdist_sha256": "0" * 64,
-                "wheel_sha256": "f" * 64,
-            }
-            expected_file = Path(tmp) / "expected_digests.json"
-            expected_file.write_text(json.dumps(expected_bundle))
-
-            python_bin = Path(sys.executable).parent
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
-            run_env["PYTHONHASHSEED"] = self.HASHSEED
-
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"),
-                 "1.1.7", "--dry-run",
-                 "--expected-digests", str(expected_file)],
-                capture_output=True, text=True,
-                cwd=str(REPO_ROOT),
-                env=run_env,
-            )
-            assert result.returncode == 2, (
-                f"Dry-run with mismatched digests must exit 2, got {result.returncode}: {result.stderr[:500]}"
-            )
-            combined = result.stdout + result.stderr
-            assert "mismatch" in combined, (
-                f"Expected mismatch in output, got: {combined[:500]}"
-            )
-
-    def test_no_comparison_without_bundle_exits_nonzero(self):
-        """Without an expected digest bundle, the dry-run exits non-zero.
-        Qualified digests come from the test-lab qualification results
-        (cap117f reports), not from a file in the repository. A missing
-        or unreadable source is Exit != 0, not a report value.
-
-        Invokes the real producer (scripts/release.sh --dry-run) without
-        --expected-digests, then checks that it exits 2 with the named error."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = self.EPOCH
-        env["PYTHONHASHSEED"] = self.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            python_bin = Path(sys.executable).parent
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = self.EPOCH
-            run_env["PYTHONHASHSEED"] = self.HASHSEED
-
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"),
-                 "1.1.7", "--dry-run"],
-                capture_output=True, text=True,
-                cwd=str(REPO_ROOT),
-                env=run_env,
-            )
-            assert result.returncode == 2, (
-                f"Dry-run without expected digests must exit 2, got {result.returncode}: {result.stderr[:500]}"
-            )
-            combined = result.stdout + result.stderr
-            assert "DigestComparisonError" in combined, (
-                f"Without bundle, must name DigestComparisonError: {combined[:500]}"
-            )
-
-    def test_report_format_includes_digest_fields(self):
-        """The report JSON schema includes sdist and wheel sha256 and size."""
-        report = {
-            "artifacts": {
-                "sdist": {"sha256": "a" * 64, "size": "12345"},
-                "wheel": {"sha256": "b" * 64, "size": "23456"},
-            },
-            "reproducibility": {
-                "source_date_epoch": self.EPOCH,
-                "pythonhashseed": self.HASHSEED,
-            },
-            "comparison": "not compared: no qualified digest bundle provided",
-        }
-        assert len(report["artifacts"]["sdist"]["sha256"]) == 64
-        assert len(report["artifacts"]["wheel"]["sha256"]) == 64
-        assert report["reproducibility"]["source_date_epoch"] == self.EPOCH
-        assert report["reproducibility"]["pythonhashseed"] == self.HASHSEED
-        assert "comparison" in report
-
-
-# ── release.sh --dry-run ─────────────────────────────────────────────────────
+# ── Criterion 3: release.sh --dry-run uses shared writer, no mutation ────────
 
 
 class TestReleaseShDryRun:
-    """scripts/release.sh --dry-run runs the gates and writes a report,
-    creates no tags, and exits with the expected code."""
-
-    def test_dry_run_with_valid_version_exits_zero_and_writes_report(self):
-        """release.sh --dry-run with a valid version and an expected-digests
-        bundle exits 0, outputs JSON, and writes dry-run-report.json to disk."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-        env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            # Build to get actual digests for a matching bundle
-            result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                pytest.skip("build not available")
-
-            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
-            wheel = list(Path(tmp).glob("*.whl"))[0]
-            sdist_sha = subprocess.run(
-                ["shasum", "-a", "256", str(tarball)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-            wheel_sha = subprocess.run(
-                ["shasum", "-a", "256", str(wheel)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-
-            expected = {"sdist_sha256": sdist_sha, "wheel_sha256": wheel_sha}
-            expected_file = Path(tmp) / "expected.json"
-            expected_file.write_text(json.dumps(expected))
-
-            python_bin = Path(sys.executable).parent
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
-
-            run_dir = Path(tmp) / "run"
-            run_dir.mkdir()
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run",
-                 "--expected-digests", str(expected_file)],
-                capture_output=True, text=True,
-                cwd=str(run_dir),
-                env=run_env,
-            )
-            assert result.returncode == 0, (
-                f"Dry-run should exit 0 for valid version, got {result.returncode}: "
-                f"{result.stderr[:500]}"
-            )
-            combined = result.stdout + result.stderr
-            assert "dry_run" in combined, (
-                f"Dry-run report must contain dry_run field: {combined[:500]}"
-            )
-            assert "Dry-run complete" in combined, (
-                f"Dry-run must print completion message: {combined[:500]}"
-            )
-            # The script must write a report file to disk.
-            report_file = Path(run_dir) / "dry-run-report.json"
-            assert report_file.is_file(), (
-                "release.sh --dry-run must write dry-run-report.json to disk"
-            )
-            report = json.loads(report_file.read_text(encoding="utf-8"))
-            assert report.get("dry_run") is True
-            assert "tag" in report
-            assert "gates" in report
-            assert "artifacts" in report
-            assert "before" in report
-            assert "after" in report
-            assert "comparison" in report
+    """scripts/release.sh --dry-run runs the gates, uses the shared report
+    writer, and creates no tags."""
 
     def test_dry_run_with_invalid_version_fails(self):
         """release.sh --dry-run with a version that has no CHANGELOG exits
@@ -594,7 +330,8 @@ class TestReleaseShDryRun:
                 cwd=tmp,
             )
             assert result.returncode != 0, (
-                f"Dry-run with invalid version must exit non-zero, got {result.returncode}"
+                f"Dry-run with invalid version must exit non-zero, "
+                f"got {result.returncode}"
             )
 
     def test_dry_run_does_not_create_tag(self):
@@ -619,153 +356,221 @@ class TestReleaseShDryRun:
             "release.sh --dry-run must not create tags"
         )
 
-    def test_dry_run_with_expected_digests_produces_comparison(self):
-        """When --expected-digests is provided, the report includes a
-        digest comparison (match or mismatch, not 'not compared')."""
-        env_build = os.environ.copy()
-        env_build["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-        env_build["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
+    def test_dry_run_no_mutation_before_gates(self):
+        """Before the gates, release.sh --dry-run must not perform mutations
+        like ruff --fix or rm -rf."""
+        script = SCRIPTS_DIR / "release.sh"
+        content = script.read_text(encoding="utf-8")
+        # Find the dry-run section
+        dry_run_start = content.find("if [ \"$DRY_RUN\" = \"--dry-run\" ]")
+        # The section between dry-run guard and the release creation step
+        # must not contain ruff --fix or rm -rf
+        step2_pos = content.find("# ── Step 2: Bump versions")
+        if step2_pos > dry_run_start:
+            dry_run_section = content[dry_run_start:step2_pos]
+        else:
+            dry_run_section = content[dry_run_start:]
+        assert "ruff --fix" not in dry_run_section, (
+            "dry-run section must not run ruff --fix"
+        )
+        assert "rm -rf" not in dry_run_section, (
+            "dry-run section must not run rm -rf"
+        )
 
-        python_bin = Path(sys.executable).parent
+    def test_tests_pass_only_when_tests_ran(self):
+        """release.sh prints 'Tests pass' only when tests actually ran,
+        not during dry-run mode."""
+        script = SCRIPTS_DIR / "release.sh"
+        content = script.read_text(encoding="utf-8")
+        dry_run_start = content.find("if [ \"$DRY_RUN\" = \"--dry-run\" ]")
+        step2_pos = content.find("# ── Step 2: Bump versions")
+        if step2_pos > dry_run_start:
+            dry_run_section = content[dry_run_start:step2_pos]
+        else:
+            dry_run_section = content[dry_run_start:]
+        assert "Tests pass" not in dry_run_section, (
+            "dry-run section must not print 'Tests pass'"
+        )
 
+    def test_dry_run_uses_shared_report_writer(self):
+        """release.sh --dry-run must call scripts/dry_run_report.py to
+        write the report."""
+        script = SCRIPTS_DIR / "release.sh"
+        content = script.read_text(encoding="utf-8")
+        assert "scripts/dry_run_report.py" in content, (
+            "release.sh must use scripts/dry_run_report.py"
+        )
+
+    def test_release_sh_has_no_digest_code(self):
+        """release.sh must not contain digest build or comparison code —
+        that belongs to RELMODEL-007."""
+        script = SCRIPTS_DIR / "release.sh"
+        content = script.read_text(encoding="utf-8")
+        assert "--expected-digests" not in content, (
+            "release.sh must not have --expected-digests flag (RELMODEL-007)"
+        )
+        assert "expected_digests" not in content, (
+            "release.sh must not have expected_digests logic (RELMODEL-007)"
+        )
+        assert "SOURCE_DATE_EPOCH" not in content, (
+            "release.sh must not have SOURCE_DATE_EPOCH (RELMODEL-007)"
+        )
+        assert "PYTHONHASHSEED" not in content, (
+            "release.sh must not have PYTHONHASHSEED (RELMODEL-007)"
+        )
+
+
+# ── dry_run_report.py (shared writer) ────────────────────────────────────────
+
+
+class TestDryRunReportWriter:
+    """scripts/dry_run_report.py is the single writer shared by the workflow
+    and release.sh --dry-run."""
+
+    def test_report_writer_accepts_all_args_and_writes_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # Build to get actual digests
+            output = Path(tmp) / "report.json"
+            before = json.dumps({"tags": [], "releases": [], "mirror_refs": [],
+                                 "pypi": {}, "ghcr": {}, "tap": []})
+            after = json.dumps({"tags": [], "releases": [], "mirror_refs": [],
+                                "pypi": {}, "ghcr": {}, "tap": []})
             result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
+                [sys.executable, str(SCRIPTS_DIR / "dry_run_report.py"),
+                 "--tag", "v1.0.0",
+                 "--release-name", "Capacium v1.0.0",
+                 "--title-gate", "passed",
+                 "--notes-gate", "passed",
+                 "--audience-gate", "passed",
+                 "--before", before,
+                 "--after", after,
+                 "--output", str(output)],
                 capture_output=True, text=True,
-                env=env_build,
             )
-            if result.returncode != 0:
-                pytest.skip("build not available")
-
-            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
-            wheel = list(Path(tmp).glob("*.whl"))[0]
-            sdist_sha = subprocess.run(
-                ["shasum", "-a", "256", str(tarball)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-            wheel_sha = subprocess.run(
-                ["shasum", "-a", "256", str(wheel)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-
-            # Create expected digests fixture
-            expected = {
-                "sdist_sha256": sdist_sha,
-                "wheel_sha256": wheel_sha,
+            assert result.returncode == 0, (
+                f"Expected exit 0, got {result.returncode}: {result.stderr}"
+            )
+            assert output.is_file(), "Report file must be written"
+            report = json.loads(output.read_text(encoding="utf-8"))
+            assert report["dry_run"] is True
+            assert report["tag"] == "v1.0.0"
+            assert report["release_name"] == "Capacium v1.0.0"
+            assert report["gates"] == {
+                "title": "passed",
+                "notes": "passed",
+                "audience": "passed",
             }
-            expected_file = Path(tmp) / "expected.json"
-            expected_file.write_text(json.dumps(expected))
-
-            # Shim so release.sh's bare 'python3' resolves correctly.
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
-
-            run_dir = Path(tmp) / "run"
-            run_dir.mkdir()
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"),
-                 "1.1.7", "--dry-run",
-                 "--expected-digests", str(expected_file)],
-                capture_output=True, text=True,
-                cwd=str(run_dir),
-                env=run_env,
-            )
-            assert result.returncode == 0, (
-                f"Dry-run with expected digests should exit 0, got {result.returncode}: "
-                f"{result.stderr[:500]}"
-            )
-            combined = result.stdout + result.stderr
-            assert "not compared" not in combined, (
-                f"Report must not say 'not compared' when bundle is provided: {combined[:500]}"
-            )
-            assert "match" in combined or "mismatch" in combined, (
-                f"Report must contain comparison result (match or mismatch): {combined[:500]}"
-            )
-
-    def test_dry_run_report_output_is_valid_json(self):
-        """The stdout of release.sh --dry-run with matching expected digests
-        contains valid JSON, and dry-run-report.json is written to disk."""
-        env = os.environ.copy()
-        env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-        env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
-
-        with tempfile.TemporaryDirectory() as tmp:
-            # Build to get actual digests for a matching bundle
-            result = subprocess.run(
-                [sys.executable, "-m", "build", "--outdir", tmp],
-                cwd=str(REPO_ROOT),
-                capture_output=True, text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                pytest.skip("build not available")
-
-            tarball = list(Path(tmp).glob("*.tar.gz"))[0]
-            wheel = list(Path(tmp).glob("*.whl"))[0]
-            sdist_sha = subprocess.run(
-                ["shasum", "-a", "256", str(tarball)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-            wheel_sha = subprocess.run(
-                ["shasum", "-a", "256", str(wheel)],
-                capture_output=True, text=True,
-            ).stdout.split()[0]
-
-            expected = {"sdist_sha256": sdist_sha, "wheel_sha256": wheel_sha}
-            expected_file = Path(tmp) / "expected.json"
-            expected_file.write_text(json.dumps(expected))
-
-            python_bin = Path(sys.executable).parent
-            shim_dir = Path(tmp) / "shim"
-            shim_dir.mkdir()
-            (shim_dir / "python3").symlink_to(sys.executable)
-
-            run_env = os.environ.copy()
-            run_env["PATH"] = f"{shim_dir}:{python_bin}:{run_env.get('PATH', '')}"
-            run_env["SOURCE_DATE_EPOCH"] = TestReproducibleBuild.EPOCH
-            run_env["PYTHONHASHSEED"] = TestReproducibleBuild.HASHSEED
-
-            run_dir = Path(tmp) / "run"
-            run_dir.mkdir()
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "release.sh"), "1.1.7", "--dry-run",
-                 "--expected-digests", str(expected_file)],
-                capture_output=True, text=True,
-                cwd=str(run_dir),
-                env=run_env,
-            )
-            assert result.returncode == 0, (
-                f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
-            )
-            assert result.returncode == 0, (
-                f"Expected exit 0, got {result.returncode}: {result.stderr[:500]}"
-            )
-            # Extract the JSON block from the output
-            output = result.stdout
-            # Find first { and last }
-            json_start = output.index("{")
-            json_end = output.rindex("}")
-            json_str = output[json_start:json_end + 1]
-            report = json.loads(json_str)
-            assert report.get("dry_run") is True
-            assert "tag" in report
-            assert "gates" in report
-            assert "artifacts" in report or "reproducibility" in report
-            assert "comparison" in report
             assert "before" in report
             assert "after" in report
-            # Verify the report file was written to disk.
-            report_file = Path(run_dir) / "dry-run-report.json"
-            assert report_file.is_file(), (
-                "release.sh --dry-run must write dry-run-report.json to disk"
+
+    def test_report_writer_stores_gate_value_as_given(self):
+        """The writer stores whatever gate value it receives — it does not
+        reinterpret or default a gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.json"
+            before = json.dumps({"tags": []})
+            after = json.dumps({"tags": []})
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "dry_run_report.py"),
+                 "--tag", "v1.0.0",
+                 "--release-name", "Capacium v1.0.0",
+                 "--title-gate", "not run",
+                 "--notes-gate", "failed",
+                 "--audience-gate", "not run",
+                 "--before", before,
+                 "--after", after,
+                 "--output", str(output)],
+                capture_output=True, text=True,
             )
-            disk_report = json.loads(report_file.read_text(encoding="utf-8"))
-            assert disk_report.get("dry_run") is True
+            assert result.returncode == 0, (
+                f"Writer itself exits 0 (caller checks gates): "
+                f"{result.stderr}"
+            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+            assert report["gates"]["title"] == "not run"
+            assert report["gates"]["notes"] == "failed"
+            assert report["gates"]["audience"] == "not run"
+
+    def test_report_writer_rejects_invalid_before_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.json"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "dry_run_report.py"),
+                 "--tag", "v1.0.0",
+                 "--release-name", "Capacium v1.0.0",
+                 "--title-gate", "passed",
+                 "--notes-gate", "passed",
+                 "--audience-gate", "passed",
+                 "--before", "not-json",
+                 "--after", "{}",
+                 "--output", str(output)],
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 2, (
+                f"Expected exit 2 for invalid before JSON, got {result.returncode}"
+            )
+            assert "not valid JSON" in result.stderr
+
+    def test_report_writer_rejects_invalid_after_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "report.json"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS_DIR / "dry_run_report.py"),
+                 "--tag", "v1.0.0",
+                 "--release-name", "Capacium v1.0.0",
+                 "--title-gate", "passed",
+                 "--notes-gate", "passed",
+                 "--audience-gate", "passed",
+                 "--before", "{}",
+                 "--after", "not-json",
+                 "--output", str(output)],
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 2, (
+                f"Expected exit 2 for invalid after JSON, got {result.returncode}"
+            )
+            assert "not valid JSON" in result.stderr
+
+
+# ── Workflow and release.sh produce identical gate fields ─────────────────────
+
+
+class TestProducerConsistency:
+    """The workflow and release.sh --dry-run must produce identical gate
+    fields for identical inputs."""
+
+    def test_both_producers_use_shared_writer(self):
+        """Both the workflow YAML and release.sh reference the same writer
+        script: scripts/dry_run_report.py."""
+        wf = _read_workflow()
+        script = SCRIPTS_DIR / "release.sh"
+        assert "scripts/dry_run_report.py" in wf, (
+            "workflow must use scripts/dry_run_report.py"
+        )
+        assert "scripts/dry_run_report.py" in script.read_text(encoding="utf-8"), (
+            "release.sh must use scripts/dry_run_report.py"
+        )
+
+    def test_both_producers_use_same_gate_names(self):
+        """Both producers must pass the same gate names to the writer:
+        title, notes, audience."""
+        wf = _read_workflow()
+        release_sh = (SCRIPTS_DIR / "release.sh").read_text(encoding="utf-8")
+
+        # The writer accepts --title-gate, --notes-gate, --audience-gate
+        writer = (SCRIPTS_DIR / "dry_run_report.py").read_text(encoding="utf-8")
+        assert "--title-gate" in writer
+        assert "--notes-gate" in writer
+        assert "--audience-gate" in writer
+
+        # Both producers must reference these same argument names
+        for arg in ("--title-gate", "--notes-gate", "--audience-gate"):
+            assert arg in wf, f"workflow missing {arg}"
+            assert arg in release_sh, f"release.sh missing {arg}"
+
+    def test_both_producers_pass_before_and_after(self):
+        """Both producers must pass --before and --after to the writer."""
+        wf = _read_workflow()
+        release_sh = (SCRIPTS_DIR / "release.sh").read_text(encoding="utf-8")
+        for arg in ("--before", "--after"):
+            assert arg in wf, f"workflow missing {arg}"
+            assert arg in release_sh, f"release.sh missing {arg}"
