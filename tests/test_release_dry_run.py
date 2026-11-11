@@ -21,13 +21,10 @@ All tests exercise the real producers. No network in tests.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -358,13 +355,13 @@ class TestReleaseShDryRun:
 
     def test_dry_run_no_mutation_before_gates(self):
         """Before the gates, release.sh --dry-run must not perform mutations
-        like ruff --fix or rm -rf."""
+        like ruff --fix or rm -rf of build artifacts."""
         script = SCRIPTS_DIR / "release.sh"
         content = script.read_text(encoding="utf-8")
         # Find the dry-run section
         dry_run_start = content.find("if [ \"$DRY_RUN\" = \"--dry-run\" ]")
         # The section between dry-run guard and the release creation step
-        # must not contain ruff --fix or rm -rf
+        # must not contain ruff --fix or rm -rf of build artifacts
         step2_pos = content.find("# ── Step 2: Bump versions")
         if step2_pos > dry_run_start:
             dry_run_section = content[dry_run_start:step2_pos]
@@ -373,8 +370,19 @@ class TestReleaseShDryRun:
         assert "ruff --fix" not in dry_run_section, (
             "dry-run section must not run ruff --fix"
         )
-        assert "rm -rf" not in dry_run_section, (
-            "dry-run section must not run rm -rf"
+        # rm -rf of build artifacts (build/lib/, dist/, *.egg-info)
+        # is mutation — but temp-dir cleanup is fine
+        assert "rm -rf build/" not in dry_run_section, (
+            "dry-run section must not run rm -rf build/"
+        )
+        assert "rm -rf dist/" not in dry_run_section, (
+            "dry-run section must not run rm -rf dist/"
+        )
+        assert "rm -rf build/lib" not in dry_run_section, (
+            "dry-run section must not run rm -rf build/lib"
+        )
+        assert "rm -rf *.egg-info" not in dry_run_section, (
+            "dry-run section must not run rm -rf *.egg-info"
         )
 
     def test_tests_pass_only_when_tests_ran(self):

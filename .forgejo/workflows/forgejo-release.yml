@@ -61,53 +61,55 @@ jobs:
           API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
           REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
 
-          # tags: git ls-remote (no auth needed)
-          tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote --tags origin failed"
+          # tags: git ls-remote (no auth needed), 30s timeout
+          tags="$(timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed (timeout or network)"
             exit 2
           }
 
-          # releases: Forgejo API (needs token)
+          # releases: Forgejo API (needs token), 30s timeout
           if [ -z "${GITHUB_TOKEN:-}" ]; then
             echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
             exit 2
           fi
-          releases="$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
+          releases="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
             "${API_URL}/repos/${REPO}/releases?per_page=100" | \
             jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
             echo "ListingError: Forgejo releases API query failed"
             exit 2
           }
 
-          # mirror refs: git ls-remote GitHub mirror
-          mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote GitHub mirror failed"
+          # mirror refs: git ls-remote GitHub mirror, 30s timeout
+          mirror_refs="$(timeout 30 git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed (timeout or network)"
             exit 2
           }
 
-          # PyPI: JSON API is public, no token required
-          pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" | \
+          # PyPI: JSON API is public, no token required, 30s timeout
+          pypi="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://pypi.org/pypi/capacium/json" | \
             jq -c '{releases: (.releases | keys | sort)}')" || {
             echo "ListingError: PyPI API query failed"
             exit 2
           }
 
-          # GHCR: anonymous pull token then tags/list
+          # GHCR: anonymous pull token then tags/list, 30s timeout each
           ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
-          GHCR_BEARER="$(curl -sSf "$ghcr_token_url" | jq -r '.token // empty')" || {
+          GHCR_BEARER="$(curl -sSf --max-time 30 --connect-timeout 10 "$ghcr_token_url" | jq -r '.token // empty')" || {
             echo "ListingError: GHCR anonymous token request failed"
             exit 2
           }
-          ghcr="$(curl -sSf \
+          ghcr="$(curl -sSf --max-time 30 --connect-timeout 10 \
             -H "Authorization: Bearer ${GHCR_BEARER}" \
             "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
             echo "ListingError: GHCR tags/list query failed"
             exit 2
           }
 
-          # Tap: git ls-remote on the tap repo
-          tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote Homebrew tap failed"
+          # Tap: git ls-remote on the tap repo, 30s timeout
+          tap="$(timeout 30 git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed (timeout or network)"
             exit 2
           }
 
@@ -278,8 +280,8 @@ jobs:
           API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
           REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
 
-          tags="$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote --tags origin failed"
+          tags="$(timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed (timeout or network)"
             exit 2
           }
 
@@ -287,38 +289,40 @@ jobs:
             echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
             exit 2
           fi
-          releases="$(curl -sSf -H "Authorization: token ${GITHUB_TOKEN}" \
+          releases="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
             "${API_URL}/repos/${REPO}/releases?per_page=100" | \
             jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
             echo "ListingError: Forgejo releases API query failed"
             exit 2
           }
 
-          mirror_refs="$(git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote GitHub mirror failed"
+          mirror_refs="$(timeout 30 git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed (timeout or network)"
             exit 2
           }
 
-          pypi="$(curl -sSf "https://pypi.org/pypi/capacium/json" | \
+          pypi="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://pypi.org/pypi/capacium/json" | \
             jq -c '{releases: (.releases | keys | sort)}')" || {
             echo "ListingError: PyPI API query failed"
             exit 2
           }
 
           ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
-          GHCR_BEARER="$(curl -sSf "$ghcr_token_url" | jq -r '.token // empty')" || {
+          GHCR_BEARER="$(curl -sSf --max-time 30 --connect-timeout 10 "$ghcr_token_url" | jq -r '.token // empty')" || {
             echo "ListingError: GHCR anonymous token request failed"
             exit 2
           }
-          ghcr="$(curl -sSf \
+          ghcr="$(curl -sSf --max-time 30 --connect-timeout 10 \
             -H "Authorization: Bearer ${GHCR_BEARER}" \
             "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
             echo "ListingError: GHCR tags/list query failed"
             exit 2
           }
 
-          tap="$(git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
-            echo "ListingError: git ls-remote Homebrew tap failed"
+          tap="$(timeout 30 git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed (timeout or network)"
             exit 2
           }
 
