@@ -33,8 +33,11 @@ def build_report(
     audience_gate: str,
     before: dict,
     after: dict,
+    sdist_sha256: str | None = None,
+    wheel_sha256: str | None = None,
+    digest_comparison: str | None = None,
 ) -> dict:
-    return {
+    report: dict = {
         "dry_run": True,
         "tag": tag,
         "release_name": release_name,
@@ -46,6 +49,15 @@ def build_report(
         "before": before,
         "after": after,
     }
+    if sdist_sha256 is not None or wheel_sha256 is not None or digest_comparison is not None:
+        report["digests"] = {}
+        if sdist_sha256 is not None:
+            report["digests"]["sdist_sha256"] = sdist_sha256
+        if wheel_sha256 is not None:
+            report["digests"]["wheel_sha256"] = wheel_sha256
+        if digest_comparison is not None:
+            report["digests"]["comparison"] = digest_comparison
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,6 +89,19 @@ def main(argv: list[str] | None = None) -> int:
         help="after-snapshot JSON with the same six surfaces"
     )
     parser.add_argument(
+        "--sdist-sha256", default=None,
+        help="SHA-256 of the built sdist (optional)"
+    )
+    parser.add_argument(
+        "--wheel-sha256", default=None,
+        help="SHA-256 of the built wheel (optional)"
+    )
+    parser.add_argument(
+        "--digest-comparison", default=None,
+        help="qualified-digests comparison result: matched, mismatch, "
+             "or not compared"
+    )
+    parser.add_argument(
         "--output", default="dry-run-report.json",
         help="output path (default: dry-run-report.json)"
     )
@@ -106,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
         audience_gate=args.audience_gate,
         before=before,
         after=after,
+        sdist_sha256=args.sdist_sha256,
+        wheel_sha256=args.wheel_sha256,
+        digest_comparison=args.digest_comparison,
     )
 
     output = json.dumps(report, indent=2)

@@ -23,10 +23,15 @@ VERSION="${1:-}"
 shift || true
 
 DRY_RUN=""
+QUALIFIED_DIGESTS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)
             DRY_RUN="--dry-run"
+            ;;
+        --qualified-digests)
+            QUALIFIED_DIGESTS="$2"
+            shift
             ;;
         *)
             ;;
@@ -230,27 +235,87 @@ TITLE_GATE_PY
     fi
     echo -e "${GREEN}  Audience gate: ${AUDIENCE_GATE}${NC}"
 
+    # ── Qualified-digests v1: build and compare ────────────────
+    SDIST_SHA256=""
+    WHEEL_SHA256=""
+    DIGEST_COMPARISON=""
+    if [ -n "${QUALIFIED_DIGESTS}" ]; then
+        echo -e "${YELLOW}[dry-run digests] Building sdist and wheel with SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0${NC}"
+        BUILD_DIR="$(mktemp -d)"
+        trap 'rm -rf "$BUILD_DIR"' EXIT
+        SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0 \
+            python3 -m build --sdist --wheel --outdir "$BUILD_DIR" > /dev/null 2>&1 || {
+            echo "BuildError: python -m build failed — build unavailable or broken" >&2
+            exit 2
+        }
+        SDIST_FILE="$(echo "$BUILD_DIR"/*.tar.gz)"
+        WHEEL_FILE="$(echo "$BUILD_DIR"/*.whl)"
+        if [ ! -f "$SDIST_FILE" ] || [ ! -f "$WHEEL_FILE" ]; then
+            echo "BuildError: build completed but sdist or wheel not found" >&2
+            exit 2
+        fi
+        SDIST_SHA256="$(shasum -a 256 "$SDIST_FILE" | awk '{print $1}')"
+        WHEEL_SHA256="$(shasum -a 256 "$WHEEL_FILE" | awk '{print $1}')"
+        echo -e "${GREEN}  sdist sha256: ${SDIST_SHA256}${NC}"
+        echo -e "${GREEN}  wheel sha256: ${WHEEL_SHA256}${NC}"
+
+        SOURCE_TREE="$(git rev-parse HEAD)"
+        echo -e "${YELLOW}[dry-run digests] Comparing against qualified-digests bundle: ${QUALIFIED_DIGESTS}${NC}"
+        set +e
+        DIGEST_COMPARISON="$(python3 scripts/qualified_digests.py compare \
+            "$QUALIFIED_DIGESTS" \
+            --sdist "$SDIST_SHA256" \
+            --wheel "$WHEEL_SHA256" \
+            --source-tree "$SOURCE_TREE" 2>&1)"
+        COMPARE_EXIT=$?
+        set -e
+        if [ $COMPARE_EXIT -eq 0 ]; then
+            DIGEST_COMPARISON="matched"
+            echo -e "${GREEN}  Digest comparison: matched${NC}"
+        else
+            DIGEST_COMPARISON="mismatch"
+            echo -e "${RED}  Digest comparison: mismatch — ${DIGEST_COMPARISON}${NC}"
+        fi
+    fi
+
     # ── After snapshot: same six surfaces ──
     echo -e "${YELLOW}  Capturing after snapshot...${NC}"
     AFTER="$(_listing)"
 
     # Write report via the single shared writer
     echo -e "${GREEN}=== Dry-run report ===${NC}"
+    REPORT_ARGS=(
+        --tag "$TAG"
+        --release-name "$RELEASE_NAME"
+        --title-gate "$TITLE_GATE"
+        --notes-gate "$NOTES_GATE"
+        --audience-gate "$AUDIENCE_GATE"
+        --before "$BEFORE"
+        --after "$AFTER"
+    )
+    if [ -n "$SDIST_SHA256" ]; then
+        REPORT_ARGS+=(--sdist-sha256 "$SDIST_SHA256")
+    fi
+    if [ -n "$WHEEL_SHA256" ]; then
+        REPORT_ARGS+=(--wheel-sha256 "$WHEEL_SHA256")
+    fi
+    if [ -n "$DIGEST_COMPARISON" ]; then
+        REPORT_ARGS+=(--digest-comparison "$DIGEST_COMPARISON")
+    fi
     python3 scripts/dry_run_report.py \
-        --tag "$TAG" \
-        --release-name "$RELEASE_NAME" \
-        --title-gate "$TITLE_GATE" \
-        --notes-gate "$NOTES_GATE" \
-        --audience-gate "$AUDIENCE_GATE" \
-        --before "$BEFORE" \
-        --after "$AFTER" \
+        "${REPORT_ARGS[@]}" \
         --output "$ORIG_CWD/dry-run-report.json"
 
     echo ""
     echo -e "${GREEN}=== Dry-run complete: no tag, release, mirror push, PyPI upload, GHCR push or tap commit was created ===${NC}"
 
-    # Exit non-zero when any gate is 'not run' or 'failed'
+    # Exit non-zero when any gate is 'not run' or 'failed', or digest comparison
+    # is not 'matched'
     if [ "$AUDIENCE_GATE" = "not run" ] || [ "$AUDIENCE_GATE" = "failed" ]; then
+        exit 2
+    fi
+    if [ -n "${QUALIFIED_DIGESTS}" ] && [ "$DIGEST_COMPARISON" != "matched" ]; then
+        echo "DigestMismatchError: qualified-digests comparison did not match" >&2
         exit 2
     fi
     exit 0
