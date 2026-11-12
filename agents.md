@@ -119,7 +119,7 @@ src/capacium/
 - **Naming**: Release titles MUST follow `Capacium vX.Y.Z` format (e.g. `Capacium v0.9.0`). Git tags use bare `vX.Y.Z`.
 - **Pre-release names** also follow the same format: `Capacium vX.Y.Z RC N`.
 - **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
-- **Post-release check**: After creating a release, verify the title matches `Capacium vX.Y.Z` via `gh release view <tag> --json name`.
+- **Post-release check**: After a final release, verify the engine-created release title on Forgejo matches `Capacium vX.Y.Z` (release.sh Step 7b performs this verification via the Forgejo API at release.sh:484-489).
 - **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes
@@ -198,15 +198,20 @@ ruff check src/ --fix && pytest tests/ -q
 
 ## Release Process — ops-engine model
 
-The release object (title, notes, tag) belongs to the **ops-engine layover**
-(`ReleaseHandler`) on **Forgejo**. For a final tag its tag-push path reads the
-tag's `CHANGELOG.md` section, applies the name template and creates the release
-through the Forgejo API. GitHub is **distribution only**: it builds artefacts
-the Forgejo Linux runner cannot (Windows/macOS installers, standalone binaries)
-and attaches them to the existing release — it never creates, edits or deletes
-the release object itself.
+The release object (title, notes, tag) for **final releases** belongs to the
+**ops-engine layover** (`ReleaseHandler`) on **Forgejo**. For a final tag its
+tag-push path reads the tag's `CHANGELOG.md` section, applies the name template
+and creates the release through the Forgejo API. GitHub is **distribution
+only**: it builds artefacts the Forgejo Linux runner cannot (Windows/macOS
+installers, standalone binaries) and attaches them to the existing release — it
+never creates, edits or deletes the release object for a final tag.
 
-In this repository that step is performed by
+For **release candidates**, `.github/workflows/prerelease.yml` creates the tag
+and the GitHub pre-release object (`gh release create` at prerelease.yml:101);
+the Forgejo engine does not create RC release objects (RWC-001: undetermined,
+RWC-003 not dispatched).
+
+For final releases the engine-created release is produced through
 `.forgejo/workflows/forgejo-release.yml` on a `v*.*.*` tag push: it gates the
 title, extracts the notes, runs the external-audience gate, and creates the
 release — or, when it already exists, PATCHes both the title and the body. It
@@ -319,10 +324,14 @@ After every release, you MUST verify:
    ```
    All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
 
-4. **Release title**: Verify the engine-created release title matches
-   `Capacium vX.Y.Z`:
+4. **Release title**: Verify the engine-created release title on Forgejo matches
+   `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b
+   (FORGEJO_API GET at release.sh:467-470, title check at release.sh:484-489).
+   For a manual check:
    ```bash
-   gh release view v0.10.10 --json name
+   curl -sH "Authorization: token ${FORGEJO_TOKEN}" \
+     "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+     | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
    ```
 
 **Guard rails enforced by CI:**
@@ -334,7 +343,7 @@ After every release, you MUST verify:
 - `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
 - `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
 - `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
-- `prerelease.yml`: Triggered manually via workflow_dispatch. Builds binaries, publishes to GitHub Releases as pre-release.
+- `prerelease.yml`: Triggered manually via workflow_dispatch. Creates RC tags and GitHub pre-release objects with a commit-log summary; attaches no binaries.
 - `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
 - `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
 - `publish.yml`: Manual trigger for PyPI workflow.
@@ -356,8 +365,11 @@ ruff check src/ tests/ --fix && pytest tests/ -q
 # 4. Verify CI passed (ci.yml: success + codeql.yml: success)
 gh run list --repo Capacium/capacium --limit 3
 
-# 5. Verify the engine-created release title
-gh release view v0.10.10 --json name
+# 5. Verify the engine-created release title (release.sh Step 7b does this)
+# Manual equivalent:
+curl -sH "Authorization: token \${FORGEJO_TOKEN}" \
+  "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
 ```
 
 **Never:**
