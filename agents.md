@@ -207,8 +207,7 @@ This follows the standard model documented in
 [lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
 For **release candidates**, `.github/workflows/prerelease.yml` creates the tag
-and the GitHub pre-release object (`gh release create` at prerelease.yml:101);
-the Forgejo engine does not create RC release objects.
+and the GitHub pre-release object (`gh release create` at prerelease.yml:101).
 
 The local script (`scripts/release.sh`) is a convenience tool for version bump,
 commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
@@ -217,9 +216,8 @@ create**, the release object: Step 7 issues a read-only `GET` against the
 Forgejo releases API, passes the returned JSON to
 `scripts/check_release_body.py`, and exits non-zero with a named error when the
 release is absent, the body is empty, or the body lacks the tag's CHANGELOG
-section (`ReleaseVerificationError` in `release.sh`; `check_release_body.py`
-names the specific condition `AttachError`). An absent release fails the
-verification; it is never a reason to write one.
+section (`check_release_body.py` names the specific condition `AttachError`).
+An absent release fails the verification; it is never a reason to write one.
 
 ### Dry-run
 
