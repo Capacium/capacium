@@ -103,7 +103,7 @@ if [ "$DRY_RUN" = "--dry-run" ]; then
         fi
         curl -sSf --max-time 30 --connect-timeout 10 \
             -H "Authorization: token ${FORGEJO_TOKEN}" \
-            "https://code.langevc.com/api/v1/repos/capacium/capacium/releases?per_page=100" \
+            "${FORGEJO_API_URL:-https://git.langevc.com/api/v1}/repos/capacium/capacium/releases?per_page=100" \
             > "$tmpdir/releases_raw" || {
             echo "ListingError: Forgejo releases API query failed" >&2
             exit 2

@@ -65,7 +65,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          API_URL="${GITHUB_API_URL:-https://git.langevc.com/api/v1}"
           REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
 
           # tags: git ls-remote (no auth needed), 30s timeout
@@ -354,7 +354,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          API_URL="${GITHUB_API_URL:-https://git.langevc.com/api/v1}"
           REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
 
           tags="$(timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
