@@ -31,6 +31,26 @@ class ManifestDeclarationError(ValueError):
     """Raised when a local source has no valid artifact declaration."""
 
 
+class ManifestYamlSupportError(RuntimeError):
+    """Raised when a YAML manifest must be read but PyYAML is not importable.
+
+    A line-based substitute would silently corrupt nested structures such as
+    bundle ``capabilities``, so reading YAML without PyYAML is refused.
+    """
+
+
+def _require_yaml() -> Any:
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ManifestYamlSupportError(
+            "PyYAML is required to read capability.yaml but is not installed "
+            "in this Python environment. Install it (pip install PyYAML) or "
+            "reinstall capacium."
+        ) from exc
+    return yaml
+
+
 def _first_non_json_path(value: Any, path: str = "") -> Optional[str]:
     """Return a description of the first non-JSON-compatible node, or None.
 
@@ -353,32 +373,14 @@ class Manifest:
     def load(cls, path: Path) -> "Manifest":
         with open(path) as f:
             if path.suffix in (".yaml", ".yml"):
-                try:
-                    import yaml
-                    data = yaml.safe_load(f)
-                except ImportError:
-                    return cls._fallback_load(path)
+                data = _require_yaml().safe_load(f)
             else:
                 data = json.load(f)
         return cls.from_dict(data)
 
     @classmethod
-    def _fallback_load(cls, path: Path) -> "Manifest":
-        with open(path) as f:
-            text = f.read()
-        import re
-        data = {}
-        for match in re.finditer(r'^\s*(\w+)\s*:\s*(.+?)\s*$', text, re.MULTILINE):
-            data[match.group(1)] = match.group(2).strip("\"'")
-        return cls.from_dict(data)
-
-    @classmethod
     def loads(cls, text: str) -> "Manifest":
-        try:
-            import yaml
-            data = yaml.safe_load(text)
-        except ImportError:
-            data = json.loads(text)
+        data = _require_yaml().safe_load(text)
         return cls.from_dict(data)
 
     @classmethod
@@ -400,6 +402,8 @@ class Manifest:
             if path.exists():
                 try:
                     return cls.load(path)
+                except ManifestYamlSupportError:
+                    raise
                 except Exception:
                     continue
 

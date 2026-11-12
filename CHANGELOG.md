@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.1.8] - 2026-11-12
+
+### Fixed
+
+- **Installing a bundle no longer crashes when PyYAML is missing.** Reading a
+  `capability.yaml` without PyYAML used to fall back to a regex reader that
+  turned a bundle's `capabilities` list into a string, so validation iterated
+  characters and the install failed with `'str' object has no attribute 'get'`.
+  Capacium now raises `ManifestYamlSupportError` with an actionable message and
+  no longer swallows it during kind detection. JSON manifests are unaffected.
+
+### Release process
+
+- **GitHub's release workflow is distribution only.** The release object —
+  title and notes — is created once by the ops-engine layover on Forgejo.
+  `.github/workflows/release.yml` no longer creates, edits or deletes it: the
+  attach step resolves the engine-created release for the tag, uploads only
+  the artefacts that are not already attached, and fails closed with a named
+  `AttachError` when no release exists yet. The channel verification table is
+  written to the job summary instead of the release body.
+- **Release notes come from the changelog, not the commit log.** The tag's
+  `CHANGELOG.md` section is the body the engine publishes, and both forges
+  refuse a tag whose section is missing or empty, instead of generating notes
+  from `git log`.
+- **External-audience gate on release notes.** A release body that names this
+  repository's own tracker is refused before publication. The vocabulary is the
+  committed `.ops.yaml` tracker-prefix list, parsed by one shared
+  stdlib-only parser the two jobs both invoke; the checker itself is the
+  pinned ops-engine helper.
+- **The dry-run is one report, measured end to end.** `scripts/release.sh
+  --dry-run` and the Forgejo workflow write the same report through one shared
+  writer. Every gate field is the measured result of a gate that ran; a gate
+  that did not run is recorded as "not run" and the dry-run exits non-zero.
+  Before and after listings of the six publication surfaces (tag, release,
+  mirror ref, PyPI, GHCR, Homebrew tap) bracket the gate and build steps; a
+  failing listing query exits non-zero with a named error and is never stored
+  as a value. The dry-run mutates nothing before its gates.
+- **The dry-run compares reproducible build digests against a qualified
+  bundle.** sdist and wheel are built from the release tree with
+  `SOURCE_DATE_EPOCH=1700000000` and `PYTHONHASHSEED=0` and compared with a
+  qualified-digests v1 bundle taken from the test-lab qualification result. A
+  missing or empty bundle, a different source tree, an unavailable build and a
+  digest mismatch each exit non-zero with a distinct named error.
+- **A guard test keeps release objects on the canonical side.** A workflow that
+  creates a release object outside the ops-engine fails the test suite;
+  known exceptions are listed with a tracking reference.
+
 ## [1.1.7] - 2026-10-23
 
 ### Neutral-Core Boundary
@@ -41,18 +88,6 @@
 
 These notes describe the 1.1.7 candidate. No tag, release, package upload or
 channel publication had occurred when they were written.
-
-## Unreleased
-
-- **Release notes come from the changelog, not the commit log.** Both the
-  Forgejo and GitHub release jobs publish the release body from the matching
-  tag's `CHANGELOG.md` section and fail before creating or editing a release
-  object when the tag has no entry, instead of generating notes from `git log`.
-- **External-audience gate on release notes.** A release body that names this
-  repository's own tracker is refused before publication. The vocabulary is the
-  committed `.ops.yaml` tracker-prefix list, parsed by one shared
-  stdlib-only parser the two jobs both invoke; the checker itself is the
-  pinned ops-engine helper.
 
 ## Capacium v1.1.6 — Universal ecosystem parity and secure defaults (2026-09-28)
 

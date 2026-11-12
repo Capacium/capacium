@@ -325,13 +325,26 @@ class TestCanonicalTitle:
         assert r"^Capacium v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?$" in text
         assert 'RELEASE_NAME="Capacium ${TAG_NAME}"' in text
 
-    def test_github_release_uses_canonical_title(self):
-        workflow = yaml.safe_load(_workflow_text(GITHUB_WORKFLOW))
-        steps = workflow["jobs"]["create-release"]["steps"]
-        release = next(
-            step for step in steps if step.get("name") == "Create GitHub Release"
-        )
-        assert release["with"]["name"] == "Capacium ${{ github.ref_name }}"
+    def test_github_workflow_does_not_set_a_release_title(self):
+        """The GitHub release object and its title belong to the engine
+        layover; release.yml must not set a title, and therefore cannot
+        contradict the canonical ``Capacium vX.Y.Z`` form the Forgejo gate
+        enforces."""
+        text = _workflow_text(GITHUB_WORKFLOW)
+        workflow = yaml.safe_load(text)
+        for job in workflow["jobs"].values():
+            for step in job.get("steps") or []:
+                # Only steps that address a release can carry its title/body.
+                haystack = "\n".join(
+                    part for part in (step.get("uses"), step.get("run")) if part
+                )
+                if "release" not in haystack:
+                    continue
+                with_ = step.get("with") or {}
+                assert "name" not in with_, step.get("name")
+                assert "body" not in with_, step.get("name")
+                assert "body_path" not in with_, step.get("name")
+        assert "Capacium ${{ github.ref_name }}" not in text
 
 
 class TestNoCommitDumpGeneration:
@@ -389,14 +402,15 @@ class TestGateFetchIsProvenBeforeExecution:
         assert "release_notes_audience_gate.py" in text
         assert "ast.parse" in text
         assert "--ticket-prefixes" in text
-        # The gate must run BEFORE the release is created, i.e. in the same
-        # "Generate and gate release notes" step that precedes action-gh-release.
+        # The gate must run BEFORE any asset is attached: GitHub still refuses
+        # a tag whose notes the Forgejo gate would reject, even though it no
+        # longer writes the notes anywhere.
         workflow = yaml.safe_load(text)
-        steps = workflow["jobs"]["create-release"]["steps"]
+        steps = workflow["jobs"]["attach-assets"]["steps"]
         names = [step.get("name", "") for step in steps]
-        gate_idx = names.index("Generate and gate release notes")
-        release_idx = names.index("Create GitHub Release")
-        assert gate_idx < release_idx
+        gate_idx = names.index("Gate the changelog entry for this tag")
+        attach_idx = names.index("Attach assets to the engine-created release")
+        assert gate_idx < attach_idx
 
     def test_no_hardcoded_credentials_in_release_workflows(self):
         for path in (FORGEJO_WORKFLOW, GITHUB_WORKFLOW):
@@ -429,12 +443,12 @@ class TestPostTagTruth:
 
     def test_gate_mechanics_moved_to_unreleased(self):
         # The changelog-extraction and audience-gate tooling was not in the
-        # v1.1.1 tag; it is future work, so it belongs under "Unreleased", not
-        # inside the v1.1.1 entry.
+        # v1.1.1 tag; it belongs to a later release section (or "Unreleased"),
+        # never inside the v1.1.1 entry.
         text = CHANGELOG.read_text(encoding="utf-8")
-        unreleased = text.split("## Unreleased", 1)[1].split("## Capacium v1.1.1", 1)[0]
-        assert "changelog" in unreleased.lower()
-        assert "audience" in unreleased.lower()
+        later = text.split("## Capacium v1.1.1", 1)[0]
+        assert "changelog" in later.lower()
+        assert "audience" in later.lower()
         v1_1_1 = text.split("## Capacium v1.1.1", 1)[1].split("## Capacium v1.1.0", 1)[0]
         assert "External-audience gate" not in v1_1_1
         assert "from this changelog" not in v1_1_1
