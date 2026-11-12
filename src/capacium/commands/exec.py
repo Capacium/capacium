@@ -97,7 +97,7 @@ def _write_pointer(path: Path, value: str) -> None:
     tmp = Path(str(path) + ".tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(value.strip() + "\n")
-    tmp.rename(path)
+    tmp.replace(path)
 
 
 def _read_pointer(path: Path) -> Optional[str]:
