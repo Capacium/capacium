@@ -198,17 +198,33 @@ ruff check src/ --fix && pytest tests/ -q
 
 ## Release Process — ops-engine model
 
-The release object (title, notes, tag) is created on **Forgejo** by the
-**ops-engine layover** (`ReleaseHandler`), not by any per-repo workflow.
-GitHub is **distribution only**: it builds artefacts the Forgejo Linux runner
-cannot (Windows/macOS installers, standalone binaries) and attaches them to the
-existing release — it never creates, edits or deletes the release object itself.
-This follows the standard model documented in
+The release object (title, notes, tag) belongs to the **ops-engine layover**
+(`ReleaseHandler`) on **Forgejo**. For a final tag its tag-push path reads the
+tag's `CHANGELOG.md` section, applies the name template and creates the release
+through the Forgejo API. GitHub is **distribution only**: it builds artefacts
+the Forgejo Linux runner cannot (Windows/macOS installers, standalone binaries)
+and attaches them to the existing release — it never creates, edits or deletes
+the release object itself.
+
+In this repository that step is performed by
+`.forgejo/workflows/forgejo-release.yml` on a `v*.*.*` tag push: it gates the
+title, extracts the notes, runs the external-audience gate, and creates the
+release — or, when it already exists, PATCHes both the title and the body. It
+applies the engine's gates and title/body definition, so the resulting object is
+the one the model requires whichever path produced it. This follows the standard
+model documented in
 [lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
 The local script (`scripts/release.sh`) is a convenience tool for version bump,
 commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
-runs the same gates the Forgejo workflow would run.
+runs the same gates the Forgejo workflow would run. It **verifies, it does not
+create**, the release object: Step 7 issues a read-only `GET` against the
+Forgejo releases API, passes the returned JSON to
+`scripts/check_release_body.py`, and exits non-zero with a named error when the
+release is absent, the body is empty, or the body lacks the tag's CHANGELOG
+section (`ReleaseVerificationError` in `release.sh`; `check_release_body.py`
+names the specific condition `AttachError`). An absent release fails the
+verification; it is never a reason to write one.
 
 ### Dry-run
 
@@ -272,9 +288,11 @@ when:
 - The body is empty or contains only whitespace.
 - The body does not contain the tag's extracted CHANGELOG section.
 
-The repository **never writes the release body** — the ops-engine layover on
-Forgejo owns the release object. The attach step is a read-only detector that
-fails closed: no release body, no artefacts attached.
+The GitHub distribution job **never writes the release body on GitHub** — the
+ops-engine layover on Forgejo owns the object it reads. The attach step is a
+read-only detector that fails closed: no release body, no artefacts attached.
+(The Forgejo workflow that owns the object does author its body — see
+"Release Process — ops-engine model" above.)
 
 ### Post-Release Verification (MANDATORY)
 
