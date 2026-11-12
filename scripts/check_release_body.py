@@ -8,14 +8,16 @@ is empty or does not contain the notes.
 
 Usage::
 
-    check_release_body.py <tag> [--body PATH] [--changelog PATH]
+    check_release_body.py <tag> [--body PATH] [--release-json PATH] [--changelog PATH]
 
-The body is read from *--body* (or stdin). The expected notes are extracted
-from the changelog using ``extract_changelog_notes.py`` (same directory).
+The body is read from *--body* (or stdin), or extracted from a GitHub release
+JSON payload via *--release-json*. The expected notes are extracted from the
+changelog using ``extract_changelog_notes.py`` (same directory).
 """
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -54,6 +56,30 @@ def check_body(body: str, notes: str, tag: str) -> None:
         )
 
 
+def load_release_body_from_json(path: Path, tag: str) -> str:
+    """Return the body field from a GitHub release JSON response.
+
+    *path* must be a file containing the JSON payload returned by
+    ``GET /repos/{owner}/{repo}/releases/tags/{tag}``.  When the payload has
+    no ``id`` field (the shape of a 404 or other error response) an
+    ``AttachError`` is raised with the release-missing message.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise AttachError(
+            f"could not read the release for tag {tag}: {exc}"
+        ) from exc
+
+    if not isinstance(data.get("id"), int):
+        raise AttachError(
+            f"no release object exists for tag {tag}; the ops-engine "
+            "layover creates it before this step may attach"
+        )
+
+    return data.get("body") or ""
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag", help="release tag, e.g. v1.1.8")
@@ -62,13 +88,24 @@ def main(argv=None) -> int:
         help="path to a file containing the release body (default: stdin)",
     )
     parser.add_argument(
+        "--release-json",
+        type=Path,
+        help="path to a GitHub release JSON payload (API response)",
+    )
+    parser.add_argument(
         "--changelog",
         default="CHANGELOG.md",
         help="path to the changelog (default: CHANGELOG.md)",
     )
     args = parser.parse_args(argv)
 
-    if args.body:
+    if args.release_json:
+        try:
+            body = load_release_body_from_json(args.release_json, args.tag)
+        except AttachError as exc:
+            sys.stderr.write(f"AttachError: {exc}\n")
+            return 2
+    elif args.body:
         body = Path(args.body).read_text(encoding="utf-8")
     else:
         body = sys.stdin.read()

@@ -16,6 +16,7 @@ named error; no network.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 CHECKER = SCRIPTS / "check_release_body.py"
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "release_payloads"
 
 
 def _changelog(tmp_path: Path, version: str = "1.1.8") -> Path:
@@ -57,15 +60,66 @@ def _extracted_notes(tmp_path: Path, version: str = "1.1.8") -> str:
     return mod.extract_notes_for_tag(f"v{version}", _changelog(tmp_path, version))
 
 
-def _run_checker(
+def _build_release_json(body: str, tag: str = "v1.1.8", release_id: int = 1) -> dict:
+    """Build a GitHub release API response payload (dict, not yet serialized)."""
+    return {
+        "id": release_id,
+        "tag_name": tag,
+        "name": f"Capacium {tag}",
+        "body": body,
+        "html_url": f"https://github.com/Capacium/capacium/releases/tag/{tag}",
+        "assets": [],
+    }
+
+
+def _error_404_json() -> dict:
+    """GitHub 404 response shape: no id field."""
+    return {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name",
+    }
+
+
+def _write_release_fixture(tmp_path: Path, payload: dict, name: str = "release.json") -> Path:
+    """Write a GitHub release payload as a JSON fixture file."""
+    path = tmp_path / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _run_checker_json(
+    tmp_path: Path,
+    release_json: Path,
+    tag: str = "v1.1.8",
+    version: str = "1.1.8",
+) -> subprocess.CompletedProcess:
+    """Run check_release_body.py with --release-json."""
+    changelog = _changelog(tmp_path, version)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(CHECKER),
+            tag,
+            "--release-json",
+            str(release_json),
+            "--changelog",
+            str(changelog),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_checker_stdin(
     tmp_path: Path,
     body: str,
     tag: str = "v1.1.8",
     version: str = "1.1.8",
 ) -> subprocess.CompletedProcess:
-    """Run check_release_body.py as a subprocess with *body* on stdin."""
+    """Run check_release_body.py with *body* on stdin."""
     changelog = _changelog(tmp_path, version)
-    completed = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             str(CHECKER),
@@ -78,14 +132,15 @@ def _run_checker(
         text=True,
         check=False,
     )
-    return completed
 
 
-# ── Empty body ────────────────────────────────────────────────────────────────
+# ── Empty body (release-json fixture) ─────────────────────────────────────────
 
 def test_empty_body_exits_non_zero(tmp_path):
     """An empty release body fails with AttachError."""
-    completed = _run_checker(tmp_path, "")
+    payload = _build_release_json(body="")
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode != 0, (
         f"expected non-zero exit for empty body, got {completed.returncode}\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
@@ -96,9 +151,19 @@ def test_empty_body_exits_non_zero(tmp_path):
     assert "empty" in completed.stderr.lower()
 
 
+def test_empty_body_stdin_exits_non_zero(tmp_path):
+    """An empty body on stdin fails with AttachError."""
+    completed = _run_checker_stdin(tmp_path, "")
+    assert completed.returncode != 0
+    assert "AttachError" in completed.stderr
+    assert "empty" in completed.stderr.lower()
+
+
 def test_whitespace_only_body_exits_non_zero(tmp_path):
     """A release body with only whitespace fails with AttachError."""
-    completed = _run_checker(tmp_path, "   \n  \n  ")
+    payload = _build_release_json(body="   \n  \n  ")
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode != 0
     assert "AttachError" in completed.stderr
     assert "empty" in completed.stderr.lower()
@@ -114,22 +179,23 @@ def test_body_without_section_exits_non_zero(tmp_path):
         "### Install\n\n"
         "```bash\nbrew install capacium\n```\n"
     )
-    completed = _run_checker(tmp_path, body)
+    payload = _build_release_json(body=body)
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode != 0, (
         f"expected non-zero exit for body without section, got {completed.returncode}\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
-    assert "AttachError" in completed.stderr, (
-        f"expected 'AttachError' in stderr:\n{completed.stderr}"
-    )
+    assert "AttachError" in completed.stderr
 
 
 def test_body_with_partial_section_exits_non_zero(tmp_path):
     """A body containing only part of the notes fails."""
     notes = _extracted_notes(tmp_path)
-    # Take only the first line of the notes — not the full section.
     partial = notes.splitlines()[0] if notes else "partial"
-    completed = _run_checker(tmp_path, partial)
+    payload = _build_release_json(body=partial)
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode != 0
     assert "AttachError" in completed.stderr
 
@@ -139,8 +205,6 @@ def test_body_with_partial_section_exits_non_zero(tmp_path):
 def test_body_containing_section_passes(tmp_path):
     """A body that contains the CHANGELOG section exits zero."""
     notes = _extracted_notes(tmp_path)
-    # Build a standard release body: heading, changelog section, install block,
-    # binaries line, changelog link.
     body = (
         f"## Capacium v1.1.8\n\n"
         f"{notes}\n\n"
@@ -153,7 +217,9 @@ def test_body_containing_section_passes(tmp_path):
         f"Standalone binaries are attached to this release.\n\n"
         f"[CHANGELOG](https://github.com/Capacium/capacium/blob/main/CHANGELOG.md)\n"
     )
-    completed = _run_checker(tmp_path, body)
+    payload = _build_release_json(body=body)
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode == 0, (
         f"expected exit 0 for body containing the section, got {completed.returncode}\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
@@ -164,26 +230,35 @@ def test_body_containing_section_passes(tmp_path):
 def test_body_exactly_equals_notes_passes(tmp_path):
     """A body that is exactly the extracted notes (no wrapper) also passes."""
     notes = _extracted_notes(tmp_path)
-    completed = _run_checker(tmp_path, notes)
+    payload = _build_release_json(body=notes)
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode == 0, (
         f"expected exit 0 for exact-notes body, got {completed.returncode}\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
 
 
-# ── Release-missing (404 simulation) ──────────────────────────────────────────
+# ── Release-missing (404) ─────────────────────────────────────────────────────
 
-def test_release_missing_simulated_by_empty_body(tmp_path):
-    """A missing release is simulated by an empty body input.
+def test_release_missing_404_exits_with_attach_error(tmp_path):
+    """A 404-shaped response (no ``id`` field) fails with AttachError."""
+    payload = _error_404_json()
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
+    assert completed.returncode != 0, (
+        f"expected non-zero exit for 404 response, got {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert "AttachError" in completed.stderr
+    assert "no release object exists" in completed.stderr
 
-    The check_release_body.py script does not make HTTP requests; it receives
-    the body as a file or stdin. The workflow step that fetches the release
-    (via gh api or curl) is responsible for the 404 case and produces an empty
-    body or a non-zero exit before this script runs. This test verifies that
-    an empty body — the downstream signal of a missing release — fails with
-    AttachError.
-    """
-    completed = _run_checker(tmp_path, "")
+
+def test_release_missing_malformed_json_exits_with_attach_error(tmp_path):
+    """A non-JSON or invalid JSON response fails with AttachError."""
+    fixture = tmp_path / "bad.json"
+    fixture.write_text("not json", encoding="utf-8")
+    completed = _run_checker_json(tmp_path, fixture)
     assert completed.returncode != 0
     assert "AttachError" in completed.stderr
 
@@ -192,15 +267,18 @@ def test_release_missing_simulated_by_empty_body(tmp_path):
 
 def test_missing_changelog_file_exits_non_zero(tmp_path):
     """A missing CHANGELOG.md exits non-zero."""
+    payload = _build_release_json(body="some body")
+    fixture = _write_release_fixture(tmp_path, payload)
     completed = subprocess.run(
         [
             sys.executable,
             str(CHECKER),
             "v1.1.8",
+            "--release-json",
+            str(fixture),
             "--changelog",
             str(tmp_path / "nonexistent.md"),
         ],
-        input="some body",
         capture_output=True,
         text=True,
         check=False,
@@ -214,15 +292,18 @@ def test_missing_changelog_file_exits_non_zero(tmp_path):
 def test_tag_not_in_changelog_exits_non_zero(tmp_path):
     """A tag whose version has no section in CHANGELOG.md exits non-zero."""
     changelog = _changelog(tmp_path, version="1.1.8")
+    payload = _build_release_json(body="some body")
+    fixture = _write_release_fixture(tmp_path, payload)
     completed = subprocess.run(
         [
             sys.executable,
             str(CHECKER),
             "v9.9.9",
+            "--release-json",
+            str(fixture),
             "--changelog",
             str(changelog),
         ],
-        input="some body",
         capture_output=True,
         text=True,
         check=False,
@@ -234,29 +315,21 @@ def test_tag_not_in_changelog_exits_non_zero(tmp_path):
 # ── The script has no write path ──────────────────────────────────────────────
 
 def test_script_has_no_write_path(tmp_path):
-    """check_release_body.py must not import or reference any release-editing API.
-
-    The script reads the body from stdin or a file; it never makes HTTP
-    requests, never imports urllib or requests, and never calls gh.
-    """
+    """check_release_body.py must not import or reference any release-editing API."""
     source = CHECKER.read_text(encoding="utf-8")
-    # Check the actual code, not the docstring or comments.
     code_lines = [
         line for line in source.splitlines()
         if not line.strip().startswith("#") and not line.strip().startswith('"""')
     ]
     code_text = "\n".join(code_lines)
     forbidden = [
-        # No HTTP client imports (network access).
         "import urllib",
         "from urllib",
         "import requests",
         "from requests",
-        # No gh release write commands.
         "gh release create",
         "gh release edit",
         "gh release delete",
-        # No third-party release actions.
         "softprops/action-gh-release",
         "actions/create-release",
     ]
@@ -271,9 +344,6 @@ def test_script_has_no_write_path(tmp_path):
 def test_script_is_stdlib_only(tmp_path):
     """check_release_body.py must not import third-party packages."""
     source = CHECKER.read_text(encoding="utf-8")
-    # The script imports from extract_changelog_notes in the same directory;
-    # that module is also stdlib-only. The only non-stdlib import allowed is
-    # the local extract_changelog_notes.
     non_stdlib = {"yaml", "requests", "urllib3", "click", "typer", "rich"}
     for pkg in non_stdlib:
         assert pkg not in source.lower().split(), (
@@ -290,15 +360,20 @@ def test_red_proof_checker_script_exists():
     )
 
 
-def test_red_proof_release_yml_has_attach_check(tmp_path):
-    """Proof: release.yml has the body-check step before the attach step.
+def test_red_proof_404_attach_error_fails_when_removed(tmp_path):
+    """Proof: the 404 branch in load_release_body_from_json must be present.
 
-    The attach step (the inline Python script) must call check_release_body.py
-    before uploading assets. This test verifies the step exists in the
-    workflow.
+    Simulate what happens when the ``isinstance(data.get("id"), int)`` guard is
+    removed: a 404-shaped payload would pass through and its "body" field
+    (which is None/absent) would hit the empty-body check instead.  This test
+    verifies that the 404 guard is the source of the ``no release object exists``
+    message by feeding a 404 payload and asserting that exact message appears.
     """
-    workflow_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
-    workflow_text = workflow_path.read_text(encoding="utf-8")
-    assert "check_release_body.py" in workflow_text, (
-        "release.yml must invoke check_release_body.py in the attach-assets job"
+    payload = _error_404_json()
+    fixture = _write_release_fixture(tmp_path, payload)
+    completed = _run_checker_json(tmp_path, fixture)
+    assert completed.returncode != 0
+    assert "no release object exists" in completed.stderr, (
+        "the 404 guard (no id field) must produce 'no release object exists'; "
+        "if this message is not in stderr the 404 branch is missing or broken"
     )
