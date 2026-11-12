@@ -286,7 +286,8 @@ TITLE_GATE_PY
         "$QUALIFIED_DIGESTS" \
         --sdist "$SDIST_SHA256" \
         --wheel "$WHEEL_SHA256" \
-        --source-tree "$SOURCE_TREE" 2>"$COMPARE_STDERR")"
+        --source-tree "$SOURCE_TREE" \
+        --repo "$REPO_DIR" 2>"$COMPARE_STDERR")"
     COMPARE_EXIT=$?
     set -e
     if [ $COMPARE_EXIT -eq 0 ]; then
@@ -298,6 +299,7 @@ TITLE_GATE_PY
         COMPARE_ERROR_TEXT="$(cat "$COMPARE_STDERR")"
         case "$COMPARE_ERROR_TEXT" in
             *QualifiedDigestBundleError*)  COMPARE_ERROR_NAME="QualifiedDigestBundleError" ;;
+            *QualifiedDigestSourceUnresolvableError*) COMPARE_ERROR_NAME="QualifiedDigestSourceUnresolvableError" ;;
             *QualifiedDigestSourceTreeError*) COMPARE_ERROR_NAME="QualifiedDigestSourceTreeError" ;;
             *QualifiedDigestMismatchError*) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
             *) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
