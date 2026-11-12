@@ -235,8 +235,8 @@ result by `scripts/qualified_digests.py`. It contains `sdist_sha256`,
 `scripts/release.sh --dry-run` with the `--qualified-digests` bundle is the
 **authoritative dry-run producer** because the Forgejo workflow
 (`forgejo-release.yml` `dry_run` input) cannot reach the bundle — the bundle
-lives on the operator's workstation or CI runner, not inside the workflow's
-container. Only the local script can pass the actual bundle path to the compare
+comes from the test-lab qualification result (capacium-test-lab), not inside
+the workflow's container. Only the local script can pass the actual bundle path to the compare
 step. The report is written through `scripts/dry_run_report.py`, the single
 shared writer.
 
@@ -245,9 +245,10 @@ shared writer.
 A **reduced controller qualification** (full test suite, reproducible builds
 with `SOURCE_DATE_EPOCH=1700000000` and `PYTHONHASHSEED=0`, recorded as a
 test-lab result) suffices for **patch releases** (Z in X.Y.Z). The full lane
-campaign — all three release gate lanes (attach, qualified-tree and
-documentation) — is required for **minor releases or contract changes** (Y in
-X.Y.Z or a CIP that alters the normative contracts).
+campaign — the test-lab qualification (multiple phases, lanes, approximately
+25 receipts, independent review) as demonstrated in the 1.1.7 correction — is
+required for **minor releases or contract changes** (Y in X.Y.Z or a CIP that
+alters the normative contracts).
 
 ### Release-Body Standard
 
