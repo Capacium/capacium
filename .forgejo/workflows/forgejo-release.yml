@@ -15,6 +15,12 @@ name: Create Forgejo Release
 #
 # The extraction is one implementation shared with the GitHub release job
 # (scripts/extract_changelog_notes.py), not a second, drifting copy.
+#
+# The dry-run path (workflow_dispatch with dry_run: true) runs the same gates
+# bracketed by before/after listings of all six publication surfaces and writes
+# the report through scripts/dry_run_report.py, the single writer shared with
+# scripts/release.sh --dry-run. Qualified digest comparison is out of scope
+# here and belongs to RELMODEL-007.
 
 on:
   push:
@@ -26,6 +32,11 @@ on:
         description: "Tag to create release for (e.g. v1.0.0)"
         required: true
         type: string
+      dry_run:
+        description: "Run gates with before/after listings but create nothing"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release:
@@ -34,6 +45,83 @@ jobs:
       - uses: https://github.com/actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # ── Dry-run before listing ──────────────────────────────────
+      # The before snapshot is taken before any gate runs. A listing
+      # query that fails (non-2xx, timeout, TLS error, missing token)
+      # exits non-zero with a named error and is never stored as a
+      # report value.
+      - name: Dry-run before snapshot
+        id: dry_run_before
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
+
+          # tags: git ls-remote (no auth needed), 30s timeout
+          tags="$(timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed (timeout or network)"
+            exit 2
+          }
+
+          # releases: Forgejo API (needs token), 30s timeout
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
+            exit 2
+          fi
+          releases="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            "${API_URL}/repos/${REPO}/releases?per_page=100" | \
+            jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
+            echo "ListingError: Forgejo releases API query failed"
+            exit 2
+          }
+
+          # mirror refs: git ls-remote GitHub mirror, 30s timeout
+          mirror_refs="$(timeout 30 git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed (timeout or network)"
+            exit 2
+          }
+
+          # PyPI: JSON API is public, no token required, 30s timeout
+          pypi="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://pypi.org/pypi/capacium/json" | \
+            jq -c '{releases: (.releases | keys | sort)}')" || {
+            echo "ListingError: PyPI API query failed"
+            exit 2
+          }
+
+          # GHCR: anonymous pull token then tags/list, 30s timeout each
+          ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
+          GHCR_BEARER="$(curl -sSf --max-time 30 --connect-timeout 10 "$ghcr_token_url" | jq -r '.token // empty')" || {
+            echo "ListingError: GHCR anonymous token request failed"
+            exit 2
+          }
+          ghcr="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: Bearer ${GHCR_BEARER}" \
+            "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
+            echo "ListingError: GHCR tags/list query failed"
+            exit 2
+          }
+
+          # Tap: git ls-remote on the tap repo, 30s timeout
+          tap="$(timeout 30 git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed (timeout or network)"
+            exit 2
+          }
+
+          BEFORE=$(jq -n -c \
+            --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson releases_arg "$(echo "$releases" | jq -c .)" \
+            --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson pypi_arg "$(echo "$pypi" | jq -c .)" \
+            --argjson ghcr_arg "$(echo "$ghcr" | jq -c .)" \
+            --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}')
+          echo "before=${BEFORE}" >> "$GITHUB_OUTPUT"
 
       # The release title is a gate, not an agreement. A tag whose rendered
       # title does not conform is refused here, before any release object
@@ -65,6 +153,7 @@ jobs:
           sys.stdout.write("title gate: %r conforms\n" % name)
           TITLE_GATE_PY
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "title_gate=passed" >> "$GITHUB_OUTPUT"
 
       # The body is the CHANGELOG entry for this version. A tag whose version
       # has no section — or an empty one — fails here, before any release
@@ -82,6 +171,7 @@ jobs:
             echo "${NOTES}"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "notes_gate=passed" >> "$GITHUB_OUTPUT"
 
       # Generic tooling lives in the open base. ops-engine is OSS and publicly
       # mirrored, so this needs no credential. Pinned to the v3.4.2 tag.
@@ -109,6 +199,7 @@ jobs:
       # That vocabulary is the committed .ops.yaml, not a shell literal, so a
       # reviewer can see and change the list.
       - name: Gate the release notes for an external audience
+        id: audience
         env:
           NOTES: "${{ steps.notes.outputs.notes }}"
         run: |
@@ -121,8 +212,10 @@ jobs:
           python3 "$RUNNER_TEMP/release_notes_audience_gate.py" \
             --ticket-prefixes "$PREFIXES_FILE" \
             "$NOTES_FILE"
+          echo "audience_gate=passed" >> "$GITHUB_OUTPUT"
 
       - name: Create or re-assert the Forgejo release
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
@@ -150,10 +243,6 @@ jobs:
           fi
 
           if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
-            # The release already exists. Forgejo has no `gh release edit`;
-            # PATCH by tag. Both the canonical title AND the extracted notes are
-            # written: repairing only the title is what left a stale body in
-            # place after a re-run.
             echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting canonical title and notes."
             PATCH_PAYLOAD=$(jq -n \
               --arg name "$RELEASE_NAME" \
@@ -176,3 +265,117 @@ jobs:
           echo "Failed to create release. HTTP $HTTP_STATUS"
           cat response.json
           exit 1
+
+      # ── Dry-run after listing ───────────────────────────────────
+      # The after snapshot is taken after the gates ran, bracketing them
+      # together with the before snapshot. A listing query that fails
+      # exits non-zero — it is never stored as a report value.
+      - name: Dry-run after snapshot
+        id: dry_run_after
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API_URL="${GITHUB_API_URL:-https://code.langevc.com/api/v1}"
+          REPO="${GITHUB_REPOSITORY:-capacium/capacium}"
+
+          tags="$(timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote --tags origin failed (timeout or network)"
+            exit 2
+          }
+
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "ListingError: GITHUB_TOKEN is not set — cannot list releases"
+            exit 2
+          fi
+          releases="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            "${API_URL}/repos/${REPO}/releases?per_page=100" | \
+            jq -c '[.[] | {id, tag_name, name, draft, prerelease}]')" || {
+            echo "ListingError: Forgejo releases API query failed"
+            exit 2
+          }
+
+          mirror_refs="$(timeout 30 git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote GitHub mirror failed (timeout or network)"
+            exit 2
+          }
+
+          pypi="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://pypi.org/pypi/capacium/json" | \
+            jq -c '{releases: (.releases | keys | sort)}')" || {
+            echo "ListingError: PyPI API query failed"
+            exit 2
+          }
+
+          ghcr_token_url="https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io"
+          GHCR_BEARER="$(curl -sSf --max-time 30 --connect-timeout 10 "$ghcr_token_url" | jq -r '.token // empty')" || {
+            echo "ListingError: GHCR anonymous token request failed"
+            exit 2
+          }
+          ghcr="$(curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: Bearer ${GHCR_BEARER}" \
+            "https://ghcr.io/v2/capacium/cap/tags/list" | jq -c .)" || {
+            echo "ListingError: GHCR tags/list query failed"
+            exit 2
+          }
+
+          tap="$(timeout 30 git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort)" || {
+            echo "ListingError: git ls-remote Homebrew tap failed (timeout or network)"
+            exit 2
+          }
+
+          AFTER=$(jq -n -c \
+            --argjson tags_arg "$(echo "$tags" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson releases_arg "$(echo "$releases" | jq -c .)" \
+            --argjson mirror_refs_arg "$(echo "$mirror_refs" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            --argjson pypi_arg "$(echo "$pypi" | jq -c .)" \
+            --argjson ghcr_arg "$(echo "$ghcr" | jq -c .)" \
+            --argjson tap_arg "$(echo "$tap" | jq -R -s 'split("\n") | map(select(. != ""))')" \
+            '{tags: $tags_arg, releases: $releases_arg, mirror_refs: $mirror_refs_arg, pypi: $pypi_arg, ghcr: $ghcr_arg, tap: $tap_arg}')
+          echo "after=${AFTER}" >> "$GITHUB_OUTPUT"
+
+      # ── Dry-run report: single writer shared with release.sh ─────
+      - name: Dry-run write report
+        id: dry_run_report
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        env:
+          TAG_NAME: "${{ github.event.inputs.tag_name }}"
+          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
+          TITLE_GATE: "${{ steps.title.outputs.title_gate }}"
+          NOTES_GATE: "${{ steps.notes.outputs.notes_gate }}"
+          AUDIENCE_GATE: "${{ steps.audience.outputs.audience_gate }}"
+          BEFORE: "${{ steps.dry_run_before.outputs.before }}"
+          AFTER: "${{ steps.dry_run_after.outputs.after }}"
+        run: |
+          set -euo pipefail
+          echo "=== Dry-run report ==="
+          python3 scripts/dry_run_report.py \
+            --tag "$TAG_NAME" \
+            --release-name "$RELEASE_NAME" \
+            --title-gate "${TITLE_GATE:-not run}" \
+            --notes-gate "${NOTES_GATE:-not run}" \
+            --audience-gate "${AUDIENCE_GATE:-not run}" \
+            --before "$BEFORE" \
+            --after "$AFTER" \
+            --output dry-run-report.json
+
+          # Check: a gate recorded as 'not run' means a step failed to
+          # produce its output, which must be refused.
+          echo "report=$(jq -c . dry-run-report.json)" >> "$GITHUB_OUTPUT"
+          for gate in title notes audience; do
+            VAL="$(jq -r ".gates.${gate}" dry-run-report.json)"
+            if [ "$VAL" = "not run" ]; then
+              echo "GateRefusalError: ${gate} gate recorded as 'not run' — refusing dry-run"
+              exit 2
+            fi
+          done
+
+      - name: Dry-run upload report artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        uses: https://github.com/actions/upload-artifact@v4
+        with:
+          name: dry-run-report
+          path: dry-run-report.json
+          retention-days: 30

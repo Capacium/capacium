@@ -3,6 +3,14 @@
 # Usage: ./scripts/release.sh <version> [--dry-run]
 #
 # Flow: bump → verify → commit → push → wait CI → tag → tarball → tap → brew → release
+#
+# --dry-run: runs the same gates as the Forgejo workflow_dispatch dry_run input:
+#   title gate, changelog extraction, audience gate. Before and after listings
+#   bracket the gates. The report is written by scripts/dry_run_report.py, the
+#   single writer shared with the workflow. No tag, release, mirror push, PyPI
+#   upload, GHCR push or tap commit is created.
+#
+#   Qualified digest comparison is in RELMODEL-007; it is out of scope here.
 
 set -euo pipefail
 
@@ -12,17 +20,30 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 VERSION="${1:-}"
-DRY_RUN="${2:-}"
+shift || true
+
+DRY_RUN=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN="--dry-run"
+            ;;
+        *)
+            ;;
+    esac
+    shift
+done
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_DIR="/opt/homebrew/Library/Taps/capacium/homebrew-tap"
-if [ ! -d "$TAP_DIR" ]; then
-    echo -e "${YELLOW}  Tap not found at ${TAP_DIR} — cloning...${NC}"
-    git clone https://github.com/Capacium/homebrew-tap "$TAP_DIR"
-fi
-# Ensure remote points to the Capacium org (not the old capacium org redirect)
-TAP_REMOTE=$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || echo "")
-if echo "$TAP_REMOTE" | grep -q "capacium/homebrew-tap$"; then
-    git -C "$TAP_DIR" remote set-url origin https://github.com/Capacium/homebrew-tap
+if [ "$DRY_RUN" != "--dry-run" ]; then
+    if [ ! -d "$TAP_DIR" ]; then
+        echo -e "${YELLOW}  Tap not found at ${TAP_DIR} — cloning...${NC}"
+        git clone https://github.com/Capacium/homebrew-tap "$TAP_DIR"
+    fi
+    TAP_REMOTE=$(git -C "$TAP_DIR" remote get-url origin 2>/dev/null || echo "")
+    if echo "$TAP_REMOTE" | grep -q "capacium/homebrew-tap$"; then
+        git -C "$TAP_DIR" remote set-url origin https://github.com/Capacium/homebrew-tap
+    fi
 fi
 GITHUB_REPO="Capacium/capacium"
 
@@ -32,19 +53,208 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-# Strip leading 'v' if present
 VERSION="${VERSION#v}"
 TAG="v${VERSION}"
 
 echo -e "${GREEN}=== Capacium Release v${VERSION} ===${NC}"
 
 # ── Step 1: Local verification ────────────────────────────────
-echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
+ORIG_CWD="$PWD"
 cd "$REPO_DIR"
-rm -rf build/lib/ dist/ *.egg-info
-ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
-python3 -m pytest tests/ -q --ignore=tests/test_publish.py --ignore=tests/test_signing.py --ignore=tests/test_integration_phase0.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
-echo -e "${GREEN}  Tests pass${NC}"
+if [ "$DRY_RUN" != "--dry-run" ]; then
+    echo -e "${YELLOW}[1/8] Running ruff + pytest...${NC}"
+    rm -rf build/lib/ dist/ *.egg-info
+    ruff check src/ tests/ --fix || { echo -e "${RED}ruff failed${NC}"; exit 1; }
+    python3 -m pytest tests/ -q --ignore=tests/test_publish.py --ignore=tests/test_signing.py --ignore=tests/test_integration_phase0.py || { echo -e "${RED}pytest failed${NC}"; exit 1; }
+    echo -e "${GREEN}  Tests pass${NC}"
+fi
+
+# ── Dry-run: gates bracketed by before/after listings, report via shared writer ──
+if [ "$DRY_RUN" = "--dry-run" ]; then
+    echo ""
+
+    # ── Listing function ──────────────────────────────────────────
+    # Each surface is queried independently. A query that fails (non-2xx,
+    # timeout, TLS error, missing token) exits non-zero with a named error
+    # and is never stored as a report value.
+    # All query results are passed to the assembler as data (temp files),
+    # never interpolated into Python source code.
+    _listing() {
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "$tmpdir"' RETURN
+
+        # tags: git ls-remote (no auth needed), 30s timeout
+        timeout 30 git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sort > "$tmpdir/tags" || {
+            echo "ListingError: git ls-remote --tags origin failed (timeout or network)" >&2
+            exit 2
+        }
+
+        # releases: Forgejo API (needs token), 30s timeout
+        if [ -z "${FORGEJO_TOKEN:-}" ]; then
+            echo "ListingError: FORGEJO_TOKEN is not set — cannot list releases" >&2
+            exit 2
+        fi
+        curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            "https://code.langevc.com/api/v1/repos/capacium/capacium/releases?per_page=100" \
+            > "$tmpdir/releases_raw" || {
+            echo "ListingError: Forgejo releases API query failed" >&2
+            exit 2
+        }
+        python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps([{"id":r["id"],"tag_name":r["tag_name"],"name":r.get("name",""),"draft":r.get("draft",False),"prerelease":r.get("prerelease",False)} for r in d]))' < "$tmpdir/releases_raw" > "$tmpdir/releases" || {
+            echo "ListingError: Forgejo releases API query failed" >&2
+            exit 2
+        }
+
+        # mirror refs: git ls-remote GitHub mirror, 30s timeout
+        timeout 30 git ls-remote https://github.com/Capacium/capacium.git 2>/dev/null | awk '{print $2}' | sort > "$tmpdir/mirror_refs" || {
+            echo "ListingError: git ls-remote GitHub mirror failed (timeout or network)" >&2
+            exit 2
+        }
+
+        # PyPI: JSON API is public, no token required, 30s timeout
+        curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://pypi.org/pypi/capacium/json" \
+            > "$tmpdir/pypi_raw" || {
+            echo "ListingError: PyPI API query failed" >&2
+            exit 2
+        }
+        python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"releases": sorted(d.get("releases",{}).keys())}))' < "$tmpdir/pypi_raw" > "$tmpdir/pypi" || {
+            echo "ListingError: PyPI API query failed" >&2
+            exit 2
+        }
+
+        # GHCR: anonymous pull token then tags/list, 30s timeout each
+        curl -sSf --max-time 30 --connect-timeout 10 \
+            "https://ghcr.io/token?scope=repository:capacium/cap:pull&service=ghcr.io" \
+            > "$tmpdir/ghcr_token_raw" || {
+            echo "ListingError: GHCR anonymous token request failed" >&2
+            exit 2
+        }
+        local ghcr_token
+        ghcr_token="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' < "$tmpdir/ghcr_token_raw")"
+        if [ -z "$ghcr_token" ]; then
+            echo "ListingError: GHCR anonymous token request returned empty token" >&2
+            exit 2
+        fi
+        curl -sSf --max-time 30 --connect-timeout 10 \
+            -H "Authorization: Bearer ${ghcr_token}" \
+            "https://ghcr.io/v2/capacium/cap/tags/list" \
+            > "$tmpdir/ghcr_raw" || {
+            echo "ListingError: GHCR tags/list query failed" >&2
+            exit 2
+        }
+        python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))' < "$tmpdir/ghcr_raw" > "$tmpdir/ghcr" || {
+            echo "ListingError: GHCR tags/list query failed" >&2
+            exit 2
+        }
+
+        # Tap: git ls-remote on the tap repo, 30s timeout
+        timeout 30 git ls-remote https://github.com/Capacium/homebrew-tap.git 2>/dev/null | awk '{print $2}' | sort > "$tmpdir/tap" || {
+            echo "ListingError: git ls-remote Homebrew tap failed (timeout or network)" >&2
+            exit 2
+        }
+
+        # Assemble the listing JSON. All data is passed as file paths
+        # (argv), never interpolated into Python source code.
+        python3 "$REPO_DIR/scripts/_listing_assembler.py" "$tmpdir"
+    }
+
+    echo -e "${GREEN}=== Dry-run gates for v${VERSION} ===${NC}"
+    echo ""
+
+    # ── Before snapshot: all six publication surfaces ──
+    echo -e "${YELLOW}  Capturing before snapshot...${NC}"
+    BEFORE="$(_listing)"
+
+    # Gate 1: Title gate — measured, never a literal
+    echo -e "${YELLOW}[dry-run gate 1/3] Title gate${NC}"
+    RELEASE_NAME="Capacium ${TAG}"
+    TITLE_GATE="$(python3 - "${RELEASE_NAME}" <<'TITLE_GATE_PY'
+import re, sys
+NAME_RE = re.compile(r"^Capacium v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?$")
+name = sys.argv[1]
+if not NAME_RE.match(name):
+    sys.stderr.write("ReleaseTitleError: release name %r does not match required convention\n" % name)
+    sys.exit(2)
+sys.stdout.write("passed\n")
+TITLE_GATE_PY
+)"
+    echo -e "${GREEN}  Title gate: ${TITLE_GATE}${NC}"
+
+    # Gate 2: Changelog extraction — measured, never a literal
+    echo -e "${YELLOW}[dry-run gate 2/3] Changelog extraction${NC}"
+    set +e
+    NOTES="$(python3 scripts/extract_changelog_notes.py "$TAG" 2>&1)"
+    NOTES_EXIT=$?
+    set -e
+    if [ $NOTES_EXIT -ne 0 ]; then
+        echo -e "${RED}  Changelog extraction failed: ${NOTES}${NC}"
+        exit 2
+    fi
+    NOTES_GATE="passed"
+    echo -e "${GREEN}  Changelog extraction passed (${#NOTES} chars)${NC}"
+
+    # Gate 3: Audience gate — measured, never a literal 'passed' when it did
+    # not run. When FORGEJO_TOKEN or GITHUB_TOKEN is set the gate executes;
+    # otherwise it is recorded as 'not run' and the dry-run exits non-zero.
+    echo -e "${YELLOW}[dry-run gate 3/3] Audience gate${NC}"
+    AUDIENCE_GATE="not run"
+    if [ -n "${FORGEJO_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+        AUDIENCE_GATE_SCRIPT="$(mktemp)"
+        PREFIXES_FILE="$(mktemp)"
+        NOTES_FILE="$(mktemp)"
+        trap 'rm -f "$AUDIENCE_GATE_SCRIPT" "$PREFIXES_FILE" "$NOTES_FILE"' EXIT
+        if curl -fsSL \
+            "https://raw.githubusercontent.com/LangeVC/ops-engine/v3.4.2/scripts/release_notes_audience_gate.py" \
+            -o "$AUDIENCE_GATE_SCRIPT" 2>/dev/null; then
+            python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+                "$AUDIENCE_GATE_SCRIPT" || {
+                echo "AudienceGateError: fetched audience gate script is not valid Python" >&2
+                exit 2
+            }
+            printf '%s\n' "$NOTES" > "$NOTES_FILE"
+            python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE" || {
+                echo "AudienceGateError: failed to extract ticket prefixes from .ops.yaml" >&2
+                exit 2
+            }
+            if python3 "$AUDIENCE_GATE_SCRIPT" \
+                --ticket-prefixes "$PREFIXES_FILE" \
+                "$NOTES_FILE" 2>/dev/null; then
+                AUDIENCE_GATE="passed"
+            else
+                AUDIENCE_GATE="failed"
+            fi
+        fi
+    fi
+    echo -e "${GREEN}  Audience gate: ${AUDIENCE_GATE}${NC}"
+
+    # ── After snapshot: same six surfaces ──
+    echo -e "${YELLOW}  Capturing after snapshot...${NC}"
+    AFTER="$(_listing)"
+
+    # Write report via the single shared writer
+    echo -e "${GREEN}=== Dry-run report ===${NC}"
+    python3 scripts/dry_run_report.py \
+        --tag "$TAG" \
+        --release-name "$RELEASE_NAME" \
+        --title-gate "$TITLE_GATE" \
+        --notes-gate "$NOTES_GATE" \
+        --audience-gate "$AUDIENCE_GATE" \
+        --before "$BEFORE" \
+        --after "$AFTER" \
+        --output "$ORIG_CWD/dry-run-report.json"
+
+    echo ""
+    echo -e "${GREEN}=== Dry-run complete: no tag, release, mirror push, PyPI upload, GHCR push or tap commit was created ===${NC}"
+
+    # Exit non-zero when any gate is 'not run' or 'failed'
+    if [ "$AUDIENCE_GATE" = "not run" ] || [ "$AUDIENCE_GATE" = "failed" ]; then
+        exit 2
+    fi
+    exit 0
+fi
 
 # ── Step 2: Bump versions ──────────────────────────────────────
 echo -e "${YELLOW}[2/8] Bumping version to ${VERSION}...${NC}"
@@ -79,7 +289,6 @@ git push origin main
 echo "  Waiting for CI to pass..."
 sleep 5
 
-# Use gh run watch for server-side polling (single API call, no rate-limit burn)
 GH_WORKFLOW_ID=ci.yml
 LATEST_RUN_ID=$(gh run list --repo "$GITHUB_REPO" --branch=main --workflow="$GH_WORKFLOW_ID" --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
 if [ -n "$LATEST_RUN_ID" ] && [ "$LATEST_RUN_ID" != "null" ]; then
@@ -121,7 +330,6 @@ if [ -d "$TAP_DIR" ]; then
     cd "$TAP_DIR"
     git pull --rebase origin main 2>/dev/null || true
 
-    # Update url and sha256 in formula
     sed -i '' "s|url \".*capacium/archive/refs/tags/v[^\"]*\"|url \"${URL}\"|" Formula/capacium.rb
     sed -i '' "s|sha256 \"[a-f0-9]*\"|sha256 \"${SHA}\"|" Formula/capacium.rb
 
@@ -142,7 +350,6 @@ cd "$REPO_DIR"
 # ── Step 7: Create GitHub Release ──────────────────────────────
 echo -e "${YELLOW}[7/8] Creating GitHub Release...${NC}"
 
-# Build release notes from commits since last tag
 LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 if [ -n "$LAST_TAG" ] && [ "$LAST_TAG" != "$TAG" ]; then
     COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges 2>/dev/null)
