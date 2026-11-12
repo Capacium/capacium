@@ -59,7 +59,7 @@ def _write_journal(path: Path, data: Dict[str, Any]) -> None:
         os.close(fd)
     except OSError:
         pass
-    tmp.rename(path)
+    tmp.replace(path)
     try:
         fd = os.open(str(path.parent), os.O_RDONLY)
         os.fsync(fd)
