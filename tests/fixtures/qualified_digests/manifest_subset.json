@@ -1,0 +1,16 @@
+{
+  "artifact_digests": {
+    "sdist": "29cbea17d95d35f030956e01faf8dd0dfa735cfe2abb45904f59a7a7eff5d650",
+    "wheel": "c5d5f706f021de7b462f4a0a987a83348f9ef0debfd8e045b5009cb7224890c1",
+    "normalized_inputs": {
+      "PYTHONHASHSEED": "0",
+      "SOURCE_DATE_EPOCH": "1700000000"
+    }
+  },
+  "environment": {
+    "run_id": "2231-3087f244e076"
+  },
+  "candidate_shas": {
+    "capacium": "ebd49f61af932c6c38a72b9807cc7f74c3fdf332"
+  }
+}

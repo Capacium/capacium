@@ -10,7 +10,8 @@
 #   single writer shared with the workflow. No tag, release, mirror push, PyPI
 #   upload, GHCR push or tap commit is created.
 #
-#   Qualified digest comparison is in RELMODEL-007; it is out of scope here.
+#   --qualified-digests <path>: required for --dry-run; qualified-digests v1 bundle
+#   JSON with sdist_sha256, wheel_sha256, source_tree and qualification_run.
 
 set -euo pipefail
 
@@ -23,10 +24,15 @@ VERSION="${1:-}"
 shift || true
 
 DRY_RUN=""
+QUALIFIED_DIGESTS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)
             DRY_RUN="--dry-run"
+            ;;
+        --qualified-digests)
+            QUALIFIED_DIGESTS="$2"
+            shift
             ;;
         *)
             ;;
@@ -230,27 +236,120 @@ TITLE_GATE_PY
     fi
     echo -e "${GREEN}  Audience gate: ${AUDIENCE_GATE}${NC}"
 
+    # ── Qualified-digests v1: build and compare ────────────────
+    # The bundle is REQUIRED for --dry-run. An empty/unset bundle is a
+    # named error; it never produces a green exit with no comparison.
+    SDIST_SHA256=""
+    WHEEL_SHA256=""
+    DIGEST_COMPARISON=""
+    COMPARE_ERROR_NAME=""
+    COMPARE_ERROR_TEXT=""
+    if [ -z "${QUALIFIED_DIGESTS}" ]; then
+        echo "QualifiedDigestBundleError: --qualified-digests bundle is required for --dry-run" >&2
+        exit 2
+    fi
+    echo -e "${YELLOW}[dry-run digests] Building sdist and wheel with SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0${NC}"
+    SOURCE_TREE="$(git rev-parse HEAD)"
+    # Build from a git archive of the source tree so the built content
+    # matches the qualified source, not an uncommitted working tree.
+    BUILD_DIR="$(mktemp -d)"
+    trap 'rm -rf "$BUILD_DIR"' EXIT
+    ARCHIVE_DIR="$BUILD_DIR/src"
+    mkdir -p "$ARCHIVE_DIR"
+    git archive "$SOURCE_TREE" | tar -x -C "$ARCHIVE_DIR" || {
+        echo "BuildError: git archive of $SOURCE_TREE failed — build unavailable or broken" >&2
+        exit 2
+    }
+    SOURCE_DATE_EPOCH=1700000000 PYTHONHASHSEED=0 \
+        python3 -m build --sdist --wheel --outdir "$BUILD_DIR" "$ARCHIVE_DIR" > /dev/null 2>&1 || {
+        echo "BuildError: python -m build failed — build unavailable or broken" >&2
+        exit 2
+    }
+    SDIST_FILE="$(echo "$BUILD_DIR"/*.tar.gz)"
+    WHEEL_FILE="$(echo "$BUILD_DIR"/*.whl)"
+    if [ ! -f "$SDIST_FILE" ] || [ ! -f "$WHEEL_FILE" ]; then
+        echo "BuildError: build completed but sdist or wheel not found" >&2
+        exit 2
+    fi
+    SDIST_SHA256="$(shasum -a 256 "$SDIST_FILE" | awk '{print $1}')"
+    WHEEL_SHA256="$(shasum -a 256 "$WHEEL_FILE" | awk '{print $1}')"
+    echo -e "${GREEN}  sdist sha256: ${SDIST_SHA256}${NC}"
+    echo -e "${GREEN}  wheel sha256: ${WHEEL_SHA256}${NC}"
+
+    echo -e "${YELLOW}[dry-run digests] Comparing against qualified-digests bundle: ${QUALIFIED_DIGESTS}${NC}"
+    # Capture the child stderr separately from stdout so the named
+    # error survives into the report and the caller's exit message.
+    COMPARE_STDERR="$(mktemp)"
+    trap 'rm -rf "$BUILD_DIR" "$COMPARE_STDERR"' EXIT
+    set +e
+    DIGEST_COMPARISON="$(python3 scripts/qualified_digests.py compare \
+        "$QUALIFIED_DIGESTS" \
+        --sdist "$SDIST_SHA256" \
+        --wheel "$WHEEL_SHA256" \
+        --source-tree "$SOURCE_TREE" 2>"$COMPARE_STDERR")"
+    COMPARE_EXIT=$?
+    set -e
+    if [ $COMPARE_EXIT -eq 0 ]; then
+        DIGEST_COMPARISON="matched"
+        echo -e "${GREEN}  Digest comparison: matched${NC}"
+    else
+        # Map the child exit to the distinct named error so the
+        # operator sees BundleError / SourceTreeError / MismatchError.
+        COMPARE_ERROR_TEXT="$(cat "$COMPARE_STDERR")"
+        case "$COMPARE_ERROR_TEXT" in
+            *QualifiedDigestBundleError*)  COMPARE_ERROR_NAME="QualifiedDigestBundleError" ;;
+            *QualifiedDigestSourceTreeError*) COMPARE_ERROR_NAME="QualifiedDigestSourceTreeError" ;;
+            *QualifiedDigestMismatchError*) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
+            *) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
+        esac
+        DIGEST_COMPARISON="mismatch"
+        echo -e "${RED}  Digest comparison: mismatch — ${COMPARE_ERROR_NAME}${NC}"
+        echo "${COMPARE_ERROR_TEXT}" >&2
+    fi
+
     # ── After snapshot: same six surfaces ──
     echo -e "${YELLOW}  Capturing after snapshot...${NC}"
     AFTER="$(_listing)"
 
     # Write report via the single shared writer
     echo -e "${GREEN}=== Dry-run report ===${NC}"
+    REPORT_ARGS=(
+        --tag "$TAG"
+        --release-name "$RELEASE_NAME"
+        --title-gate "$TITLE_GATE"
+        --notes-gate "$NOTES_GATE"
+        --audience-gate "$AUDIENCE_GATE"
+        --before "$BEFORE"
+        --after "$AFTER"
+    )
+    if [ -n "$SDIST_SHA256" ]; then
+        REPORT_ARGS+=(--sdist-sha256 "$SDIST_SHA256")
+    fi
+    if [ -n "$WHEEL_SHA256" ]; then
+        REPORT_ARGS+=(--wheel-sha256 "$WHEEL_SHA256")
+    fi
+    if [ -n "$DIGEST_COMPARISON" ]; then
+        REPORT_ARGS+=(--digest-comparison "$DIGEST_COMPARISON")
+    fi
+    # Record the build provenance so the report can evidence that the
+    # digests were built under the qualified inputs.
+    REPORT_ARGS+=(--sde "1700000000")
+    REPORT_ARGS+=(--pythonhashseed "0")
     python3 scripts/dry_run_report.py \
-        --tag "$TAG" \
-        --release-name "$RELEASE_NAME" \
-        --title-gate "$TITLE_GATE" \
-        --notes-gate "$NOTES_GATE" \
-        --audience-gate "$AUDIENCE_GATE" \
-        --before "$BEFORE" \
-        --after "$AFTER" \
+        "${REPORT_ARGS[@]}" \
         --output "$ORIG_CWD/dry-run-report.json"
 
     echo ""
     echo -e "${GREEN}=== Dry-run complete: no tag, release, mirror push, PyPI upload, GHCR push or tap commit was created ===${NC}"
 
-    # Exit non-zero when any gate is 'not run' or 'failed'
+    # Exit non-zero when any gate is 'not run' or 'failed', or digest comparison
+    # is not 'matched'. The bundle is required — an empty QUALIFIED_DIGESTS is
+    # already refused above, so we always have a comparison result here.
     if [ "$AUDIENCE_GATE" = "not run" ] || [ "$AUDIENCE_GATE" = "failed" ]; then
+        exit 2
+    fi
+    if [ "$DIGEST_COMPARISON" != "matched" ]; then
+        echo "${COMPARE_ERROR_NAME}: ${COMPARE_ERROR_TEXT}" >&2
         exit 2
     fi
     exit 0

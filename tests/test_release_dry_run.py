@@ -73,18 +73,21 @@ class TestDryRunWorkflowStructure:
             "report step must use scripts/dry_run_report.py"
         )
 
-    def test_no_digest_or_build_steps_in_workflow(self):
-        """The workflow must not contain digest or build steps — those
-        belong to RELMODEL-007."""
+    def test_digest_build_steps_present(self):
+        """The workflow must contain the qualified-digests build and compare
+        steps added by RELMODEL-007."""
         wf = _read_workflow()
-        assert "reproducible build" not in wf.lower(), (
-            "workflow must not contain reproducible build (RELMODEL-007)"
+        assert "Install build package" in wf, (
+            "workflow must install build package (RELMODEL-007)"
         )
-        assert "compute digests" not in wf.lower(), (
-            "workflow must not contain digest computation (RELMODEL-007)"
+        assert "qualified-digests build and compare" in wf, (
+            "workflow must have qualified-digests build step (RELMODEL-007)"
         )
-        assert "expected_digests" not in wf, (
-            "workflow must not have expected_digests input (RELMODEL-007)"
+        assert "qualified_digests.py compare" in wf, (
+            "workflow must call qualified_digests.py compare"
+        )
+        assert "QualifiedDigestBundleError" in wf, (
+            "workflow must refuse empty bundle with named error"
         )
 
     def test_no_tag_creation_code_in_dry_run(self):
@@ -409,23 +412,23 @@ class TestReleaseShDryRun:
             "release.sh must use scripts/dry_run_report.py"
         )
 
-    def test_release_sh_has_no_digest_code(self):
-        """release.sh must not contain digest build or comparison code —
-        that belongs to RELMODEL-007."""
+    def test_release_sh_has_digest_code(self):
+        """release.sh contains the digest build and comparison code added by
+        RELMODEL-007, guarded by --qualified-digests."""
         script = SCRIPTS_DIR / "release.sh"
         content = script.read_text(encoding="utf-8")
-        assert "--expected-digests" not in content, (
-            "release.sh must not have --expected-digests flag (RELMODEL-007)"
-        )
-        assert "expected_digests" not in content, (
-            "release.sh must not have expected_digests logic (RELMODEL-007)"
-        )
-        assert "SOURCE_DATE_EPOCH" not in content, (
-            "release.sh must not have SOURCE_DATE_EPOCH (RELMODEL-007)"
-        )
-        assert "PYTHONHASHSEED" not in content, (
-            "release.sh must not have PYTHONHASHSEED (RELMODEL-007)"
-        )
+        assert "--qualified-digests" in content
+        assert "QUALIFIED_DIGESTS" in content
+        assert "SOURCE_DATE_EPOCH=1700000000" in content
+        assert "PYTHONHASHSEED=0" in content
+        assert "qualified_digests.py compare" in content
+        assert "SDIST_SHA256" in content
+        assert "WHEEL_SHA256" in content
+        assert "DIGEST_COMPARISON" in content
+        assert "QualifiedDigestBundleError" in content
+        assert "QualifiedDigestSourceTreeError" in content
+        assert "QualifiedDigestMismatchError" in content
+        assert "git archive" in content
 
 
 # ── dry_run_report.py (shared writer) ────────────────────────────────────────
