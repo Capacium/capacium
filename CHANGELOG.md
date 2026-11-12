@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Installs and the transaction journal no longer fail on Windows when the
+  target file already exists.** Journal records and the exec pointer file are
+  written by replacing the existing file instead of renaming over it, so a
+  repeated write no longer fails when the destination is present.
+
 ## [1.1.8] - 2026-11-12
 
 ### Fixed
