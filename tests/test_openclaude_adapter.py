@@ -688,9 +688,11 @@ class TestOpenClaudePlatformMatrix:
         assert config_str.startswith(home_str), (
             f"Config path {config_str} not under tmp_home {home_str}"
         )
-        assert config_str.endswith(expected_suffix), (
+        # Normalise to POSIX separators so endswith works on Windows too.
+        config_posix = Path(config_str).as_posix()
+        assert config_posix.endswith(expected_suffix), (
             f"Expected suffix '{expected_suffix}' for {simulate_platform}, "
-            f"got '{config_str}'"
+            f"got '{config_posix}'"
         )
 
 
@@ -1037,8 +1039,39 @@ def _load_declared_pin() -> dict:
     return json.loads(_PIN_PATH.read_text())
 
 
+def _resolve_command(command: str, platform_name: str) -> str:
+    """Resolve a command name for the given platform.
+
+    On Windows, ``subprocess.run`` with a bare command name (e.g. ``npm``)
+    does not find ``npm.cmd`` without ``shell=True``, so the caller must
+    pass the resolved path from ``shutil.which``.
+    """
+    if platform_name == "Windows":
+        resolved = shutil.which(command)
+        if resolved is not None:
+            return resolved
+    return command
+
+
 def _npm_available() -> bool:
     return shutil.which("npm") is not None and shutil.which("node") is not None
+
+
+class TestCommandResolutionHelper:
+    """The command-resolution helper returns the resolved path on Windows
+    and the bare command name on POSIX."""
+
+    def test_posix_returns_bare_command(self):
+        assert _resolve_command("npm", "Linux") == "npm"
+        assert _resolve_command("npm", "Darwin") == "npm"
+
+    def test_windows_returns_resolved_path_when_found(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _: "C:\\npm.cmd")
+        assert _resolve_command("npm", "Windows") == "C:\\npm.cmd"
+
+    def test_windows_falls_back_to_bare_command_when_not_found(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _: None)
+        assert _resolve_command("npm", "Windows") == "npm"
 
 
 def _identity_violations(
@@ -1080,10 +1113,11 @@ def _record_isolated_install(root: Path, pin: dict) -> dict:
         "npm_config_registry": pin["registry"],
         "npm_config_update_notifier": "false",
     })
+    npm_cmd = _resolve_command("npm", platform.system())
     spec = f"{pin['package']}@{pin['version']}"
     result = subprocess.run(
         [
-            "npm", "install", spec,
+            npm_cmd, "install", spec,
             "--registry", pin["registry"],
             "--no-audit", "--no-fund", "--save-exact", "--ignore-scripts",
         ],
