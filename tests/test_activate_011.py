@@ -68,6 +68,7 @@ from capacium.runtimes import (
     RuntimeUnit,
     SourceLock,
     SourceType,
+    entrypoint_filename,
 )
 
 
@@ -102,7 +103,7 @@ def fake_generation(temp_home):
     target = gen_dir / digest
     target.mkdir(parents=True, exist_ok=True)
 
-    script = target / "main"
+    script = target / entrypoint_filename("main")
     script.write_text(textwrap.dedent("""\
         #!/usr/bin/env python3
         import sys
@@ -146,7 +147,7 @@ def fake_python_generation(temp_home):
     # Root-level .py file so glob("*.py") discovers an import target
     (target / "main_module.py").write_text("")
 
-    script = target / "main"
+    script = target / entrypoint_filename("main")
     script.write_text(textwrap.dedent("""\
         #!/usr/bin/env python3
         import sys
@@ -368,7 +369,7 @@ class TestActivation:
         digest_b = "d" * 64
         target_b = gen_dir_b / digest_b
         target_b.mkdir(parents=True)
-        script_b = target_b / "main"
+        script_b = target_b / entrypoint_filename("main")
         script_b.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
             import sys
@@ -404,7 +405,7 @@ class TestActivation:
         target.mkdir(parents=True)
 
         # Create a broken executable
-        broken = target / "main"
+        broken = target / entrypoint_filename("main")
         broken.write_text("#!/bin/false\nexit 1\n")
         broken.chmod(0o755)
         (target / ".generation.json").write_text(json.dumps({"digest": digest}))
