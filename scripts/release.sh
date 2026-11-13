@@ -448,58 +448,47 @@ fi
 
 cd "$REPO_DIR"
 
-# ── Step 7: Create GitHub Release ──────────────────────────────
-echo -e "${YELLOW}[7/8] Creating GitHub Release...${NC}"
-
-LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-if [ -n "$LAST_TAG" ] && [ "$LAST_TAG" != "$TAG" ]; then
-    COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges 2>/dev/null)
-else
-    COMMITS=$(git log --oneline --no-merges --max-count=10 2>/dev/null)
-fi
-CHANGES=""
-while IFS= read -r line; do
-    [ -n "$line" ] && CHANGES="${CHANGES}- ${line}\n"
-done <<< "$COMMITS"
-
-NOTES="## Capacium v${VERSION}
-
-### What's Changed
-${CHANGES:-See [full changelog](https://github.com/${GITHUB_REPO}/commits/${TAG})}
-
-### Install
-\`\`\`bash
-brew update && brew upgrade capacium
-cap -v  # → ${VERSION}
-\`\`\`
-"
+# ── Step 7: Verify the engine-created release object on Forgejo ──
+echo -e "${YELLOW}[7/8] Verifying engine-created release on Forgejo...${NC}"
 
 RELEASE_TITLE="Capacium v${VERSION}"
+FORGEJO_API_BASE="${FORGEJO_API_URL:-https://git.langevc.com/api/v1}"
+RELEASE_JSON_TMP="$(mktemp)"
+trap 'rm -f "$RELEASE_JSON_TMP"' RETURN
 
 if [ "$DRY_RUN" = "--dry-run" ]; then
-    echo "  DRY RUN: would create release ${TAG}"
+    echo "  DRY RUN: would verify release ${TAG} on Forgejo"
 else
-    if gh release view "$TAG" --repo "$GITHUB_REPO" &>/dev/null; then
-        gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
-    else
-        gh release create "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
+    # Fetch the release JSON from the Forgejo API.
+    if [ -z "${FORGEJO_TOKEN:-}" ]; then
+        echo -e "${RED}ReleaseVerificationError: FORGEJO_TOKEN is not set — cannot verify release${NC}" >&2
+        exit 2
     fi
-    echo -e "${GREEN}  Release created${NC}"
-fi
-
-# ── Step 7b: Verify release title matches naming convention ─────
-echo -e "${YELLOW}[7b/8] Verifying release title...${NC}"
-RELEASE_NAME=$(gh release view "$TAG" --repo "$GITHUB_REPO" --json name --jq '.name' 2>/dev/null || echo "")
-if [ "$RELEASE_NAME" != "$RELEASE_TITLE" ]; then
-    echo -e "${RED}  Release title mismatch: expected '${RELEASE_TITLE}', got '${RELEASE_NAME}'${NC}"
-    echo -e "${RED}  Fixing...${NC}"
-    gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" 2>/dev/null || {
-        echo -e "${RED}  Failed to fix title — manual intervention required${NC}"
-        echo "  gh release edit ${TAG} --repo ${GITHUB_REPO} --title '${RELEASE_TITLE}'"
-        exit 1
+    curl -sSf --max-time 30 --connect-timeout 10 \
+        -H "Authorization: token ${FORGEJO_TOKEN}" \
+        "${FORGEJO_API_BASE}/repos/capacium/capacium/releases/tags/${TAG}" \
+        > "$RELEASE_JSON_TMP" || {
+        echo -e "${RED}ReleaseVerificationError: Forgejo releases API query failed for ${TAG}${NC}" >&2
+        exit 2
     }
+
+    # Verify the release body contains the CHANGELOG section for this tag.
+    python3 scripts/check_release_body.py "$TAG" --release-json "$RELEASE_JSON_TMP" || {
+        echo -e "${RED}ReleaseVerificationError: release body check failed for ${TAG}${NC}" >&2
+        exit 2
+    }
+    echo -e "${GREEN}  Release body verified${NC}"
+
+    # Step 7b: Verify the release title matches naming convention.
+    echo -e "${YELLOW}[7b/8] Verifying release title...${NC}"
+    RELEASE_NAME=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" < "$RELEASE_JSON_TMP")
+    if [ "$RELEASE_NAME" != "$RELEASE_TITLE" ]; then
+        echo -e "${RED}ReleaseTitleError: expected '${RELEASE_TITLE}', got '${RELEASE_NAME}'${NC}" >&2
+        echo "The release title on Forgejo does not match the required convention." >&2
+        exit 2
+    fi
+    echo -e "${GREEN}  Title verified: ${RELEASE_TITLE}${NC}"
 fi
-echo -e "${GREEN}  Title verified: ${RELEASE_TITLE}${NC}"
 
 # ── Step 8: Brew upgrade locally ───────────────────────────────
 echo -e "${YELLOW}[8/8] Upgrading local Brew...${NC}"
