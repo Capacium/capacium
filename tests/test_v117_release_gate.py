@@ -1551,9 +1551,11 @@ class TestCriterion5OfflineRuntimeFixtures:
         This runs the real child the generation would run, and parses every
         non-empty stdout line as JSON — a single stray print would break it.
         """
+        from capacium.runtimes import entrypoint_filename
+
         generations = tmp_path / "generations"
         generation_dir = _materialise_generation(name, generations)
-        script = generation_dir / "main"
+        script = generation_dir / entrypoint_filename("main")
         assert script.is_file() and os.access(script, os.X_OK)
 
         request = json.dumps({
