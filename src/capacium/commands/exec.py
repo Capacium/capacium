@@ -34,6 +34,7 @@ from ..runtimes import (
     RuntimeBuilder,
     RuntimeUnit,
     SourceLock,
+    entrypoint_filename,
 )
 
 
@@ -129,11 +130,19 @@ class ProbeResult:
 
 
 def _find_executable(
-    generation_dir: Path, entrypoints: Dict[str, str]
+    generation_dir: Path, entrypoints: Dict[str, str],
+    platform: Optional[str] = None,
 ) -> Optional[Path]:
-    """Return the first available executable inside *generation_dir*."""
+    """Return the first available executable inside *generation_dir*.
+
+    On Windows the entrypoint file name is resolved with the ``.cmd``
+    suffix before the directory scan so batch scripts are found.
+    """
+    if platform is None:
+        platform = sys.platform
     for name in entrypoints:
-        candidate = generation_dir / name
+        resolved = entrypoint_filename(name, platform)
+        candidate = generation_dir / resolved
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     # Fallback: scan the directory for any executable file
