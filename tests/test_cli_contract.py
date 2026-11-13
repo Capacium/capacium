@@ -19,6 +19,15 @@ def _cap(*args: str, env=None) -> subprocess.CompletedProcess:
     full_env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent / "src")
     if env:
         full_env.update(env)
+        # When the caller sets HOME, also redirect all platform-home variables
+        # so Path.home() resolves to the same sandboxed directory on Windows.
+        if "HOME" in env:
+            full_env.setdefault("USERPROFILE", env["HOME"])
+            home_str = env["HOME"]
+            drive, sep, tail = home_str.partition(":")
+            if drive and tail:
+                full_env.setdefault("HOMEDRIVE", drive + ":")
+                full_env.setdefault("HOMEPATH", tail)
     return subprocess.run(
         [sys.executable, "-m", "capacium.cli", *args],
         capture_output=True, text=True, env=full_env,
