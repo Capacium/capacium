@@ -125,7 +125,7 @@ class TestRepairedV117ReleaseGateFixturesPassUnderWindows:
         # _find_executable returns the Windows-compatible wrapper
         from capacium.commands.exec import _find_executable
 
-        entrypoints = {"main": "python3 mcp_server.py"}
+        entrypoints = {"main.cmd": "python3 mcp_server.py"}
         script = _find_executable(generation_dir, entrypoints)
         assert script is not None, f"no executable found for {name}"
         assert script.is_file() and os.access(script, os.X_OK), (

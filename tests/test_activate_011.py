@@ -1439,7 +1439,7 @@ def _make_source_fixture(tmp_path, owner, name, version, *, broken=False):
 
     entrypoints_raw = {}
     for k, v in unit.entrypoints.items():
-        entrypoints_raw[k] = tuple(v.split())
+        entrypoints_raw[f"{k}.cmd"] = tuple(v.split())
 
     source_lock = SourceLock(
         source_url=f"capacium://{owner}/{name}@{version}",

@@ -1461,7 +1461,7 @@ def _local_source_lock(name: str) -> "SourceLock":  # noqa: F821 — imported be
         source_type=SourceType.VERIFIED_LOCAL_CACHE,
         interpreter="python3",
         platforms=["darwin", "linux"],
-        entrypoints={"main": ("python3", "mcp_server.py")},
+        entrypoints={"main.cmd": ("python3", "mcp_server.py")},
         probes={"version": "python3 mcp_server.py --version"},
     )
 
@@ -1473,7 +1473,7 @@ def _runtime_unit(name: str) -> "RuntimeUnit":  # noqa: F821 — imported below
         owner="fixtures",
         name=name,
         descriptor_digest=hashlib.sha256(name.encode("utf-8")).hexdigest(),
-        entrypoints={"main": "python3 mcp_server.py"},
+        entrypoints={"main.cmd": "python3 mcp_server.py"},
         is_mcp=True,
     )
 
@@ -1553,7 +1553,7 @@ class TestCriterion5OfflineRuntimeFixtures:
         """
         generations = tmp_path / "generations"
         generation_dir = _materialise_generation(name, generations)
-        script = generation_dir / "main"
+        script = generation_dir / "main.cmd"
         assert script.is_file() and os.access(script, os.X_OK)
 
         request = json.dumps({
