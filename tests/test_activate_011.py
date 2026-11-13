@@ -114,11 +114,12 @@ def test_write_entrypoint_script_windows_output(tmp_path):
 
     # .cmd wrapper exists and is a batch file
     assert script.is_file()
-    cmd_content = script.read_text()
-    assert cmd_content.startswith("@echo off")
-    assert "\r\n" in cmd_content
-    assert "%*" in cmd_content
-    assert f'"{sys.executable}"' in cmd_content
+    # read_bytes to preserve CRLF (read_text normalises line endings)
+    raw = script.read_bytes()
+    assert raw.startswith(b"@echo off")
+    assert b"\r\n" in raw
+    assert b"%*" in raw
+    assert sys.executable.encode() in raw
 
     # Companion .py file exists with the original content
     py_path = script.with_suffix(".py")
