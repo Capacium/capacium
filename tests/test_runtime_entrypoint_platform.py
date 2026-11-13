@@ -11,8 +11,6 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 from capacium.runtimes import (
     RuntimeBuilder,
     SourceLock,
@@ -299,12 +297,10 @@ class TestFindExecutablePlatform:
             {"main": "python3 mcp_server.py"},
             platform="darwin",  # Wrong platform — looks for 'main'
         )
-        # No 'main' file exists — the fallback scan finds 'main.cmd'
-        # if no other executable is present
-        # But the POSIX platform look for 'main' fails because main
-        # doesn't exist; fallback scan finds main.cmd
-        # This is fine — the fallback is platform-agnostic
-        pass
+        # 'main' does not exist; the platform-agnostic fallback scan
+        # finds main.cmd.
+        assert exe is not None
+        assert exe.name == "main.cmd"
 
     def test_find_posix_behaviour_unchanged(self, tmp_path):
         """On POSIX _find_executable behaviour is unchanged."""
