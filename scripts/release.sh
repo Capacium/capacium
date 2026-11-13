@@ -309,6 +309,51 @@ TITLE_GATE_PY
         echo "${COMPARE_ERROR_TEXT}" >&2
     fi
 
+    # ── Windows Validation gate ──────────────────────────────────
+    # Runs read-only against the GitHub API. The API base is
+    # injectable for tests (WINDOWS_VALIDATION_API_BASE env var).
+    # No write verb is used.
+    WINDOWS_VALIDATION_GATE="not run"
+    WINDOWS_VALIDATION_ERROR_NAME=""
+    WINDOWS_VALIDATION_ERROR_TEXT=""
+    echo -e "${YELLOW}[dry-run gate 4/4] Windows Validation gate${NC}"
+    WINVAL_ARGS=(
+        --fetch
+        --source-tree "$SOURCE_TREE"
+        --repo "$REPO_DIR"
+    )
+    if [ -n "${WINDOWS_VALIDATION_API_BASE:-}" ]; then
+        WINVAL_ARGS+=(--api-base "$WINDOWS_VALIDATION_API_BASE")
+    fi
+    WINVAL_STDERR="$(mktemp)"
+    trap 'rm -rf "$BUILD_DIR" "$COMPARE_STDERR" "$WINVAL_STDERR"' EXIT
+    set +e
+    WINVAL_OUT="$(python3 scripts/check_windows_validation.py \
+        "${WINVAL_ARGS[@]}" 2>"$WINVAL_STDERR")"
+    WINVAL_EXIT=$?
+    set -e
+    if [ $WINVAL_EXIT -eq 0 ]; then
+        WINDOWS_VALIDATION_GATE="passed"
+        echo -e "${GREEN}  Windows Validation gate: passed${NC}"
+    else
+        WINVAL_ERROR_TEXT="$(cat "$WINVAL_STDERR")"
+        case "$WINVAL_ERROR_TEXT" in
+            *NoWindowsValidationRunError*)
+                WINDOWS_VALIDATION_ERROR_NAME="NoWindowsValidationRunError" ;;
+            *WindowsValidationRunNotSuccessError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationRunNotSuccessError" ;;
+            *WindowsValidationTreeMismatchError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationTreeMismatchError" ;;
+            *WindowsValidationHeadCommitUnresolvableError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationHeadCommitUnresolvableError" ;;
+            *)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationError" ;;
+        esac
+        WINDOWS_VALIDATION_GATE="failed"
+        echo -e "${RED}  Windows Validation gate: failed — ${WINDOWS_VALIDATION_ERROR_NAME}${NC}"
+        echo "${WINVAL_ERROR_TEXT}" >&2
+    fi
+
     # ── After snapshot: same six surfaces ──
     echo -e "${YELLOW}  Capturing after snapshot...${NC}"
     AFTER="$(_listing)"
@@ -321,6 +366,7 @@ TITLE_GATE_PY
         --title-gate "$TITLE_GATE"
         --notes-gate "$NOTES_GATE"
         --audience-gate "$AUDIENCE_GATE"
+        --windows-validation-gate "$WINDOWS_VALIDATION_GATE"
         --before "$BEFORE"
         --after "$AFTER"
     )
@@ -352,6 +398,10 @@ TITLE_GATE_PY
     fi
     if [ "$DIGEST_COMPARISON" != "matched" ]; then
         echo "${COMPARE_ERROR_NAME}: ${COMPARE_ERROR_TEXT}" >&2
+        exit 2
+    fi
+    if [ "$WINDOWS_VALIDATION_GATE" = "not run" ] || [ "$WINDOWS_VALIDATION_GATE" = "failed" ]; then
+        echo "${WINDOWS_VALIDATION_ERROR_NAME}: ${WINVAL_ERROR_TEXT}" >&2
         exit 2
     fi
     exit 0
