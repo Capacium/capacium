@@ -6,9 +6,11 @@ a tmp git repository. No network.
 
 from __future__ import annotations
 
+import http.server
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 
@@ -265,11 +267,12 @@ class TestHeadCommitUnresolvable:
         )
 
 
-# ── Edge: multiple runs, first success picked ────────────────────
+# ── Edge: multiple runs, any matching success passes ────────────
 
 
 class TestMultipleRuns:
-    """When multiple successful runs exist, the first (most recent) is used."""
+    """When multiple successful runs exist, any run whose tree matches
+    the source tree is sufficient (existential)."""
 
     def test_first_success_used(self, tmp_path):
         repo = _make_repo(tmp_path)
@@ -306,6 +309,108 @@ class TestMultipleRuns:
         assert rc == 0, f"Expected exit 0, got {rc}: {err}"
         assert out == "passed"
 
+    def test_matching_success_not_first(self, tmp_path):
+        """A matching successful run that is not the first in the list
+        still passes the check (existential search)."""
+        repo = _make_repo(tmp_path)
+        head_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        source_tree = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # Create a second commit with a different tree.
+        (repo / "file.txt").write_text("other content")
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "file.txt"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "second"],
+            capture_output=True, check=True,
+        )
+        head_sha_2 = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # Most recent run is on a different tree (head_sha_2), but
+        # an older run matches head_sha (first commit).
+        runs_json = tmp_path / "runs.json"
+        runs_json.write_text(json.dumps({
+            "workflow_runs": [
+                {
+                    "id": 7,
+                    "head_sha": head_sha_2,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-06T00:00:00Z",
+                },
+                {
+                    "id": 8,
+                    "head_sha": head_sha,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-05T00:00:00Z",
+                },
+            ],
+        }))
+
+        rc, out, err = _run_check(runs_json, source_tree, repo)
+        assert rc == 0, f"Expected exit 0, got {rc}: {err}"
+        assert out == "passed"
+
+    def test_no_matching_success_in_any_position(self, tmp_path):
+        """When no successful run in any position matches, it fails."""
+        repo = _make_repo(tmp_path)
+        source_tree = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # Create a different commit.
+        (repo / "file.txt").write_text("different")
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "file.txt"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "second"],
+            capture_output=True, check=True,
+        )
+        head_sha_2 = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # Both success runs are on the second tree, not the source tree.
+        runs_json = tmp_path / "runs.json"
+        runs_json.write_text(json.dumps({
+            "workflow_runs": [
+                {
+                    "id": 9,
+                    "head_sha": head_sha_2,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-07T00:00:00Z",
+                },
+                {
+                    "id": 10,
+                    "head_sha": head_sha_2,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-06T00:00:00Z",
+                },
+            ],
+        }))
+
+        rc, out, err = _run_check(runs_json, source_tree, repo)
+        assert rc != 0, f"Expected non-zero exit, got {rc}"
+        assert "WindowsValidationTreeMismatchError" in err
+
 
 # ── Edge: invalid JSON file ──────────────────────────────────────
 
@@ -326,3 +431,155 @@ class TestInvalidRunsJson:
         rc, out, err = _run_check(runs_json, source_tree, repo)
         assert rc != 0, f"Expected non-zero exit, got {rc}"
         assert "NoWindowsValidationRunError" in err
+
+
+# ── Edge: --fetch and --api-base via local fixture server ───────
+
+
+def _start_fixture_server(response_body: dict, status: int = 200) -> tuple:
+    """Start a local HTTP server that serves the given JSON response.
+    Returns (server, port)."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps(response_body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass  # Suppress log noise.
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    return server, port
+
+
+class TestFetch:
+    """The --fetch mode reads from a local fixture server via --api-base.
+    No external network."""
+
+    def test_fetch_success(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        head_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        source_tree = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        server, port = _start_fixture_server({
+            "workflow_runs": [
+                {
+                    "id": 20,
+                    "head_sha": head_sha,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-10T00:00:00Z",
+                },
+            ],
+        })
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            r = subprocess.run(
+                [
+                    sys.executable, str(CHECK),
+                    "--fetch",
+                    "--api-base", f"http://127.0.0.1:{port}",
+                    "--source-tree", source_tree,
+                    "--repo", str(repo),
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert r.returncode == 0, (
+                f"Expected exit 0, got {r.returncode}: {r.stderr}"
+            )
+            assert r.stdout.strip() == "passed"
+        finally:
+            server.shutdown()
+
+    def test_fetch_no_runs(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        source_tree = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        server, port = _start_fixture_server({"workflow_runs": []})
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            r = subprocess.run(
+                [
+                    sys.executable, str(CHECK),
+                    "--fetch",
+                    "--api-base", f"http://127.0.0.1:{port}",
+                    "--source-tree", source_tree,
+                    "--repo", str(repo),
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert r.returncode != 0, (
+                f"Expected non-zero exit, got {r.returncode}"
+            )
+            assert "NoWindowsValidationRunError" in r.stderr
+        finally:
+            server.shutdown()
+
+    def test_fetch_tree_mismatch(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        head_sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        # Create a second commit with a different tree.
+        (repo / "file.txt").write_text("other content")
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "file.txt"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "second"],
+            capture_output=True, check=True,
+        )
+        source_tree = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        server, port = _start_fixture_server({
+            "workflow_runs": [
+                {
+                    "id": 21,
+                    "head_sha": head_sha,
+                    "conclusion": "success",
+                    "status": "completed",
+                    "created_at": "2026-01-11T00:00:00Z",
+                },
+            ],
+        })
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            r = subprocess.run(
+                [
+                    sys.executable, str(CHECK),
+                    "--fetch",
+                    "--api-base", f"http://127.0.0.1:{port}",
+                    "--source-tree", source_tree,
+                    "--repo", str(repo),
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert r.returncode != 0, (
+                f"Expected non-zero exit, got {r.returncode}"
+            )
+            assert "WindowsValidationTreeMismatchError" in r.stderr
+        finally:
+            server.shutdown()

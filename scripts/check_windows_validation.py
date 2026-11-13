@@ -74,7 +74,7 @@ def fetch_runs(api_base: str) -> dict:
     """
     url = (
         f"{api_base}/repos/Capacium/capacium/actions/workflows/"
-        "windows-validation.yml/runs?per_page=1"
+        "windows-validation.yml/runs?per_page=100"
     )
     req = urllib.request.Request(url, method="GET")
     req.add_header("Accept", "application/vnd.github+json")
@@ -114,19 +114,31 @@ def check(runs_data: dict, source_tree: str, repo: Path) -> str:
             "Validation run found (found conclusions: %s)" % conclusions
         )
 
-    latest = success_runs[0]
-    head_sha = latest["head_sha"]
-
-    resolved = resolve_tree(repo, head_sha)
     expected = resolve_tree(repo, source_tree)
 
-    if resolved != expected:
-        raise WindowsValidationTreeMismatchError(
-            "WindowsValidationTreeMismatchError: successful run tree "
-            "%s differs from source tree %s" % (resolved, expected)
+    unresolvable_head = False
+    for run in success_runs:
+        head_sha = run.get("head_sha")
+        if not head_sha:
+            continue
+        try:
+            resolved = resolve_tree(repo, head_sha)
+        except WindowsValidationHeadCommitUnresolvableError:
+            unresolvable_head = True
+            continue
+        if resolved == expected:
+            return "passed"
+
+    if unresolvable_head:
+        raise WindowsValidationHeadCommitUnresolvableError(
+            "WindowsValidationHeadCommitUnresolvableError: "
+            "head commit of a successful run cannot be resolved"
         )
 
-    return "passed"
+    raise WindowsValidationTreeMismatchError(
+        "WindowsValidationTreeMismatchError: no successful run tree "
+        "matches source tree %s" % expected
+    )
 
 
 def main(argv=None) -> int:

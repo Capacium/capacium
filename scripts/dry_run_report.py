@@ -33,7 +33,6 @@ def build_report(
     audience_gate: str,
     before: dict,
     after: dict,
-    windows_validation_gate: str | None = None,
     sdist_sha256: str | None = None,
     wheel_sha256: str | None = None,
     digest_comparison: str | None = None,
@@ -54,8 +53,6 @@ def build_report(
         "before": before,
         "after": after,
     }
-    if windows_validation_gate is not None:
-        report["gates"]["windows_validation"] = windows_validation_gate
     if sdist_sha256 is not None or wheel_sha256 is not None or digest_comparison is not None:
         report["digests"] = {}
         if sdist_sha256 is not None:
@@ -94,10 +91,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--audience-gate", required=True,
         help="measured audience gate result (passed, failed, or not run)"
-    )
-    parser.add_argument(
-        "--windows-validation-gate", default=None,
-        help="measured Windows Validation gate result (passed, failed, or not run)"
     )
     parser.add_argument(
         "--before", required=True,
@@ -165,7 +158,6 @@ def main(argv: list[str] | None = None) -> int:
         audience_gate=args.audience_gate,
         before=before,
         after=after,
-        windows_validation_gate=args.windows_validation_gate,
         sdist_sha256=args.sdist_sha256,
         wheel_sha256=args.wheel_sha256,
         digest_comparison=args.digest_comparison,

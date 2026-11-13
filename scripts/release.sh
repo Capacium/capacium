@@ -328,8 +328,8 @@ TITLE_GATE_PY
     WINVAL_STDERR="$(mktemp)"
     trap 'rm -rf "$BUILD_DIR" "$COMPARE_STDERR" "$WINVAL_STDERR"' EXIT
     set +e
-    WINVAL_OUT="$(python3 scripts/check_windows_validation.py \
-        "${WINVAL_ARGS[@]}" 2>"$WINVAL_STDERR")"
+    python3 scripts/check_windows_validation.py \
+        "${WINVAL_ARGS[@]}" >/dev/null 2>"$WINVAL_STDERR"
     WINVAL_EXIT=$?
     set -e
     if [ $WINVAL_EXIT -eq 0 ]; then
@@ -366,7 +366,6 @@ TITLE_GATE_PY
         --title-gate "$TITLE_GATE"
         --notes-gate "$NOTES_GATE"
         --audience-gate "$AUDIENCE_GATE"
-        --windows-validation-gate "$WINDOWS_VALIDATION_GATE"
         --before "$BEFORE"
         --after "$AFTER"
     )
