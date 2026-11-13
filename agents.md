@@ -119,7 +119,7 @@ src/capacium/
 - **Naming**: Release titles MUST follow `Capacium vX.Y.Z` format (e.g. `Capacium v0.9.0`). Git tags use bare `vX.Y.Z`.
 - **Pre-release names** also follow the same format: `Capacium vX.Y.Z RC N`.
 - **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
-- **Post-release check**: After creating a release, verify the title matches `Capacium vX.Y.Z` via `gh release view <tag> --json name`.
+- **Post-release check**: After a final release, verify the engine-created release title on Forgejo matches `Capacium vX.Y.Z` (release.sh Step 7b performs this verification via the Forgejo API at release.sh:484-489).
 - **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes
@@ -206,9 +206,18 @@ existing release — it never creates, edits or deletes the release object itsel
 This follows the standard model documented in
 [lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
+For **release candidates**, `.github/workflows/prerelease.yml` creates the tag
+and the GitHub pre-release object (`gh release create` at prerelease.yml:101).
+
 The local script (`scripts/release.sh`) is a convenience tool for version bump,
 commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
-runs the same gates the Forgejo workflow would run.
+runs the same gates the Forgejo workflow would run. It **verifies, it does not
+create**, the release object: Step 7 issues a read-only `GET` against the
+Forgejo releases API, passes the returned JSON to
+`scripts/check_release_body.py`, and exits non-zero with a named error when the
+release is absent, the body is empty, or the body lacks the tag's CHANGELOG
+section (`check_release_body.py` names the specific condition `AttachError`).
+An absent release fails the verification; it is never a reason to write one.
 
 ### Dry-run
 
@@ -301,10 +310,14 @@ After every release, you MUST verify:
    ```
    All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
 
-4. **Release title**: Verify the engine-created release title matches
-   `Capacium vX.Y.Z`:
+4. **Release title**: Verify the engine-created release title on Forgejo matches
+   `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b
+   (FORGEJO_API GET at release.sh:467-470, title check at release.sh:484-489).
+   For a manual check:
    ```bash
-   gh release view v0.10.10 --json name
+   curl -sH "Authorization: token ${FORGEJO_TOKEN}" \
+     "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+     | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
    ```
 
 **Guard rails enforced by CI:**
@@ -316,7 +329,7 @@ After every release, you MUST verify:
 - `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
 - `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
 - `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
-- `prerelease.yml`: Triggered manually via workflow_dispatch. Builds binaries, publishes to GitHub Releases as pre-release.
+- `prerelease.yml`: Triggered manually via workflow_dispatch. Creates RC tags and GitHub pre-release objects with a commit-log summary; attaches no binaries.
 - `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
 - `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
 - `publish.yml`: Manual trigger for PyPI workflow.
@@ -338,8 +351,11 @@ ruff check src/ tests/ --fix && pytest tests/ -q
 # 4. Verify CI passed (ci.yml: success + codeql.yml: success)
 gh run list --repo Capacium/capacium --limit 3
 
-# 5. Verify the engine-created release title
-gh release view v0.10.10 --json name
+# 5. Verify the engine-created release title (release.sh Step 7b does this)
+# Manual equivalent:
+curl -sH "Authorization: token \${FORGEJO_TOKEN}" \
+  "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
 ```
 
 **Never:**
