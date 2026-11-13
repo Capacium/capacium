@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
@@ -430,6 +432,8 @@ class TestBuildUnavailable:
     exercising the real release.sh build block.
     """
 
+    @pytest.mark.skipif(sys.platform.startswith("win"),
+                        reason="Unix build-chain shim test — Windows uses a different build chain")
     def test_build_unavailable_shim(self, tmp_path):
         """A python shim that fails -m build exits non-zero."""
         shim_dir = tmp_path / "shim_bin"

@@ -330,6 +330,11 @@ def _cli_env(home: Path, evidence: Path | None = None) -> dict:
         "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
         "NO_COLOR": "1",
     }
+    # On Windows the child interpreter needs SYSTEMROOT to initialize the
+    # C runtime and Winsock; without it Python 3.10 fails with
+    # _Py_HashRandomization_Init and 3.11+ fail with WinError 10106.
+    if sys.platform == "win32" and "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     if evidence is not None:
         env[EVIDENCE_DIR_ENV] = str(evidence)
         env["CAP117_TESTED_COMMIT"] = _tested_commit()

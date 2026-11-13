@@ -76,6 +76,57 @@ from capacium.runtimes import (
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
 
+
+def _write_entrypoint_script(script_path, content, platform=None):
+    """Write a platform-appropriate executable entrypoint script.
+
+    On POSIX the content is written with a shebang and made executable.
+    On Windows a ``.cmd`` batch wrapper is written that starts
+    ``sys.executable`` with the Python script content, which is
+    stored in a companion ``.py`` file alongside the wrapper.
+    """
+    if platform is None:
+        platform = sys.platform
+
+    script_path = Path(script_path)
+
+    if platform.startswith("win"):
+        # Write the Python script to a companion .py file
+        py_path = script_path.with_suffix(".py")
+        py_path.write_text(content)
+        # Write a .cmd wrapper that invokes sys.executable
+        script_path.write_text(
+            f'@echo off\r\n'
+            f'"{sys.executable}" "{py_path}" %*\r\n'
+        )
+    else:
+        script_path.write_text("#!/usr/bin/env python3\n" + content)
+        script_path.chmod(0o755)
+
+def test_write_entrypoint_script_windows_output(tmp_path):
+    """_write_entrypoint_script with platform='win32' writes a .cmd
+    batch wrapper that starts sys.executable with the companion .py
+    file, uses @echo off, CRLF line endings, and forwards arguments
+    via %*."""
+    script = tmp_path / "test_entrypoint"
+    content = "import sys\nprint('hello')\n"
+    _write_entrypoint_script(script, content, platform="win32")
+
+    # .cmd wrapper exists and is a batch file
+    assert script.is_file()
+    # read_bytes to preserve CRLF (read_text normalises line endings)
+    raw = script.read_bytes()
+    assert raw.startswith(b"@echo off")
+    assert b"\r\n" in raw
+    assert b"%*" in raw
+    assert sys.executable.encode() in raw
+
+    # Companion .py file exists with the original content
+    py_path = script.with_suffix(".py")
+    assert py_path.is_file()
+    assert py_path.read_text() == content
+
+
 @pytest.fixture
 def temp_home(monkeypatch, tmp_path):
     """Redirect ~/.capacium to a temporary directory."""
@@ -104,8 +155,7 @@ def fake_generation(temp_home):
     target.mkdir(parents=True, exist_ok=True)
 
     script = target / entrypoint_filename("main")
-    script.write_text(textwrap.dedent("""\
-        #!/usr/bin/env python3
+    _write_entrypoint_script(script, textwrap.dedent("""\
         import sys
         if len(sys.argv) > 1 and sys.argv[1] == "--version":
             print("test-skill v1.0.0")
@@ -116,7 +166,6 @@ def fake_generation(temp_home):
         else:
             print("running test-skill")
     """))
-    script.chmod(0o755)
 
     # Create a real importable Python module so the import probe works
     pkg = target / "test_skill"
@@ -148,8 +197,7 @@ def fake_python_generation(temp_home):
     (target / "main_module.py").write_text("")
 
     script = target / entrypoint_filename("main")
-    script.write_text(textwrap.dedent("""\
-        #!/usr/bin/env python3
+    _write_entrypoint_script(script, textwrap.dedent("""\
         import sys
         if len(sys.argv) > 1 and sys.argv[1] == "--version":
             print("test-pkg v2.0.0")
@@ -162,7 +210,6 @@ def fake_python_generation(temp_home):
             if data:
                 sys.stdout.write(data)
     """))
-    script.chmod(0o755)
 
     meta = target / ".generation.json"
     meta.write_text(json.dumps({"digest": digest}))
@@ -370,15 +417,13 @@ class TestActivation:
         target_b = gen_dir_b / digest_b
         target_b.mkdir(parents=True)
         script_b = target_b / entrypoint_filename("main")
-        script_b.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
+        _write_entrypoint_script(script_b, textwrap.dedent("""\
             import sys
             if len(sys.argv) > 1 and sys.argv[1] == "--version":
                 print("test-skill v2.0.0")
             else:
                 print("running v2")
         """))
-        script_b.chmod(0o755)
         (target_b / ".generation.json").write_text(json.dumps({"digest": digest_b}))
 
         # Second activation
@@ -406,8 +451,7 @@ class TestActivation:
 
         # Create a broken executable
         broken = target / entrypoint_filename("main")
-        broken.write_text("#!/bin/false\nexit 1\n")
-        broken.chmod(0o755)
+        _write_entrypoint_script(broken, "#!/bin/false\nexit 1\n")
         (target / ".generation.json").write_text(json.dumps({"digest": digest}))
 
         unit = RuntimeUnit(owner="test", name="broken",
@@ -491,8 +535,7 @@ class TestActivation:
 class TestExec:
     def test_exec_entrypoint_stdout(self, tmp_path):
         script = tmp_path / "echo_test"
-        script.write_text("#!/bin/sh\necho hello world\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script, "import sys\nprint('hello world')\n")
 
         result = exec_entrypoint(script, ["--flag"])
         assert result.exit_code == 0
@@ -500,8 +543,7 @@ class TestExec:
 
     def test_exec_entrypoint_exit_code(self, tmp_path):
         script = tmp_path / "exit_test"
-        script.write_text("#!/bin/sh\nexit 42\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
 
         result = exec_entrypoint(script, [])
         assert result.exit_code == 42
@@ -552,8 +594,8 @@ class TestExec:
 
     def test_exec_entrypoint_forwards_exit_code_on_error(self, tmp_path):
         script = tmp_path / "error_test"
-        script.write_text("#!/bin/sh\necho 'error message' >&2\nexit 7\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script,
+            "import sys\nsys.stderr.write('error message\\n')\nsys.exit(7)\n")
 
         result = exec_entrypoint(script, [])
         assert result.exit_code == 7
@@ -564,6 +606,8 @@ class TestExec:
 # ──────────────────────────────────────────────────────────────────────
 
 class TestShims:
+    @pytest.mark.skipif(sys.platform.startswith("win"),
+                        reason="Unix shim test — Windows uses .bat shims")
     def test_unix_shim_creates_executable(self, tmp_path):
         shim_path = tmp_path / "shims" / "test-skill"
         generate_shim("test/test-skill", shim_path)
@@ -572,6 +616,8 @@ class TestShims:
         content = shim_path.read_text()
         assert "cap exec test/test-skill" in content
 
+    @pytest.mark.skipif(sys.platform.startswith("win"),
+                        reason="Unix shim test — Windows uses .bat shims")
     def test_unix_shim_contains_shebang(self, tmp_path):
         shim_path = tmp_path / "shims" / "test-skill"
         generate_shim("test/test-skill", shim_path)
@@ -675,15 +721,14 @@ class TestHandleExec:
 class TestMcpStdio:
     def test_exec_mcp_stdio_runs_and_returns_exit_code(self, tmp_path):
         script = tmp_path / "mcp_test"
-        script.write_text("#!/bin/sh\necho '{\"jsonrpc\":\"2.0\",\"result\":{}}'\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script,
+            'import sys\nsys.stdout.write(\'{"jsonrpc":"2.0","result":{}}\\n\')\n')
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 0
 
     def test_exec_mcp_stdio_exit_code(self, tmp_path):
         script = tmp_path / "mcp_exit"
-        script.write_text("#!/bin/sh\nexit 42\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 42
 
@@ -988,8 +1033,7 @@ class TestMcpStdioRealChild:
     def test_mcp_stdio_real_child_stdout_only(self, tmp_path):
         """MCP stdio emits protocol bytes on stdout, diagnostics on stderr."""
         script = tmp_path / "mcp_real"
-        script.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
+        _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
             resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
@@ -998,14 +1042,12 @@ class TestMcpStdioRealChild:
             sys.stderr.write("DEBUG: processed request\\n")
             sys.stderr.flush()
         """))
-        script.chmod(0o755)
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 0
 
     def test_mcp_stdio_real_child_exit_code(self, tmp_path):
         script = tmp_path / "mcp_exit_real"
-        script.write_text("#!/bin/sh\nexit 42\n")
-        script.chmod(0o755)
+        _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 42
 
@@ -1258,8 +1300,7 @@ class TestSevenStatesNoGuessing:
 class TestMcpStdioProtocolClean:
     def test_mcp_stdio_stdout_clean_with_real_child(self, tmp_path):
         script = tmp_path / "mcp_proto"
-        script.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
+        _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
             resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})
@@ -1268,7 +1309,6 @@ class TestMcpStdioProtocolClean:
             sys.stderr.write("DEBUG: init done\\n")
             sys.stderr.flush()
         """))
-        script.chmod(0o755)
 
         import subprocess as sp
         proc = sp.run(
@@ -1283,8 +1323,7 @@ class TestMcpStdioProtocolClean:
 
     def test_mcp_stdio_child_receives_stdin(self, tmp_path):
         script = tmp_path / "mcp_stdin"
-        script.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
+        _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
             req = json.loads(line)
@@ -1295,7 +1334,6 @@ class TestMcpStdioProtocolClean:
                 }) + "\\n")
             sys.stdout.flush()
         """))
-        script.chmod(0o755)
 
         import subprocess as sp
         req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})

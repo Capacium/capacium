@@ -119,7 +119,8 @@ class TestRuntimeBuilderPlatform:
         main = Path(result.build_dir) / "main"
         assert main.is_file()
         assert main.read_bytes() == _POSIX_GOLDEN_STRING_CMD
-        assert os.stat(main).st_mode & 0o777 == 0o755
+        if sys.platform != "win32":
+            assert os.stat(main).st_mode & 0o777 == 0o755
 
     def test_posix_build_writes_golden_bytes_list_command(self, tmp_path):
         """POSIX build for a tuple command matches the golden bytes."""
@@ -133,7 +134,8 @@ class TestRuntimeBuilderPlatform:
         main = Path(result.build_dir) / "main"
         assert main.is_file()
         assert main.read_bytes() == _POSIX_GOLDEN_LIST_CMD
-        assert os.stat(main).st_mode & 0o777 == 0o755
+        if sys.platform != "win32":
+            assert os.stat(main).st_mode & 0o777 == 0o755
 
     def test_windows_build_writes_golden_bytes_string_command(self, tmp_path):
         """Windows build output matches the golden bytes exactly."""
@@ -147,7 +149,8 @@ class TestRuntimeBuilderPlatform:
         main = Path(result.build_dir) / "main.cmd"
         assert main.is_file()
         assert main.read_bytes() == _WINDOWS_GOLDEN_STRING_CMD
-        assert os.stat(main).st_mode & 0o777 == 0o755
+        if sys.platform != "win32":
+            assert os.stat(main).st_mode & 0o777 == 0o755
 
     def test_windows_build_writes_golden_bytes_list_command(self, tmp_path):
         """Windows build for a tuple command matches the golden bytes."""
@@ -161,7 +164,8 @@ class TestRuntimeBuilderPlatform:
         main = Path(result.build_dir) / "main.cmd"
         assert main.is_file()
         assert main.read_bytes() == _WINDOWS_GOLDEN_LIST_CMD
-        assert os.stat(main).st_mode & 0o777 == 0o755
+        if sys.platform != "win32":
+            assert os.stat(main).st_mode & 0o777 == 0o755
 
     def test_windows_build_has_no_shebang_script(self, tmp_path):
         """No shebang script is written for Windows — only the .cmd file."""
@@ -239,8 +243,9 @@ class TestRuntimeBuilderPlatform:
         )
         posix_mode = os.stat(Path(posix_result.build_dir) / "main").st_mode & 0o777
         win_mode = os.stat(Path(win_result.build_dir) / "main.cmd").st_mode & 0o777
-        assert posix_mode == 0o755
-        assert win_mode == 0o755
+        if sys.platform != "win32":
+            assert posix_mode == 0o755
+            assert win_mode == 0o755
 
 
 # ── _find_executable with platform argument ───────────────────────────────
