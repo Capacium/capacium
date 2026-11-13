@@ -93,6 +93,6 @@ def test_install_lint_test_parity():
             )
 
     assert not mismatches, (
-        f"Step parity failure(s) — windows-validation.yml must match release.yml:\n\n"
+        "Step parity failure(s) — windows-validation.yml must match release.yml:\n\n"
         + "\n\n".join(mismatches)
     )
