@@ -119,7 +119,7 @@ src/capacium/
 - **Naming**: Release titles MUST follow `Capacium vX.Y.Z` format (e.g. `Capacium v0.9.0`). Git tags use bare `vX.Y.Z`.
 - **Pre-release names** also follow the same format: `Capacium vX.Y.Z RC N`.
 - **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
-- **Post-release check**: After a final release, verify the engine-created release title on Forgejo matches `Capacium vX.Y.Z` (release.sh Step 7b performs this verification via the Forgejo API at release.sh:484-489).
+- **Post-release check**: After a final release, verify the engine-created release title on Forgejo matches `Capacium vX.Y.Z` (release.sh Step 7b performs this verification via the Forgejo API).
 - **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes
@@ -226,12 +226,17 @@ An absent release fails the verification; it is never a reason to write one.
 ```
 
 The dry-run path:
-- Runs the title gate, changelog extraction and audience gate, bracketed by
-  before/after listings of all six publication surfaces (tags, releases,
-  mirror refs, PyPI, GHCR, Homebrew tap).
+- Runs the title gate, changelog extraction, audience gate, and Windows
+  Validation gate, bracketed by before/after listings of all six publication
+  surfaces (tags, releases, mirror refs, PyPI, GHCR, Homebrew tap).
 - Builds sdist and wheel with `SOURCE_DATE_EPOCH=1700000000` and
   `PYTHONHASHSEED=0`, then compares both digests against a qualified-digests
   v1 bundle.
+- The Windows Validation gate fetches `windows-validation.yml`
+  workflow runs from the GitHub API (read-only GET) and requires a run with
+  conclusion `success` whose head commit tree equals the source tree of the
+  candidate commit. The GitHub API base is injectable via the
+  `WINDOWS_VALIDATION_API_BASE` environment variable.
 - Writes the report through `scripts/dry_run_report.py`, the same single
   writer shared with the Forgejo workflow `dry_run` input.
 - Creates **no tag, no release, no mirror push, no PyPI upload, no GHCR push
@@ -311,8 +316,7 @@ After every release, you MUST verify:
    All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
 
 4. **Release title**: Verify the engine-created release title on Forgejo matches
-   `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b
-   (FORGEJO_API GET at release.sh:467-470, title check at release.sh:484-489).
+   `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b.
    For a manual check:
    ```bash
    curl -sH "Authorization: token ${FORGEJO_TOKEN}" \
@@ -345,13 +349,23 @@ rm -rf build/lib/ dist/ *.egg-info
 # 2. Local: verify
 ruff check src/ tests/ --fix && pytest tests/ -q
 
-# 3. Bump version, commit, push, wait for CI, Homebrew tap update
+# 3. Dispatch Windows Validation on the candidate branch
+#    Go to https://github.com/Capacium/capacium/actions/workflows/windows-validation.yml
+#    and click "Run workflow" on the merged dev tip. Wait for success on all three
+#    Python versions (3.10, 3.11, 3.12).
+
+# 4. Run the dry-run with the qualified-digests bundle; the Windows Validation
+#    gate is an additional gate that fails the dry-run when no successful run
+#    matches the candidate tree.
+./scripts/release.sh 0.10.10 --dry-run --qualified-digests /path/to/qualified-digests.json
+
+# 5. Bump version, commit, push, wait for CI, Homebrew tap update
 ./scripts/release.sh 0.10.10
 
-# 4. Verify CI passed (ci.yml: success + codeql.yml: success)
+# 6. Verify CI passed (ci.yml: success + codeql.yml: success)
 gh run list --repo Capacium/capacium --limit 3
 
-# 5. Verify the engine-created release title (release.sh Step 7b does this)
+# 7. Verify the engine-created release title (release.sh Step 7b does this)
 # Manual equivalent:
 curl -sH "Authorization: token \${FORGEJO_TOKEN}" \
   "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
