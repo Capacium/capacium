@@ -103,6 +103,29 @@ def _write_entrypoint_script(script_path, content, platform=None):
         script_path.write_text("#!/usr/bin/env python3\n" + content)
         script_path.chmod(0o755)
 
+def test_write_entrypoint_script_windows_output(tmp_path):
+    """_write_entrypoint_script with platform='win32' writes a .cmd
+    batch wrapper that starts sys.executable with the companion .py
+    file, uses @echo off, CRLF line endings, and forwards arguments
+    via %*."""
+    script = tmp_path / "test_entrypoint"
+    content = "import sys\nprint('hello')\n"
+    _write_entrypoint_script(script, content, platform="win32")
+
+    # .cmd wrapper exists and is a batch file
+    assert script.is_file()
+    cmd_content = script.read_text()
+    assert cmd_content.startswith("@echo off")
+    assert "\r\n" in cmd_content
+    assert "%*" in cmd_content
+    assert f'"{sys.executable}"' in cmd_content
+
+    # Companion .py file exists with the original content
+    py_path = script.with_suffix(".py")
+    assert py_path.is_file()
+    assert py_path.read_text() == content
+
+
 @pytest.fixture
 def temp_home(monkeypatch, tmp_path):
     """Redirect ~/.capacium to a temporary directory."""
@@ -393,15 +416,13 @@ class TestActivation:
         target_b = gen_dir_b / digest_b
         target_b.mkdir(parents=True)
         script_b = target_b / entrypoint_filename("main")
-        script_b.write_text(textwrap.dedent("""\
-            #!/usr/bin/env python3
+        _write_entrypoint_script(script_b, textwrap.dedent("""\
             import sys
             if len(sys.argv) > 1 and sys.argv[1] == "--version":
                 print("test-skill v2.0.0")
             else:
                 print("running v2")
         """))
-        script_b.chmod(0o755)
         (target_b / ".generation.json").write_text(json.dumps({"digest": digest_b}))
 
         # Second activation
@@ -429,8 +450,7 @@ class TestActivation:
 
         # Create a broken executable
         broken = target / entrypoint_filename("main")
-        broken.write_text("#!/bin/false\nexit 1\n")
-        broken.chmod(0o755)
+        _write_entrypoint_script(broken, "#!/bin/false\nexit 1\n")
         (target / ".generation.json").write_text(json.dumps({"digest": digest}))
 
         unit = RuntimeUnit(owner="test", name="broken",
