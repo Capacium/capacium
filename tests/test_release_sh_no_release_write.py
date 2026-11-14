@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -260,4 +262,103 @@ class TestReleaseShNoNotesTemplate:
         # then gh release edit to fix it.
         assert 'gh release view "$TAG" --repo "$GITHUB_REPO" --json name' not in content, (
             "release.sh must not contain gh release view --json name for title fixup"
+        )
+
+
+# ── REL119-002: release.sh no longer rewrites capacium-models pin ─────────────
+
+
+def _split_sed_args(sed_cmd: str) -> list[str]:
+    """Split a sed shell command line into argv tokens.
+
+    Handles the ``sed -i '' "s/.../.../" file`` pattern used in release.sh.
+    The empty-string argument after -i is preserved.
+    """
+    tokens = shlex.split(sed_cmd)
+    # shlex.split normalizes '' to an empty string, which is what we want
+    # for sed -i '' (in-place with no backup suffix).
+    return tokens
+
+
+class TestReleaseShCapaciumModelsPin:
+    """The version-bump step's sed commands must leave the capacium-models
+    requirement unchanged.
+
+    This is a red proof: the test fails against the base because line 414
+    rewrites ``capacium-models>=1.1.0`` to ``capacium-models>=0.4.0``.
+    """
+
+    def test_capacium_models_pin_unchanged_after_version_bump_seds(
+        self, tmp_path: Path,
+    ):
+        """Run the Step 2 sed commands for pyproject.toml extracted from
+        release.sh against a temp copy and assert the capacium-models line
+        is unchanged."""
+        release_sh_text = RELEASE_SH.read_text(encoding="utf-8")
+
+        # Extract every sed line from Step 2 that targets pyproject.toml.
+        step2_start = release_sh_text.find(
+            "# ── Step 2: Bump versions"
+        )
+        assert step2_start != -1, "Step 2 marker not found"
+        step3_start = release_sh_text.find(
+            "# ── Step 3:", step2_start
+        )
+        step2_block = release_sh_text[
+            step2_start:step3_start if step3_start != -1 else None
+        ]
+
+        version = "1.1.9"
+        pyproject_seds: list[str] = []
+        for line in step2_block.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("sed "):
+                continue
+            if "pyproject.toml" not in stripped:
+                continue
+            # Substitute ${VERSION} with a fixed version.
+            sed_cmd = stripped.replace("${VERSION}", version)
+            pyproject_seds.append(sed_cmd)
+
+        assert pyproject_seds, (
+            "Step 2 must contain at least one sed targeting pyproject.toml"
+        )
+
+        src_pyproject = REPO_ROOT / "pyproject.toml"
+        tmp_pyproject = tmp_path / "pyproject.toml"
+        shutil.copy2(src_pyproject, tmp_pyproject)
+
+        before_lines = tmp_pyproject.read_text(encoding="utf-8").splitlines()
+        models_before = [ln for ln in before_lines
+                         if "capacium-models" in ln]
+        assert models_before, "pyproject.toml must have a capacium-models line"
+        models_line_before = models_before[0]
+
+        for sed_cmd in pyproject_seds:
+            # sed_cmd is e.g.: sed -i '' "s/^version = .../" pyproject.toml
+            # Split on whitespace respecting quotes.
+            # BSD ``sed -i ''`` is not portable (GNU sed on Linux reads the
+            # empty string as the script), so the s/// expression is applied
+            # with re.sub: the same pattern, any platform.
+            expr = next(
+                a for a in _split_sed_args(sed_cmd) if a.startswith("s/")
+            )
+            pattern, repl = re.split(r"(?<!\\)/", expr)[1:3]
+            text = tmp_pyproject.read_text(encoding="utf-8")
+            tmp_pyproject.write_text(
+                re.sub(pattern, repl, text, flags=re.M), encoding="utf-8",
+            )
+
+        after_lines = tmp_pyproject.read_text(encoding="utf-8").splitlines()
+        models_after = [ln for ln in after_lines
+                        if "capacium-models" in ln]
+        assert models_after, (
+            "capacium-models line must still exist after the seds"
+        )
+        models_line_after = models_after[0]
+
+        assert models_line_after == models_line_before, (
+            f"capacium-models line changed:\n"
+            f"  before: {models_line_before}\n"
+            f"  after:  {models_line_after}"
         )
