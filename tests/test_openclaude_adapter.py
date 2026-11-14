@@ -1654,8 +1654,11 @@ class TestOpenClaudeQualifiedLifecycle:
 
         # The exact qualified binary must start against the host state the
         # adapter just generated (isolated HOME, no network).
+        executable = _resolve_executable(
+            pinned_install["bin"], platform.system(),
+        )
         observed = subprocess.run(
-            [str(pinned_install["bin"]), "--help"],
+            [str(executable), "--help"],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "HOME": str(tmp_home),
                  "USERPROFILE": str(tmp_home)},
@@ -1759,9 +1762,20 @@ class TestOpenClaudeQualifiedLifecycle:
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0, combined
         assert pin["version"] in combined
-        package_root, metadata = _owning_package_metadata(
-            Path(shutil.which("openclaude"))
-        )
+        # The pinned binary must be the declared package. On POSIX the
+        # symlink resolves into the package root so _owning_package_metadata
+        # walks up to the package.json; on Windows shutil.which returns the
+        # .cmd shim in node_modules/.bin, whose parent chain never enters
+        # @twigpine/openclaude.
+        if platform.system() == "Windows":
+            package_root = pinned_install["package_root"]
+            metadata = json.loads(
+                (package_root / "package.json").read_text()
+            )
+        else:
+            package_root, metadata = _owning_package_metadata(
+                Path(shutil.which("openclaude"))
+            )
         assert metadata is not None
         assert metadata["name"] == pin["package"]
         assert package_root is not None
