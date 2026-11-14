@@ -47,6 +47,7 @@ import ast
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -1113,6 +1114,30 @@ class TestCommandResolutionHelper:
         assert result == bare
 
 
+def _shim_targets_inside(shim: Path, root: Path) -> bool:
+    """Windows only: does an npm ``.cmd`` shim launch a file inside ``root``?
+
+    npm writes shims in ``node_modules/.bin`` that reference their target
+    relative to the shim directory (``%dp0%\\..\\@scope\\pkg\\bin\\x``).
+    The shim itself never lives inside the package root, so identity is
+    proven by resolving every ``%dp0%`` reference against the shim directory.
+    """
+    if platform.system() != "Windows" or shim.suffix.lower() != ".cmd":
+        return False
+    try:
+        text = shim.read_text(errors="replace")
+    except OSError:
+        return False
+    for rel in re.findall(r'%~?dp0%?[\\/]+([^"\s%]+)', text):
+        target = Path(os.path.realpath(shim.parent / rel.replace("\\", "/")))
+        try:
+            target.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
 def _identity_violations(
     executable: Path, package_root: Path,
 ) -> list[str]:
@@ -1121,14 +1146,16 @@ def _identity_violations(
     An empty list means the executable resolves inside ``package_root``.
     """
     violations: list[str] = []
+    executable = _resolve_executable(Path(executable), platform.system())
     resolved = Path(os.path.realpath(executable))
     root = Path(os.path.realpath(package_root))
     try:
         resolved.relative_to(root)
     except ValueError:
-        violations.append(
-            f"executable {resolved} is outside package root {root}"
-        )
+        if not _shim_targets_inside(resolved, root):
+            violations.append(
+                f"executable {resolved} is outside package root {root}"
+            )
     parts = [part.lower() for part in resolved.parts]
     if "@gitlawb" in parts:
         violations.append(f"executable {resolved} belongs to @gitlawb scope")
@@ -1400,14 +1427,7 @@ class TestOpenClaudeIsolatedInstall:
             # The .cmd shim lives under node_modules/.bin, not inside the
             # package root itself. Verify that the .cmd script references
             # a path under the package root.
-            cmd_text = executable.read_text()
-            package_root_str = str(
-                install_record["package_root"].resolve()
-            )
-            assert package_root_str in cmd_text, (
-                f".cmd shim does not reference package root "
-                f"{package_root_str}"
-            )
+            assert violations == [], violations
         else:
             assert violations == []
 
@@ -1756,7 +1776,7 @@ class TestOpenClaudeQualifiedLifecycle:
     ):
         pin = _load_declared_pin()
         result = subprocess.run(
-            ["openclaude", "--version"],
+            [shutil.which("openclaude"), "--version"],
             capture_output=True, text=True, timeout=60,
         )
         combined = (result.stdout + result.stderr).strip()
@@ -1882,7 +1902,7 @@ class TestOpenClaudeHostClassifiedSmoke:
         nothing outside it."""
         env = {**os.environ, "HOME": str(tmp_home), "USERPROFILE": str(tmp_home)}
         result = subprocess.run(
-            ["openclaude", "--version"],
+            [shutil.which("openclaude"), "--version"],
             capture_output=True, text=True, timeout=60, env=env,
         )
         combined = (result.stdout + result.stderr).strip()
@@ -2090,3 +2110,39 @@ class TestOpenClaudeObsoleteScopeIsNegativeControl:
         assert verdict["qualified"] is True
         assert verdict["violations"] == []
         assert verdict["evidence"] == f"{pin['package']}@{pin['version']}"
+
+
+class TestShimIdentityWindows:
+    """The npm ``.cmd`` shim proves identity by the target it launches."""
+
+    _SHIM = (
+        '@ECHO off\r\nSETLOCAL\r\nCALL :find_dp0\r\n'
+        'IF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n)\r\n'
+        '"%_prog%"  "%dp0%\\..\\@twigpine\\openclaude\\bin\\openclaude" %*\r\n'
+    )
+
+    def _layout(self, tmp_path):
+        bin_dir = tmp_path / "node_modules" / ".bin"
+        root = tmp_path / "node_modules" / "@twigpine" / "openclaude"
+        (root / "bin").mkdir(parents=True)
+        bin_dir.mkdir(parents=True)
+        shim = bin_dir / "openclaude.cmd"
+        return shim, root
+
+    def test_shim_targeting_package_root_is_accepted(self, tmp_path, monkeypatch):
+        shim, root = self._layout(tmp_path)
+        shim.write_text(self._SHIM)
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        assert _shim_targets_inside(shim, root)
+
+    def test_shim_targeting_elsewhere_is_rejected(self, tmp_path, monkeypatch):
+        shim, root = self._layout(tmp_path)
+        shim.write_text(self._SHIM.replace("@twigpine", "@gitlawb"))
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        assert not _shim_targets_inside(shim, root)
+
+    def test_posix_never_trusts_a_shim(self, tmp_path, monkeypatch):
+        shim, root = self._layout(tmp_path)
+        shim.write_text(self._SHIM)
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        assert not _shim_targets_inside(shim, root)
