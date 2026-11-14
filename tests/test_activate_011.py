@@ -534,7 +534,7 @@ class TestActivation:
 
 class TestExec:
     def test_exec_entrypoint_stdout(self, tmp_path):
-        script = tmp_path / "echo_test"
+        script = tmp_path / entrypoint_filename("echo_test")
         _write_entrypoint_script(script, "import sys\nprint('hello world')\n")
 
         result = exec_entrypoint(script, ["--flag"])
@@ -542,7 +542,7 @@ class TestExec:
         assert result.error == ""
 
     def test_exec_entrypoint_exit_code(self, tmp_path):
-        script = tmp_path / "exit_test"
+        script = tmp_path / entrypoint_filename("exit_test")
         _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
 
         result = exec_entrypoint(script, [])
@@ -593,7 +593,7 @@ class TestExec:
         assert "not found in store" in result.error.lower()
 
     def test_exec_entrypoint_forwards_exit_code_on_error(self, tmp_path):
-        script = tmp_path / "error_test"
+        script = tmp_path / entrypoint_filename("error_test")
         _write_entrypoint_script(script,
             "import sys\nsys.stderr.write('error message\\n')\nsys.exit(7)\n")
 
@@ -720,14 +720,14 @@ class TestHandleExec:
 
 class TestMcpStdio:
     def test_exec_mcp_stdio_runs_and_returns_exit_code(self, tmp_path):
-        script = tmp_path / "mcp_test"
+        script = tmp_path / entrypoint_filename("mcp_test")
         _write_entrypoint_script(script,
             'import sys\nsys.stdout.write(\'{"jsonrpc":"2.0","result":{}}\\n\')\n')
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 0
 
     def test_exec_mcp_stdio_exit_code(self, tmp_path):
-        script = tmp_path / "mcp_exit"
+        script = tmp_path / entrypoint_filename("mcp_exit")
         _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 42
@@ -1032,7 +1032,7 @@ class TestProcessObservation:
 class TestMcpStdioRealChild:
     def test_mcp_stdio_real_child_stdout_only(self, tmp_path):
         """MCP stdio emits protocol bytes on stdout, diagnostics on stderr."""
-        script = tmp_path / "mcp_real"
+        script = tmp_path / entrypoint_filename("mcp_real")
         _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
@@ -1046,7 +1046,7 @@ class TestMcpStdioRealChild:
         assert result.exit_code == 0
 
     def test_mcp_stdio_real_child_exit_code(self, tmp_path):
-        script = tmp_path / "mcp_exit_real"
+        script = tmp_path / entrypoint_filename("mcp_exit_real")
         _write_entrypoint_script(script, "import sys\nsys.exit(42)\n")
         result = exec_mcp_stdio(script, [])
         assert result.exit_code == 42
@@ -1299,7 +1299,7 @@ class TestSevenStatesNoGuessing:
 
 class TestMcpStdioProtocolClean:
     def test_mcp_stdio_stdout_clean_with_real_child(self, tmp_path):
-        script = tmp_path / "mcp_proto"
+        script = tmp_path / entrypoint_filename("mcp_proto")
         _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
@@ -1322,7 +1322,7 @@ class TestMcpStdioProtocolClean:
         assert "DEBUG" in stderr_data
 
     def test_mcp_stdio_child_receives_stdin(self, tmp_path):
-        script = tmp_path / "mcp_stdin"
+        script = tmp_path / entrypoint_filename("mcp_stdin")
         _write_entrypoint_script(script, textwrap.dedent("""\
             import sys, json
             line = sys.stdin.readline()
