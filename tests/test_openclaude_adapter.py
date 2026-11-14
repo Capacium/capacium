@@ -1053,6 +1053,23 @@ def _resolve_command(command: str, platform_name: str) -> str:
     return command
 
 
+def _resolve_executable(executable: Path, platform_name: str) -> Path:
+    """Return the platform-appropriate executable path.
+
+    On Windows, npm writes ``.cmd`` shims alongside the bare binary name
+    in ``node_modules/.bin``. PATHEXT resolution makes ``shutil.which``
+    return the ``.cmd`` file, so tests that compare resolved paths must
+    account for the suffix.
+
+    On POSIX the path is returned unchanged.
+    """
+    if platform_name == "Windows":
+        cmd_path = executable.with_suffix(".cmd")
+        if cmd_path.exists():
+            return cmd_path
+    return executable
+
+
 def _npm_available() -> bool:
     return shutil.which("npm") is not None and shutil.which("node") is not None
 
@@ -1072,6 +1089,28 @@ class TestCommandResolutionHelper:
     def test_windows_falls_back_to_bare_command_when_not_found(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _: None)
         assert _resolve_command("npm", "Windows") == "npm"
+
+    def test_resolve_executable_posix_returns_unchanged(self):
+        """POSIX platforms return the path unchanged."""
+        p = Path("/usr/bin/openclaude")
+        assert _resolve_executable(p, "Linux") == p
+        assert _resolve_executable(p, "Darwin") == p
+
+    def test_resolve_executable_windows_returns_cmd_when_present(self, tmp_path):
+        """Windows returns the .cmd shim when it exists alongside the binary."""
+        bare = tmp_path / "openclaude"
+        cmd = tmp_path / "openclaude.cmd"
+        bare.write_text("#!/bin/sh\necho posix")
+        cmd.write_text("@echo off\r\necho windows")
+        result = _resolve_executable(bare, "Windows")
+        assert result == cmd
+
+    def test_resolve_executable_windows_falls_back_to_bare(self, tmp_path):
+        """Windows returns the bare path when no .cmd shim exists."""
+        bare = tmp_path / "openclaude"
+        bare.write_text("#!/bin/sh\necho posix")
+        result = _resolve_executable(bare, "Windows")
+        assert result == bare
 
 
 def _identity_violations(
@@ -1269,6 +1308,9 @@ def pinned_on_path(pinned_install, monkeypatch) -> Path:
 
     Any Capacium or adapter lookup of ``openclaude`` must resolve to the
     isolated qualified executable, never to a global installation.
+
+    On Windows PATHEXT resolution returns ``openclaude.CMD``; the fixture
+    accepts both the bare path and the ``.cmd`` shim.
     """
     bin_dir = pinned_install["bin"].parent
     monkeypatch.setenv(
@@ -1276,9 +1318,13 @@ def pinned_on_path(pinned_install, monkeypatch) -> Path:
     )
     resolved = shutil.which("openclaude")
     assert resolved is not None, "pinned executable not on PATH"
-    assert Path(os.path.realpath(resolved)) == Path(
-        os.path.realpath(pinned_install["bin"])
-    ), f"PATH resolved {resolved}, expected {pinned_install['bin']}"
+    resolved_path = Path(os.path.realpath(resolved))
+    expected_path = Path(os.path.realpath(
+        _resolve_executable(pinned_install["bin"], platform.system())
+    ))
+    assert resolved_path == expected_path, (
+        f"PATH resolved {resolved}, expected {pinned_install['bin']}"
+    )
     return bin_dir
 
 
@@ -1337,11 +1383,33 @@ class TestOpenClaudeIsolatedInstall:
         assert package_json["version"] == pin["version"]
 
     def test_resolved_executable_lives_under_package_root(self, install_record):
-        assert install_record["bin"].exists() or install_record["bin"].is_symlink()
-        violations = _identity_violations(
-            install_record["bin"], install_record["package_root"],
+        """The executable resolves under the package root.
+
+        On Windows, npm writes a ``.cmd`` wrapper in ``node_modules/.bin``
+        alongside the bare POSIX shim. The ``.cmd`` shim is a batch script
+        that references the actual binary inside the package root.
+        """
+        executable = _resolve_executable(
+            install_record["bin"], platform.system(),
         )
-        assert violations == []
+        assert executable.exists()
+        violations = _identity_violations(
+            executable, install_record["package_root"],
+        )
+        if platform.system() == "Windows":
+            # The .cmd shim lives under node_modules/.bin, not inside the
+            # package root itself. Verify that the .cmd script references
+            # a path under the package root.
+            cmd_text = executable.read_text()
+            package_root_str = str(
+                install_record["package_root"].resolve()
+            )
+            assert package_root_str in cmd_text, (
+                f".cmd shim does not reference package root "
+                f"{package_root_str}"
+            )
+        else:
+            assert violations == []
 
     def test_installed_binary_version_string_contains_declared_version(
         self, install_record,
@@ -1351,9 +1419,16 @@ class TestOpenClaudeIsolatedInstall:
         This is a narrow claim about output text, not package identity:
         identity is established by ``_pin_violations`` and executable
         ownership, never by parsing ``--version``.
+
+        On Windows, npm writes a ``.cmd`` shim in ``node_modules/.bin``;
+        the bare ``openclaude`` is a POSIX shell script that cannot be
+        executed directly. The ``.cmd`` shim forwards to the real binary.
         """
+        executable = _resolve_executable(
+            install_record["bin"], platform.system(),
+        )
         result = subprocess.run(
-            [str(install_record["bin"]), "--version"],
+            [str(executable), "--version"],
             capture_output=True, text=True, timeout=60,
         )
         combined = (result.stdout + result.stderr).strip()
@@ -1579,8 +1654,11 @@ class TestOpenClaudeQualifiedLifecycle:
 
         # The exact qualified binary must start against the host state the
         # adapter just generated (isolated HOME, no network).
+        executable = _resolve_executable(
+            pinned_install["bin"], platform.system(),
+        )
         observed = subprocess.run(
-            [str(pinned_install["bin"]), "--help"],
+            [str(executable), "--help"],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "HOME": str(tmp_home),
                  "USERPROFILE": str(tmp_home)},
@@ -1684,9 +1762,20 @@ class TestOpenClaudeQualifiedLifecycle:
         combined = (result.stdout + result.stderr).strip()
         assert result.returncode == 0, combined
         assert pin["version"] in combined
-        package_root, metadata = _owning_package_metadata(
-            Path(shutil.which("openclaude"))
-        )
+        # The pinned binary must be the declared package. On POSIX the
+        # symlink resolves into the package root so _owning_package_metadata
+        # walks up to the package.json; on Windows shutil.which returns the
+        # .cmd shim in node_modules/.bin, whose parent chain never enters
+        # @twigpine/openclaude.
+        if platform.system() == "Windows":
+            package_root = pinned_install["package_root"]
+            metadata = json.loads(
+                (package_root / "package.json").read_text()
+            )
+        else:
+            package_root, metadata = _owning_package_metadata(
+                Path(shutil.which("openclaude"))
+            )
         assert metadata is not None
         assert metadata["name"] == pin["package"]
         assert package_root is not None

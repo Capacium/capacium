@@ -22,12 +22,12 @@ def _cap(*args: str, env=None) -> subprocess.CompletedProcess:
         # When the caller sets HOME, also redirect all platform-home variables
         # so Path.home() resolves to the same sandboxed directory on Windows.
         if "HOME" in env:
-            full_env.setdefault("USERPROFILE", env["HOME"])
             home_str = env["HOME"]
+            full_env["USERPROFILE"] = home_str
             drive, sep, tail = home_str.partition(":")
             if drive and tail:
-                full_env.setdefault("HOMEDRIVE", drive + ":")
-                full_env.setdefault("HOMEPATH", tail)
+                full_env["HOMEDRIVE"] = drive + ":"
+                full_env["HOMEPATH"] = tail
     return subprocess.run(
         [sys.executable, "-m", "capacium.cli", *args],
         capture_output=True, text=True, env=full_env,
