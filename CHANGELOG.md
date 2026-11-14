@@ -11,7 +11,7 @@
   written by replacing the existing file instead of renaming over it, so a
   repeated write no longer fails when the destination is present.
 - On Windows `cap` now writes entrypoints as `.cmd` files and `cap exec` finds
-  them. PowerShell and cmd both run them.
+  them.
 
 ## [1.1.8] - 2026-11-12
 
