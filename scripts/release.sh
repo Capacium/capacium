@@ -411,6 +411,7 @@ echo -e "${YELLOW}[2/8] Bumping version to ${VERSION}...${NC}"
 
 # pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+
 # README.md
 sed -i '' -E "s/@v[0-9]+\.[0-9]+\.[0-9]+/@v${VERSION}/g" README.md
 sed -i '' -E "s/cap:[0-9]+\.[0-9]+\.[0-9]+/cap:${VERSION}/g" README.md

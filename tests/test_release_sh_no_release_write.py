@@ -337,8 +337,17 @@ class TestReleaseShCapaciumModelsPin:
         for sed_cmd in pyproject_seds:
             # sed_cmd is e.g.: sed -i '' "s/^version = .../" pyproject.toml
             # Split on whitespace respecting quotes.
-            args = _split_sed_args(sed_cmd)
-            subprocess.run(args, cwd=str(tmp_path), check=True)
+            # BSD ``sed -i ''`` is not portable (GNU sed on Linux reads the
+            # empty string as the script), so the s/// expression is applied
+            # with re.sub: the same pattern, any platform.
+            expr = next(
+                a for a in _split_sed_args(sed_cmd) if a.startswith("s/")
+            )
+            pattern, repl = re.split(r"(?<!\\)/", expr)[1:3]
+            text = tmp_pyproject.read_text(encoding="utf-8")
+            tmp_pyproject.write_text(
+                re.sub(pattern, repl, text, flags=re.M), encoding="utf-8",
+            )
 
         after_lines = tmp_pyproject.read_text(encoding="utf-8").splitlines()
         models_after = [ln for ln in after_lines
