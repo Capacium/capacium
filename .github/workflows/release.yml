@@ -157,6 +157,56 @@ jobs:
 
           echo "changelog entry for ${TAG} passed the audience gate"
 
+      - name: Check release body contains the CHANGELOG section
+        id: body_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_API_BASE: ${{ vars.RELEASE_API_BASE || 'https://api.github.com' }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+
+          # Fetch the release JSON from the GitHub API (or configured base).
+          RELEASE_JSON=$(mktemp)
+          trap 'rm -f "$RELEASE_JSON"' EXIT
+          python3 -c "
+          import json, os, sys, urllib.error, urllib.parse, urllib.request
+
+          token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+          if not token:
+              print('AttachError: GH_TOKEN is not set; cannot read the release', file=sys.stderr)
+              sys.exit(2)
+
+          repo = os.environ.get('GITHUB_REPOSITORY', '')
+          tag = os.environ.get('RELEASE_TAG', '')
+          if not repo or not tag:
+              print('AttachError: GITHUB_REPOSITORY and RELEASE_TAG must both be set', file=sys.stderr)
+              sys.exit(2)
+
+          api = (os.environ.get('RELEASE_API_BASE') or 'https://api.github.com').rstrip('/')
+          url = f'{api}/repos/{repo}/releases/tags/{urllib.parse.quote(tag)}'
+          req = urllib.request.Request(url)
+          req.add_header('Authorization', 'Bearer ' + token)
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  release = json.loads(resp.read().decode())
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  release = {'message': 'Not Found'}
+              else:
+                  print(f'AttachError: could not read the release for tag {tag}: HTTP {exc.code}', file=sys.stderr)
+                  sys.exit(2)
+
+          json.dump(release, sys.stdout)
+          " > "$RELEASE_JSON"
+
+          # Gate: the body must contain the CHANGELOG section for this tag.
+          python3 scripts/check_release_body.py "$TAG" --release-json "$RELEASE_JSON"
+
       - name: Attach assets to the engine-created release
         env:
           GH_TOKEN: ${{ github.token }}

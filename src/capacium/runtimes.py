@@ -276,6 +276,38 @@ class BuildResult:
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
+def entrypoint_filename(entry_name: str, platform: Optional[str] = None) -> str:
+    """Return the entrypoint file name for the given platform.
+
+    On POSIX the entry name is used directly. On Windows the ``.cmd``
+    suffix is appended so ``CreateProcess`` recognises the file as a
+    batch script.
+    """
+    if platform is None:
+        platform = sys.platform
+    if platform.startswith("win"):
+        return f"{entry_name}.cmd"
+    return entry_name
+
+
+def entrypoint_script_text(entry_cmd: str, platform: Optional[str] = None) -> str:
+    """Render the entrypoint script text for the given platform.
+
+    On POSIX this is a ``#!/bin/sh`` shebang script with ``exec`` and
+    ``"$@"`` forwarding. On Windows it is a batch script with ``@echo
+    off``, ``cd /d "%~dp0"``, ``%*`` forwarding and CRLF line endings.
+    """
+    if platform is None:
+        platform = sys.platform
+    if platform.startswith("win"):
+        return (
+            "@echo off\r\n"
+            f"cd /d \"%~dp0\"\r\n"
+            f"{entry_cmd} %*\r\n"
+        )
+    return f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && exec {entry_cmd} \"$@\"\n"
+
+
 class RuntimeBuilder:
     """Build runtimes in isolated output directories.
 
@@ -290,13 +322,21 @@ class RuntimeBuilder:
         self.generations_dir = generations_dir
         self._lock = threading.Lock()
 
-    def build(self, source_lock: SourceLock) -> BuildResult:
+    def build(self, source_lock: SourceLock,
+              platform: Optional[str] = None) -> BuildResult:
         """Perform an isolated build for the given source lock.
 
         The output digest is deterministic from the source-lock descriptor.
         Concurrent builds of the same digest converge: only one build
         actually runs, others detect the pre-existing output directory.
+
+        *platform* selects the target platform for entrypoint scripts
+        (default ``sys.platform``). The generation digest and
+        ``.generation.json`` content are unchanged by this choice.
         """
+        if platform is None:
+            platform = sys.platform
+
         # The output digest is the SHA-256 of the canonical descriptor
         output_digest = hashlib.sha256(
             source_lock.to_descriptor().encode("utf-8")
@@ -331,16 +371,16 @@ class RuntimeBuilder:
                 json.dump(manifest, f, sort_keys=True)
 
             # Create entrypoint scripts from the source lock entrypoints.
-            # Each entrypoint is written as a proper shebang shell script
-            # so probes (version, CLI, protocol) can execute it directly.
             for entry_name, entry_cmd in source_lock.entrypoints.items():
-                script_path = os.path.join(output_dir, entry_name)
                 if isinstance(entry_cmd, (list, tuple)):
                     cmd_str = " ".join(str(c) for c in entry_cmd)
                 else:
                     cmd_str = str(entry_cmd)
-                with open(script_path, "w") as f:
-                    f.write(f"#!/bin/sh\ncd \"$(dirname \"$0\")\" && exec {cmd_str} \"$@\"\n")
+                script_name = entrypoint_filename(entry_name, platform)
+                script_path = os.path.join(output_dir, script_name)
+                script_text = entrypoint_script_text(cmd_str, platform)
+                with open(script_path, "w", newline="") as f:
+                    f.write(script_text)
                 os.chmod(script_path, 0o755)
 
         return BuildResult(

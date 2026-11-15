@@ -24,6 +24,7 @@ Usage::
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -45,6 +46,10 @@ class QualifiedDigestSourceTreeError(Exception):
 
 class QualifiedDigestMismatchError(Exception):
     """A built digest does not match the bundle digest."""
+
+
+class QualifiedDigestSourceUnresolvableError(Exception):
+    """The source_tree (commit or tree sha) cannot be resolved in the repository."""
 
 
 def extract_manifest(manifest_path: Path) -> dict:
@@ -102,22 +107,58 @@ def read_bundle(bundle_path: Path) -> dict:
     return bundle
 
 
+def _resolve_tree(repo: Path, sha: str) -> str:
+    """Resolve a commit or tree sha to its tree sha via git rev-parse.
+
+    Accepts a commit sha or a tree sha. Raises
+    QualifiedDigestSourceUnresolvableError when the sha cannot be resolved
+    in the repository.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", sha + "^{tree}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise QualifiedDigestSourceUnresolvableError(
+            "QualifiedDigestSourceUnresolvableError: cannot resolve %s "
+            "to a tree — git failed: %s" % (sha, exc)
+        )
+    if r.returncode != 0:
+        raise QualifiedDigestSourceUnresolvableError(
+            "QualifiedDigestSourceUnresolvableError: cannot resolve %s "
+            "to a tree — object does not exist in the repository" % sha
+        )
+    return r.stdout.strip()
+
+
 def compare_bundle(
     bundle: dict,
     sdist_sha256: str,
     wheel_sha256: str,
     source_tree: str,
+    repo: Path | None = None,
 ) -> str:
     """Compare built digests against the bundle.
 
-    Returns ``"matched"`` on success. Raises QualifiedDigestSourceTreeError
-    when the source tree differs, QualifiedDigestMismatchError when a digest
-    differs.
+    When *repo* is given, both *source_tree* and the bundle's source_tree
+    are resolved to tree SHAs via git rev-parse before comparison, so a
+    bundle bound to a commit sha matches a merge commit with the same tree.
+
+    Returns ``"matched"`` on success. Raises
+    QualifiedDigestSourceUnresolvableError when either tree cannot be
+    resolved, QualifiedDigestSourceTreeError when the trees differ,
+    QualifiedDigestMismatchError when a digest differs.
     """
-    if source_tree != bundle["source_tree"]:
+    bundle_tree = bundle["source_tree"]
+    built_tree = source_tree
+    if repo is not None:
+        bundle_tree = _resolve_tree(repo, bundle["source_tree"])
+        built_tree = _resolve_tree(repo, source_tree)
+    if built_tree != bundle_tree:
         raise QualifiedDigestSourceTreeError(
             "QualifiedDigestSourceTreeError: built source tree %s differs "
-            "from bundle source tree %s" % (source_tree, bundle["source_tree"])
+            "from bundle source tree %s" % (built_tree, bundle_tree)
         )
     if sdist_sha256 != bundle["sdist_sha256"]:
         raise QualifiedDigestMismatchError(
@@ -167,6 +208,12 @@ def main(argv: list[str] | None = None) -> int:
         "--source-tree", required=True,
         help="SHA of the built source tree",
     )
+    compare_parser.add_argument(
+        "--repo", default=None,
+        help="Path to the git repository for tree resolution. When given, "
+             "both --source-tree and the bundle's source_tree are resolved "
+             "to tree SHAs before comparison.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -190,10 +237,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         try:
+            repo = Path(args.repo) if args.repo else None
             result = compare_bundle(
-                bundle, args.sdist, args.wheel, args.source_tree
+                bundle, args.sdist, args.wheel, args.source_tree, repo=repo,
             )
-        except (QualifiedDigestSourceTreeError, QualifiedDigestMismatchError) as exc:
+        except (QualifiedDigestSourceTreeError, QualifiedDigestMismatchError, QualifiedDigestSourceUnresolvableError) as exc:
             sys.stderr.write("%s\n" % exc)
             return 2
 

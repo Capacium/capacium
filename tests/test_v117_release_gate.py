@@ -330,6 +330,11 @@ def _cli_env(home: Path, evidence: Path | None = None) -> dict:
         "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
         "NO_COLOR": "1",
     }
+    # On Windows the child interpreter needs SYSTEMROOT to initialize the
+    # C runtime and Winsock; without it Python 3.10 fails with
+    # _Py_HashRandomization_Init and 3.11+ fail with WinError 10106.
+    if sys.platform == "win32" and "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     if evidence is not None:
         env[EVIDENCE_DIR_ENV] = str(evidence)
         env["CAP117_TESTED_COMMIT"] = _tested_commit()
@@ -1551,9 +1556,11 @@ class TestCriterion5OfflineRuntimeFixtures:
         This runs the real child the generation would run, and parses every
         non-empty stdout line as JSON — a single stray print would break it.
         """
+        from capacium.runtimes import entrypoint_filename
+
         generations = tmp_path / "generations"
         generation_dir = _materialise_generation(name, generations)
-        script = generation_dir / "main"
+        script = generation_dir / entrypoint_filename("main")
         assert script.is_file() and os.access(script, os.X_OK)
 
         request = json.dumps({

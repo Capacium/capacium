@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,56 @@ def _make_mcp_dir(base: Path, name: str) -> Path:
     )
     (d / "main.py").write_text("print('mcp')\n")
     return d
+
+
+def _child_env(home: Path, platform: str) -> dict:
+    """Build a subprocess environment dict for the given platform.
+
+    Adds SYSTEMROOT (and PATHEXT where used) on Windows so the child
+    interpreter can initialize hash randomization on Python 3.10.
+    """
+    env = {
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "PATH": os.environ.get("PATH", ""),
+        "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }
+    if platform == "win32":
+        systemroot = os.environ.get("SYSTEMROOT", "")
+        if systemroot:
+            env["SYSTEMROOT"] = systemroot
+        pathext = os.environ.get("PATHEXT", "")
+        if pathext:
+            env["PATHEXT"] = pathext
+    return env
+
+
+class TestChildEnvPlatform:
+    """_child_env produces platform-appropriate environment dicts."""
+
+    def test_windows_env_includes_systemroot_and_pathext(self, tmp_path):
+        """On win32, _child_env adds SYSTEMROOT and PATHEXT from the
+        current environment when they are set."""
+        home = tmp_path / "home"
+        env = _child_env(home, "win32")
+        systemroot = os.environ.get("SYSTEMROOT", "")
+        pathext = os.environ.get("PATHEXT", "")
+        if systemroot:
+            assert env["SYSTEMROOT"] == systemroot
+        if pathext:
+            assert env["PATHEXT"] == pathext
+        # Base keys always present
+        assert env["HOME"] == str(home)
+        assert env["USERPROFILE"] == str(home)
+        assert "PATH" in env
+
+    def test_posix_env_excludes_systemroot(self, tmp_path):
+        """On POSIX platforms _child_env does not add SYSTEMROOT."""
+        home = tmp_path / "home"
+        env = _child_env(home, "darwin")
+        assert "SYSTEMROOT" not in env
+        assert "PATHEXT" not in env
 
 
 # ── OpenClaude fixture adapter (CAP117-OPENCLAUDE-006 contract) ────────
@@ -1074,10 +1125,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
                "--framework", framework]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode == 0, f"inspect {framework} failed: {result.stderr}"
 
@@ -1089,10 +1137,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
                "--framework", framework, "--json"]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -1109,10 +1154,7 @@ class TestCLIHostRegistration:
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
                "cli-dry", "--framework", framework, "--kind", "skill",
                "--source", str(source), "--dry-run"]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode == 0, f"dry-run {framework}: {result.stderr}"
 
@@ -1123,10 +1165,7 @@ class TestCLIHostRegistration:
         import sys as _sys
 
         source = _make_skill_dir(tmp_path, "cli-verify")
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
 
         # Register
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
@@ -1148,10 +1187,7 @@ class TestCLIHostRegistration:
         import sys as _sys
 
         source = _make_skill_dir(tmp_path, "cli-unreg")
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
 
         # Register first
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
@@ -1173,10 +1209,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
                "--framework", framework]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode == 0, f"status {framework}: {result.stderr}"
 
@@ -1188,10 +1221,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
                "--framework", framework, "--json"]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -1208,10 +1238,7 @@ class TestCLIHostRegistration:
         import sys as _sys
 
         source = _make_skill_dir(tmp_path, "cli-repair")
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
 
         # Register
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "register",
@@ -1233,10 +1260,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
                "--framework", "nonexistent-framework"]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode != 0
 
@@ -1247,10 +1271,7 @@ class TestCLIHostRegistration:
 
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "verify",
                "nonexistent-12345"]
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
         assert result.returncode != 0
 
@@ -1260,10 +1281,7 @@ class TestCLIHostRegistration:
         import subprocess
         import sys as _sys
 
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
 
         # Pre-create foreign entry in claude-code config
         adapter = ClaudeCodeAdapter()
@@ -1316,10 +1334,7 @@ class TestCLIHostRegistration:
         import sys as _sys
         import time
 
-        env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-               "PATH": os.environ.get("PATH", ""),
-               "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+        env = _child_env(tmp_home, sys.platform)
 
         start = time.monotonic()
         cmd = [_sys.executable, "-m", "capacium.cli", "host", "status",
@@ -1433,13 +1448,7 @@ except SystemExit as e:
             # Make packages dir read-only (no write, no execute for files)
             packages_dir.chmod(0o555)
 
-        env = {
-            "HOME": str(tmp_home),
-            "USERPROFILE": str(tmp_home),
-            "PATH": os.environ.get("PATH", ""),
-            "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-        }
+        env = _child_env(tmp_home, sys.platform)
 
         try:
             start = _time.monotonic()
@@ -1708,8 +1717,8 @@ class TestPlatformMatrix:
     def test_claude_desktop_config_path_resolves_per_os(self, simulate_platform, expected_suffix, tmp_home):
         """Claude Desktop resolves different config paths per OS."""
         adapter = ClaudeDesktopAdapter()
-        config_str = str(adapter.config_path)
-        home_str = str(tmp_home)
+        config_str = adapter.config_path.as_posix()
+        home_str = tmp_home.as_posix()
         assert config_str.startswith(home_str), (
             f"Config path {config_str} not under tmp_home {home_str}"
         )
@@ -1733,8 +1742,8 @@ class TestPlatformMatrix:
     def test_openclaude_config_path_resolves_per_os(self, simulate_platform, expected_suffix, tmp_home):
         """OpenClaude resolves different config paths per OS."""
         adapter = OpenClaudeFixtureAdapter()
-        config_str = str(adapter.config_path)
-        home_str = str(tmp_home)
+        config_str = adapter.config_path.as_posix()
+        home_str = tmp_home.as_posix()
         assert config_str.startswith(home_str), (
             f"Config path {config_str} not under tmp_home {home_str}"
         )
@@ -1841,10 +1850,7 @@ class TestPlatformMatrix:
         for fw in ("claude-code", "claude-desktop", "codex"):
             cmd = [_sys.executable, "-m", "capacium.cli", "host", "inspect",
                    "--framework", fw, "--json"]
-            env = {"HOME": str(tmp_home), "USERPROFILE": str(tmp_home),
-                   "PATH": os.environ.get("PATH", ""),
-                   "CAPACIUM_SKIP_RUNTIME_CHECK": "1",
-                   "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+            env = _child_env(tmp_home, sys.platform)
             result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
             assert result.returncode == 0, (
                 f"inspect {fw} on {simulate_platform}: {result.stderr}"
@@ -2219,8 +2225,8 @@ class TestContractSuiteParametrized:
     ):
         """Claude Desktop and OpenClaude resolve platform-specific config paths."""
         adapter = _make_adapter(adapter_name)
-        config_str = str(adapter.config_path)
-        home_str = str(tmp_home)
+        config_str = adapter.config_path.as_posix()
+        home_str = tmp_home.as_posix()
         assert config_str.startswith(home_str), (
             f"Config path {config_str} not under tmp_home {home_str}"
         )

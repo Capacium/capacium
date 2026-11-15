@@ -119,7 +119,7 @@ src/capacium/
 - **Naming**: Release titles MUST follow `Capacium vX.Y.Z` format (e.g. `Capacium v0.9.0`). Git tags use bare `vX.Y.Z`.
 - **Pre-release names** also follow the same format: `Capacium vX.Y.Z RC N`.
 - **Version bump before release**: `pyproject.toml` version MUST be bumped before triggering the prerelease workflow.
-- **Post-release check**: After creating a release, verify the title matches `Capacium vX.Y.Z` via `gh release view <tag> --json name`.
+- **Post-release check**: After a final release, verify the engine-created release title on Forgejo matches `Capacium vX.Y.Z` (release.sh Step 7b performs this verification via the Forgejo API).
 - **Content boundary**: Release notes, changelogs, PR descriptions, and commit messages MUST NOT reference non-Capacium-core topics.
 
 ### Exit Codes
@@ -206,9 +206,18 @@ existing release — it never creates, edits or deletes the release object itsel
 This follows the standard model documented in
 [lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
+For **release candidates**, `.github/workflows/prerelease.yml` creates the tag
+and the GitHub pre-release object (`gh release create` at prerelease.yml:101).
+
 The local script (`scripts/release.sh`) is a convenience tool for version bump,
 commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
-runs the same gates the Forgejo workflow would run.
+runs the same gates the Forgejo workflow would run. It **verifies, it does not
+create**, the release object: Step 7 issues a read-only `GET` against the
+Forgejo releases API, passes the returned JSON to
+`scripts/check_release_body.py`, and exits non-zero with a named error when the
+release is absent, the body is empty, or the body lacks the tag's CHANGELOG
+section (`check_release_body.py` names the specific condition `AttachError`).
+An absent release fails the verification; it is never a reason to write one.
 
 ### Dry-run
 
@@ -217,12 +226,17 @@ runs the same gates the Forgejo workflow would run.
 ```
 
 The dry-run path:
-- Runs the title gate, changelog extraction and audience gate, bracketed by
-  before/after listings of all six publication surfaces (tags, releases,
-  mirror refs, PyPI, GHCR, Homebrew tap).
+- Runs the title gate, changelog extraction, audience gate, and Windows
+  Validation gate, bracketed by before/after listings of all six publication
+  surfaces (tags, releases, mirror refs, PyPI, GHCR, Homebrew tap).
 - Builds sdist and wheel with `SOURCE_DATE_EPOCH=1700000000` and
   `PYTHONHASHSEED=0`, then compares both digests against a qualified-digests
   v1 bundle.
+- The Windows Validation gate fetches `windows-validation.yml`
+  workflow runs from the GitHub API (read-only GET) and requires a run with
+  conclusion `success` whose head commit tree equals the source tree of the
+  candidate commit. The GitHub API base is injectable via the
+  `WINDOWS_VALIDATION_API_BASE` environment variable.
 - Writes the report through `scripts/dry_run_report.py`, the same single
   writer shared with the Forgejo workflow `dry_run` input.
 - Creates **no tag, no release, no mirror push, no PyPI upload, no GHCR push
@@ -231,6 +245,50 @@ The dry-run path:
 The qualified-digests v1 bundle is produced from the test-lab qualification
 result by `scripts/qualified_digests.py`. It contains `sdist_sha256`,
 `wheel_sha256`, `source_tree` and `qualification_run`.
+
+`scripts/release.sh --dry-run` with the `--qualified-digests` bundle is the
+**authoritative dry-run producer** because the Forgejo workflow
+(`forgejo-release.yml` `dry_run` input) cannot reach the bundle — the bundle
+comes from the test-lab qualification result (capacium-test-lab), not inside
+the workflow's container. Only the local script can pass the actual bundle path to the compare
+step. The report is written through `scripts/dry_run_report.py`, the single
+shared writer.
+
+### Qualification Policy
+
+A **reduced controller qualification** (full test suite, reproducible builds
+with `SOURCE_DATE_EPOCH=1700000000` and `PYTHONHASHSEED=0`, recorded as a
+test-lab result) suffices for **patch releases** (Z in X.Y.Z). The full lane
+campaign — the test-lab qualification (multiple phases, lanes, approximately
+25 receipts, independent review) as demonstrated in the 1.1.7 correction — is
+required for **minor releases or contract changes** (Y in X.Y.Z or a CIP that
+alters the normative contracts).
+
+### Release-Body Standard
+
+The release body follows the format observed in v1.1.6 and v1.1.7:
+
+- **Heading**: `## Capacium vX.Y.Z`
+- **Content**: Reader-facing sections about Capacium Core only — no tracker
+  references, no internal workflow details, no non-Core topics.
+- **Install block**: Homebrew, pip and Docker install instructions in fenced
+  code blocks.
+- **Standalone binaries**: A line stating that standalone binaries are attached
+  to the release.
+- **CHANGELOG link**: A link to the full changelog on GitHub.
+
+### Attach Detector
+
+The `body_check` step in `.github/workflows/release.yml` reads the existing
+GitHub release body for the tag and raises **`AttachError`** (exit code 2)
+when:
+
+- The body is empty or contains only whitespace.
+- The body does not contain the tag's extracted CHANGELOG section.
+
+The repository **never writes the release body** — the ops-engine layover on
+Forgejo owns the release object. The attach step is a read-only detector that
+fails closed: no release body, no artefacts attached.
 
 ### Post-Release Verification (MANDATORY)
 
@@ -257,10 +315,13 @@ After every release, you MUST verify:
    ```
    All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
 
-4. **Release title**: Verify the engine-created release title matches
-   `Capacium vX.Y.Z`:
+4. **Release title**: Verify the engine-created release title on Forgejo matches
+   `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b.
+   For a manual check:
    ```bash
-   gh release view v0.10.10 --json name
+   curl -sH "Authorization: token ${FORGEJO_TOKEN}" \
+     "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+     | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
    ```
 
 **Guard rails enforced by CI:**
@@ -272,7 +333,7 @@ After every release, you MUST verify:
 - `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
 - `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
 - `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
-- `prerelease.yml`: Triggered manually via workflow_dispatch. Builds binaries, publishes to GitHub Releases as pre-release.
+- `prerelease.yml`: Triggered manually via workflow_dispatch. Creates RC tags and GitHub pre-release objects with a commit-log summary; attaches no binaries.
 - `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
 - `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
 - `publish.yml`: Manual trigger for PyPI workflow.
@@ -288,14 +349,27 @@ rm -rf build/lib/ dist/ *.egg-info
 # 2. Local: verify
 ruff check src/ tests/ --fix && pytest tests/ -q
 
-# 3. Bump version, commit, push, wait for CI, Homebrew tap update
+# 3. Dispatch Windows Validation on the candidate branch
+#    Go to https://github.com/Capacium/capacium/actions/workflows/windows-validation.yml
+#    and click "Run workflow" on the merged dev tip. Wait for success on all three
+#    Python versions (3.10, 3.11, 3.12).
+
+# 4. Run the dry-run with the qualified-digests bundle; the Windows Validation
+#    gate is an additional gate that fails the dry-run when no successful run
+#    matches the candidate tree.
+./scripts/release.sh 0.10.10 --dry-run --qualified-digests /path/to/qualified-digests.json
+
+# 5. Bump version, commit, push, wait for CI, Homebrew tap update
 ./scripts/release.sh 0.10.10
 
-# 4. Verify CI passed (ci.yml: success + codeql.yml: success)
+# 6. Verify CI passed (ci.yml: success + codeql.yml: success)
 gh run list --repo Capacium/capacium --limit 3
 
-# 5. Verify the engine-created release title
-gh release view v0.10.10 --json name
+# 7. Verify the engine-created release title (release.sh Step 7b does this)
+# Manual equivalent:
+curl -sH "Authorization: token \${FORGEJO_TOKEN}" \
+  "https://git.langevc.com/api/v1/repos/capacium/capacium/releases/tags/v0.10.10" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('name',''))"
 ```
 
 **Never:**

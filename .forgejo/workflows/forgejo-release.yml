@@ -333,7 +333,8 @@ jobs:
             "$QUALIFIED_DIGESTS" \
             --sdist "$SDIST_SHA256" \
             --wheel "$WHEEL_SHA256" \
-            --source-tree "$SOURCE_TREE" 2>"$COMPARE_STDERR")" || {
+            --source-tree "$SOURCE_TREE" \
+            --repo "$GITHUB_WORKSPACE" 2>"$COMPARE_STDERR")" || {
             COMPARE_ERR="$(cat "$COMPARE_STDERR")"
             echo "digest_comparison=mismatch" >> "$GITHUB_OUTPUT"
             echo "digest_error_name=QualifiedDigestComparisonError" >> "$GITHUB_OUTPUT"

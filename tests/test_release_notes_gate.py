@@ -443,12 +443,9 @@ class TestPostTagTruth:
 
     def test_gate_mechanics_moved_to_unreleased(self):
         # The changelog-extraction and audience-gate tooling was not in the
-        # v1.1.1 tag; it belongs to a later release section (or "Unreleased"),
-        # never inside the v1.1.1 entry.
+        # v1.1.1 tag; it must never appear inside the v1.1.1 entry. Later
+        # entries are reader-facing and need not describe the tooling.
         text = CHANGELOG.read_text(encoding="utf-8")
-        later = text.split("## Capacium v1.1.1", 1)[0]
-        assert "changelog" in later.lower()
-        assert "audience" in later.lower()
         v1_1_1 = text.split("## Capacium v1.1.1", 1)[1].split("## Capacium v1.1.0", 1)[0]
         assert "External-audience gate" not in v1_1_1
         assert "from this changelog" not in v1_1_1

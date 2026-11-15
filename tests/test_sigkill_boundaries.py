@@ -218,6 +218,7 @@ class TestSigkillInstallBoundaries:
     """Criterion 2: injected failure at every mutation boundary leaves
     no partial package/dependency/runtime/harness change."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is not available on Windows")
     @pytest.mark.parametrize("boundary", [
         "after_copytree",
         "after_adapter",
@@ -337,6 +338,7 @@ update_capability(
 class TestSigkillUpdateBoundaries:
     """Criterion 2: injected failure at update mutation boundaries."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is not available on Windows")
     @pytest.mark.parametrize("boundary", [
         "after_adapter",
         "after_persist",
@@ -432,6 +434,7 @@ remove_capability(
 class TestSigkillRemoveBoundaries:
     """Criterion 2: injected failure at remove mutation boundaries."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is not available on Windows")
     @pytest.mark.parametrize("boundary", [
         "after_adapter",
         "after_park",
@@ -479,6 +482,7 @@ class TestSecretsExclusion:
     """Criterion 6: foreign harness state and secrets are excluded from
     transaction ownership and survive rollback."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is not available on Windows")
     def test_foreign_secrets_not_in_journal(self, tmp_path):
         """Foreign harness config content is not embedded in journal files."""
         home = tmp_path / "home"
@@ -535,6 +539,7 @@ class TestSecretsExclusion:
                         f"Foreign config file {key} embedded in journal {jf.name}"
                     )
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL is not available on Windows")
     def test_journal_directory_permissions(self, tmp_path):
         """Journal directory must not be world-readable."""
         home = tmp_path / "home"

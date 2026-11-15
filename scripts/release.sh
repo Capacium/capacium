@@ -286,7 +286,8 @@ TITLE_GATE_PY
         "$QUALIFIED_DIGESTS" \
         --sdist "$SDIST_SHA256" \
         --wheel "$WHEEL_SHA256" \
-        --source-tree "$SOURCE_TREE" 2>"$COMPARE_STDERR")"
+        --source-tree "$SOURCE_TREE" \
+        --repo "$REPO_DIR" 2>"$COMPARE_STDERR")"
     COMPARE_EXIT=$?
     set -e
     if [ $COMPARE_EXIT -eq 0 ]; then
@@ -298,6 +299,7 @@ TITLE_GATE_PY
         COMPARE_ERROR_TEXT="$(cat "$COMPARE_STDERR")"
         case "$COMPARE_ERROR_TEXT" in
             *QualifiedDigestBundleError*)  COMPARE_ERROR_NAME="QualifiedDigestBundleError" ;;
+            *QualifiedDigestSourceUnresolvableError*) COMPARE_ERROR_NAME="QualifiedDigestSourceUnresolvableError" ;;
             *QualifiedDigestSourceTreeError*) COMPARE_ERROR_NAME="QualifiedDigestSourceTreeError" ;;
             *QualifiedDigestMismatchError*) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
             *) COMPARE_ERROR_NAME="QualifiedDigestMismatchError" ;;
@@ -305,6 +307,51 @@ TITLE_GATE_PY
         DIGEST_COMPARISON="mismatch"
         echo -e "${RED}  Digest comparison: mismatch — ${COMPARE_ERROR_NAME}${NC}"
         echo "${COMPARE_ERROR_TEXT}" >&2
+    fi
+
+    # ── Windows Validation gate ──────────────────────────────────
+    # Runs read-only against the GitHub API. The API base is
+    # injectable for tests (WINDOWS_VALIDATION_API_BASE env var).
+    # No write verb is used.
+    WINDOWS_VALIDATION_GATE="not run"
+    WINDOWS_VALIDATION_ERROR_NAME=""
+    WINDOWS_VALIDATION_ERROR_TEXT=""
+    echo -e "${YELLOW}[dry-run gate 4/4] Windows Validation gate${NC}"
+    WINVAL_ARGS=(
+        --fetch
+        --source-tree "$SOURCE_TREE"
+        --repo "$REPO_DIR"
+    )
+    if [ -n "${WINDOWS_VALIDATION_API_BASE:-}" ]; then
+        WINVAL_ARGS+=(--api-base "$WINDOWS_VALIDATION_API_BASE")
+    fi
+    WINVAL_STDERR="$(mktemp)"
+    trap 'rm -rf "$BUILD_DIR" "$COMPARE_STDERR" "$WINVAL_STDERR"' EXIT
+    set +e
+    python3 scripts/check_windows_validation.py \
+        "${WINVAL_ARGS[@]}" >/dev/null 2>"$WINVAL_STDERR"
+    WINVAL_EXIT=$?
+    set -e
+    if [ $WINVAL_EXIT -eq 0 ]; then
+        WINDOWS_VALIDATION_GATE="passed"
+        echo -e "${GREEN}  Windows Validation gate: passed${NC}"
+    else
+        WINVAL_ERROR_TEXT="$(cat "$WINVAL_STDERR")"
+        case "$WINVAL_ERROR_TEXT" in
+            *NoWindowsValidationRunError*)
+                WINDOWS_VALIDATION_ERROR_NAME="NoWindowsValidationRunError" ;;
+            *WindowsValidationRunNotSuccessError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationRunNotSuccessError" ;;
+            *WindowsValidationTreeMismatchError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationTreeMismatchError" ;;
+            *WindowsValidationHeadCommitUnresolvableError*)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationHeadCommitUnresolvableError" ;;
+            *)
+                WINDOWS_VALIDATION_ERROR_NAME="WindowsValidationError" ;;
+        esac
+        WINDOWS_VALIDATION_GATE="failed"
+        echo -e "${RED}  Windows Validation gate: failed — ${WINDOWS_VALIDATION_ERROR_NAME}${NC}"
+        echo "${WINVAL_ERROR_TEXT}" >&2
     fi
 
     # ── After snapshot: same six surfaces ──
@@ -352,6 +399,10 @@ TITLE_GATE_PY
         echo "${COMPARE_ERROR_NAME}: ${COMPARE_ERROR_TEXT}" >&2
         exit 2
     fi
+    if [ "$WINDOWS_VALIDATION_GATE" = "not run" ] || [ "$WINDOWS_VALIDATION_GATE" = "failed" ]; then
+        echo "${WINDOWS_VALIDATION_ERROR_NAME}: ${WINVAL_ERROR_TEXT}" >&2
+        exit 2
+    fi
     exit 0
 fi
 
@@ -360,7 +411,6 @@ echo -e "${YELLOW}[2/8] Bumping version to ${VERSION}...${NC}"
 
 # pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
-sed -i '' "s/\"capacium-models>=[^\"]*\"/\"capacium-models>=0.4.0\"/" pyproject.toml
 
 # README.md
 sed -i '' -E "s/@v[0-9]+\.[0-9]+\.[0-9]+/@v${VERSION}/g" README.md
@@ -446,58 +496,47 @@ fi
 
 cd "$REPO_DIR"
 
-# ── Step 7: Create GitHub Release ──────────────────────────────
-echo -e "${YELLOW}[7/8] Creating GitHub Release...${NC}"
-
-LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-if [ -n "$LAST_TAG" ] && [ "$LAST_TAG" != "$TAG" ]; then
-    COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges 2>/dev/null)
-else
-    COMMITS=$(git log --oneline --no-merges --max-count=10 2>/dev/null)
-fi
-CHANGES=""
-while IFS= read -r line; do
-    [ -n "$line" ] && CHANGES="${CHANGES}- ${line}\n"
-done <<< "$COMMITS"
-
-NOTES="## Capacium v${VERSION}
-
-### What's Changed
-${CHANGES:-See [full changelog](https://github.com/${GITHUB_REPO}/commits/${TAG})}
-
-### Install
-\`\`\`bash
-brew update && brew upgrade capacium
-cap -v  # → ${VERSION}
-\`\`\`
-"
+# ── Step 7: Verify the engine-created release object on Forgejo ──
+echo -e "${YELLOW}[7/8] Verifying engine-created release on Forgejo...${NC}"
 
 RELEASE_TITLE="Capacium v${VERSION}"
+FORGEJO_API_BASE="${FORGEJO_API_URL:-https://git.langevc.com/api/v1}"
+RELEASE_JSON_TMP="$(mktemp)"
+trap 'rm -f "$RELEASE_JSON_TMP"' RETURN
 
 if [ "$DRY_RUN" = "--dry-run" ]; then
-    echo "  DRY RUN: would create release ${TAG}"
+    echo "  DRY RUN: would verify release ${TAG} on Forgejo"
 else
-    if gh release view "$TAG" --repo "$GITHUB_REPO" &>/dev/null; then
-        gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
-    else
-        gh release create "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" --notes "$NOTES"
+    # Fetch the release JSON from the Forgejo API.
+    if [ -z "${FORGEJO_TOKEN:-}" ]; then
+        echo -e "${RED}ReleaseVerificationError: FORGEJO_TOKEN is not set — cannot verify release${NC}" >&2
+        exit 2
     fi
-    echo -e "${GREEN}  Release created${NC}"
-fi
-
-# ── Step 7b: Verify release title matches naming convention ─────
-echo -e "${YELLOW}[7b/8] Verifying release title...${NC}"
-RELEASE_NAME=$(gh release view "$TAG" --repo "$GITHUB_REPO" --json name --jq '.name' 2>/dev/null || echo "")
-if [ "$RELEASE_NAME" != "$RELEASE_TITLE" ]; then
-    echo -e "${RED}  Release title mismatch: expected '${RELEASE_TITLE}', got '${RELEASE_NAME}'${NC}"
-    echo -e "${RED}  Fixing...${NC}"
-    gh release edit "$TAG" --repo "$GITHUB_REPO" --title "$RELEASE_TITLE" 2>/dev/null || {
-        echo -e "${RED}  Failed to fix title — manual intervention required${NC}"
-        echo "  gh release edit ${TAG} --repo ${GITHUB_REPO} --title '${RELEASE_TITLE}'"
-        exit 1
+    curl -sSf --max-time 30 --connect-timeout 10 \
+        -H "Authorization: token ${FORGEJO_TOKEN}" \
+        "${FORGEJO_API_BASE}/repos/capacium/capacium/releases/tags/${TAG}" \
+        > "$RELEASE_JSON_TMP" || {
+        echo -e "${RED}ReleaseVerificationError: Forgejo releases API query failed for ${TAG}${NC}" >&2
+        exit 2
     }
+
+    # Verify the release body contains the CHANGELOG section for this tag.
+    python3 scripts/check_release_body.py "$TAG" --release-json "$RELEASE_JSON_TMP" || {
+        echo -e "${RED}ReleaseVerificationError: release body check failed for ${TAG}${NC}" >&2
+        exit 2
+    }
+    echo -e "${GREEN}  Release body verified${NC}"
+
+    # Step 7b: Verify the release title matches naming convention.
+    echo -e "${YELLOW}[7b/8] Verifying release title...${NC}"
+    RELEASE_NAME=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" < "$RELEASE_JSON_TMP")
+    if [ "$RELEASE_NAME" != "$RELEASE_TITLE" ]; then
+        echo -e "${RED}ReleaseTitleError: expected '${RELEASE_TITLE}', got '${RELEASE_NAME}'${NC}" >&2
+        echo "The release title on Forgejo does not match the required convention." >&2
+        exit 2
+    fi
+    echo -e "${GREEN}  Title verified: ${RELEASE_TITLE}${NC}"
 fi
-echo -e "${GREEN}  Title verified: ${RELEASE_TITLE}${NC}"
 
 # ── Step 8: Brew upgrade locally ───────────────────────────────
 echo -e "${YELLOW}[8/8] Upgrading local Brew...${NC}"
