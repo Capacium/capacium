@@ -313,7 +313,7 @@ After every release, you MUST verify:
    ```bash
    gh run list --repo Capacium/capacium --limit 3
    ```
-   All three workflows (ci.yml, codeql.yml, docs.yml) must be green.
+   Both workflows (ci.yml, codeql.yml) must be green.
 
 4. **Release title**: Verify the engine-created release title on Forgejo matches
    `Capacium vX.Y.Z`. `scripts/release.sh` performs this verification in Step 7b.
@@ -332,7 +332,6 @@ After every release, you MUST verify:
 **CI workflow notes:**
 - `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
 - `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
-- `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
 - `prerelease.yml`: Triggered manually via workflow_dispatch. Creates RC tags and GitHub pre-release objects with a commit-log summary; attaches no binaries.
 - `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
 - `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
