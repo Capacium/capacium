@@ -471,7 +471,21 @@ echo -e "${YELLOW}[6/8] Updating Homebrew Tap...${NC}"
 
 URL="https://github.com/${GITHUB_REPO}/archive/refs/tags/${TAG}.tar.gz"
 TARBALL="/tmp/capacium-${TAG}.tar.gz"
-curl -sSL "$URL" -o "$TARBALL"
+# The GitHub tag tarball is not available at once after the tag push: wait until
+# it downloads and is a readable gzip archive, instead of hashing an error page.
+TARBALL_OK=""
+for attempt in $(seq 1 30); do
+    if curl -fsSL "$URL" -o "$TARBALL" 2>/dev/null && tar -tzf "$TARBALL" >/dev/null 2>&1; then
+        TARBALL_OK=1
+        break
+    fi
+    echo "  Tarball for ${TAG} not available yet (attempt ${attempt}/30) — retrying in 10s"
+    sleep 10
+done
+if [ -z "$TARBALL_OK" ]; then
+    echo -e "${RED}  Tarball for ${TAG} did not become available at ${URL}${NC}"
+    exit 2
+fi
 SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
 echo "  SHA256: $SHA"
 
