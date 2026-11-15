@@ -42,8 +42,19 @@ class AttachError(Exception):
     """A precondition for attaching failed; nothing was uploaded."""
 
 
+def _normalize_newlines(text: str) -> str:
+    """Return *text* with CRLF and lone CR line endings turned into LF.
+
+    GitHub stores a release body edited in the web UI with CRLF line endings;
+    the CHANGELOG notes use LF. The check compares content, not line endings.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def check_body(body: str, notes: str, tag: str) -> None:
     """Raise AttachError when *body* is empty or does not contain *notes*."""
+    body = _normalize_newlines(body or "")
+    notes = _normalize_newlines(notes)
     if not body or not body.strip():
         raise AttachError(
             f"release body for {tag} is empty; the ops-engine publishes the "

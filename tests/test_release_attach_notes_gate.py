@@ -377,3 +377,28 @@ def test_red_proof_404_attach_error_fails_when_removed(tmp_path):
         "the 404 guard (no id field) must produce 'no release object exists'; "
         "if this message is not in stderr the 404 branch is missing or broken"
     )
+
+
+def test_crlf_release_body_with_the_changelog_section_passes(tmp_path: Path) -> None:
+    """A body saved with CRLF (GitHub web UI edit) still contains the section."""
+    notes = _extracted_notes(tmp_path)
+    body = "## Capacium v1.1.8\n\n" + notes + "\n\n### Install\n"
+    crlf_body = body.replace("\n", "\r\n")
+    assert "\r\n" in crlf_body
+
+    release_json = _write_release_fixture(tmp_path, _build_release_json(crlf_body))
+    result = _run_checker_json(tmp_path, release_json)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_crlf_release_body_without_the_changelog_section_still_fails(tmp_path: Path) -> None:
+    """Normalising line endings must not weaken the check."""
+    crlf_body = "## Capacium v1.1.8\r\n\r\nSomething else entirely.\r\n"
+
+    release_json = _write_release_fixture(tmp_path, _build_release_json(crlf_body))
+    result = _run_checker_json(tmp_path, release_json)
+
+    assert result.returncode == 2
+    assert "AttachError" in result.stderr
+    assert "does not contain the CHANGELOG section" in result.stderr

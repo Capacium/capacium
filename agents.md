@@ -287,7 +287,15 @@ when:
 - The body does not contain the tag's extracted CHANGELOG section.
 
 The repository **never writes the release body** — the ops-engine layover on
-Forgejo owns the release object. The attach step is a read-only detector that
+Forgejo owns the release object.
+
+**Until the ops-engine writes the GitHub release body** (the engine version that
+carries the body writer is not yet deployed), the GitHub body is set by hand:
+use `gh release edit <tag> --notes-file <file>` with an LF file, with the
+GitHub CLI logged in through the keyring (unset a restricted `GITHUB_TOKEN`), then
+re-run the failed jobs of `release.yml`. Do not use the GitHub web UI; it stores
+CRLF line endings. The detector normalises line endings, but the manual step
+stays on the CLI so the stored body equals the source text. The attach step is a read-only detector that
 fails closed: no release body, no artefacts attached.
 
 ### Post-Release Verification (MANDATORY)
