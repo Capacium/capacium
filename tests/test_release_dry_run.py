@@ -48,12 +48,19 @@ class TestDryRunWorkflowStructure:
         wf = _read_workflow()
         assert "dry_run:" in wf, "workflow must declare dry_run input"
 
-    def test_release_step_guarded_by_dry_run(self):
+    def test_no_release_creating_step_survives(self):
+        """There is no release-creating step left to guard.
+
+        The live path used to carry a "Create or re-assert the Forgejo
+        release" step behind ``dry_run != 'true'``. The release object belongs
+        to the ops-engine layover, so the step is gone rather than guarded;
+        the dry-run is therefore mutation-free by construction.
+        """
         wf = _read_workflow()
-        assert (
-            "github.event.inputs.dry_run != 'true'" in wf
-            or "dry_run != 'true'" in wf
-        ), "create-release step must be guarded against dry_run"
+        assert "Create or re-assert the Forgejo release" not in wf
+        assert "/releases" not in wf or "${GITHUB_API_URL}/repos" not in wf, (
+            "the workflow must not address the releases write endpoint"
+        )
 
     def test_before_listing_step_exists(self):
         wf = _read_workflow()
@@ -100,31 +107,18 @@ class TestDryRunWorkflowStructure:
         assert "git push" not in dry_run_section
 
     def test_no_release_creation_code_in_dry_run(self):
-        """The dry-run section must not POST or PATCH /releases."""
+        """No step of the workflow writes the releases API, dry-run or not.
+
+        The release object is the ops-engine's; the workflow only lists
+        releases (a read-only ``curl`` with no ``-X`` verb).
+        """
+        import re
+
         wf = _read_workflow()
-        # The dry-run section spans the before/after listing steps plus
-        # the report and upload steps. The "Create or re-assert" step
-        # (which POSTs/PATCHes) sits between them in the YAML but is
-        # guarded by dry_run != 'true' — it is not a dry-run step.
-        # We test each dry-run-guarded region separately.
-        before_pos = wf.index("Dry-run before snapshot")
-        create_pos = wf.index("Create or re-assert the Forgejo release")
-        after_pos = wf.index("Dry-run after snapshot")
-        upload_pos = wf.index("Dry-run upload report artifact")
-
-        # Region 1: before snapshot through audience gate
-        pre_create = wf[before_pos:create_pos]
-        # Region 2: after snapshot through upload
-        post_create = wf[after_pos:upload_pos]
-
-        for region_name, region in [("before snapshot→gates", pre_create),
-                                     ("after snapshot→upload", post_create)]:
-            assert "POST" not in region, (
-                f"dry-run region '{region_name}' must not POST to /releases"
-            )
-            assert "PATCH" not in region, (
-                f"dry-run region '{region_name}' must not PATCH to /releases"
-            )
+        writes = re.findall(
+            r"-X\s+(?:POST|PATCH|PUT|DELETE)[^\n]*", wf
+        )
+        assert writes == [], f"workflow writes the releases API: {writes}"
 
     def test_upload_artifact_step_exists(self):
         wf = _read_workflow()

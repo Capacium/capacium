@@ -1,9 +1,10 @@
-"""Guard: no GitHub workflow may create or edit a release object.
+"""Guard: no workflow of this repository may create or edit a release object.
 
 Release model (lvc-ops ``docs/release-flow-division.md``): the ops-engine
 ``ReleaseHandler`` creates the release object on Forgejo on ``tag_push``. The
-GitHub side is distribution only. A workflow under ``.github/workflows`` that
-creates or edits a release object — or creates and pushes a tag — is drift.
+GitHub side is distribution only. A workflow under either workflow tree
+(``.github/workflows``, ``.forgejo/workflows``) that creates or edits a release
+object — or creates and pushes a tag — is drift.
 
 Two lists live in this file and nowhere else:
 
@@ -41,7 +42,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GITHUB_WORKFLOWS = Path(".github") / "workflows"
-FORGEJO_CI = Path(".forgejo") / "workflows" / "ci.yml"
+FORGEJO_WORKFLOWS = Path(".forgejo") / "workflows"
+#: Both trees are scanned. The release object is created on Forgejo by the
+#: ops-engine, so a Forgejo workflow that writes it is the same defect as a
+#: GitHub one.
+WORKFLOW_DIRS = (GITHUB_WORKFLOWS, FORGEJO_WORKFLOWS)
+FORGEJO_CI = FORGEJO_WORKFLOWS / "ci.yml"
 
 #: Directories this interpreter imports ``yaml`` from. The suite's autouse home
 #: fixture redirects ``HOME`` to a temporary directory, which hides the user
@@ -64,18 +70,25 @@ def _subprocess_env() -> dict:
 #: ``CI / <job id>``, asserted by ``test_required_checks_are_documented``.
 REQUIRED_CHECKS = {
     "test": "ruff, the README release examples and the pytest suite",
-    "release-object-guard": "no GitHub workflow creates or edits a release object",
+    "release-object-guard": "no workflow creates or edits a release object",
 }
 
 #: Forms that create or edit a release object, or create/push a tag. The
 #: division document names ``softprops/action-gh-release``,
-#: ``actions/create-release``, ``gh release create`` and "pushing a tag".
+#: ``actions/create-release``, ``gh release create`` and "pushing a tag". A raw
+#: ``curl -X POST|PATCH .../releases`` is the same write without a named tool.
 CREATION_FORMS = (
     ("gh release create", re.compile(r"\bgh\s+release\s+create\b")),
     ("gh release edit", re.compile(r"\bgh\s+release\s+edit\b")),
     ("gh release delete", re.compile(r"\bgh\s+release\s+delete\b")),
     ("softprops/action-gh-release", re.compile(r"softprops/action-gh-release")),
     ("actions/create-release", re.compile(r"actions/create-release")),
+    (
+        "releases API write",
+        re.compile(
+            r"(?:-X|--request)[ \t]+(?:POST|PATCH|PUT|DELETE)\b[^\n]*/releases\b"
+        ),
+    ),
     (
         "git tag",
         re.compile(
@@ -93,6 +106,12 @@ CREATION_FORMS = (
             r"(?:--tags\b|refs/tags/|\$\{?[A-Za-z_]*TAG\}?|\bv\d+\.\d+\.\d+\b)"
         ),
     ),
+)
+
+#: Keys a release action may carry only when it asserts the release object
+#: rather than attaching to it. ``files`` is not here: it names the assets.
+RELEASE_OBJECT_KEYS = frozenset(
+    {"name", "body", "body_path", "draft", "prerelease", "tag_name", "target_commitish"}
 )
 
 #: Artefact attachment to an existing release object. Exception 2 of the
@@ -123,26 +142,17 @@ EXCEPTIONS = (
     },
 )
 
-#: Violations this repository still carries. They are reported on every run.
+#: Violations this repository still carries. They are reported on every run and
+#: do not make the check pass: an entry only names debt a reader must see.
 #: ``ticket`` is ``None`` where no tracker item has been assigned yet; that is
-#: unassigned debt, and the reason says so instead of pretending otherwise.
-KNOWN_VIOLATIONS = (
-    {
-        "file": ".github/workflows/prerelease.yml",
-        "job": "prerelease",
-        "forms": ("git tag", "git push tag", "gh release create"),
-        "ticket": "INFRA-012",
-        "reason": (
-            "GitHub-side RC channel: 'Create tag' runs git tag + git push "
-            "origin \"$TAG\", then 'Create GitHub Pre-Release' runs gh "
-            "release create on GitHub. RELMODEL-001 audit actor 8 names this "
-            "as the textbook violation; the lvc-ops rc-channel document says "
-            "RC tags are not mirrored to GitHub, so this workflow contradicts "
-            "it. No ticket is assigned. Removing it is outside this lane's "
-            "write scope (release.yml logic and other workflows are frozen)."
-        ),
-    },
-)
+#: unassigned debt and exits non-zero.
+#:
+#: The list is empty because every release-object writer named by RFL-002 has
+#: been removed; the tag-push and ``gh release create`` steps of
+#: ``.github/workflows/prerelease.yml`` were the last ones (INFRA-012). The
+#: matching machinery below is kept because a defect must be listable with a
+#: ticket rather than silently tolerated.
+KNOWN_VIOLATIONS: tuple[dict, ...] = ()
 
 
 def _load_workflow(path: Path) -> dict:
@@ -203,20 +213,48 @@ def scan_workflow(text: str, file_label: str) -> list[dict]:
                         "step": step.get("name", "<unnamed>"),
                     }
                 )
+        # A release action attaches assets only when it carries no identity or
+        # lifecycle of its own: ``softprops`` creates the object when it does
+        # not exist and rewrites it when it does, so any of these keys makes
+        # the step a second writer even though the step's ``uses`` value is on
+        # the attachment exception list.
+        uses = step.get("uses")
+        forms = step.get("with") or {}
+        if (
+            isinstance(uses, str)
+            and ("softprops/action-gh-release" in uses or "actions/create-release" in uses)
+            and isinstance(forms, dict)
+            and RELEASE_OBJECT_KEYS.intersection(forms)
+        ):
+            key = (job_name, "release object metadata")
+            if key not in seen:
+                seen.add(key)
+                findings.append(
+                    {
+                        "file": file_label,
+                        "job": job_name,
+                        "form": "release object metadata",
+                        "step": step.get("name", "<unnamed>"),
+                        "keys": sorted(RELEASE_OBJECT_KEYS.intersection(forms)),
+                    }
+                )
     return findings
 
 
 def scan(root: Path = REPO_ROOT) -> list[dict]:
-    """Scan every workflow under ``<root>/.github/workflows``."""
-    workflows_dir = root / GITHUB_WORKFLOWS
-    if not workflows_dir.is_dir():
-        return []
+    """Scan every workflow under each directory in :data:`WORKFLOW_DIRS`."""
     findings: list[dict] = []
-    for path in sorted(workflows_dir.iterdir()):
-        if path.suffix not in (".yml", ".yaml") or not path.is_file():
+    for relative in WORKFLOW_DIRS:
+        workflows_dir = root / relative
+        if not workflows_dir.is_dir():
             continue
-        file_label = path.relative_to(root).as_posix()
-        findings.extend(scan_workflow(path.read_text(encoding="utf-8"), file_label))
+        for path in sorted(workflows_dir.iterdir()):
+            if path.suffix not in (".yml", ".yaml") or not path.is_file():
+                continue
+            file_label = path.relative_to(root).as_posix()
+            findings.extend(
+                scan_workflow(path.read_text(encoding="utf-8"), file_label)
+            )
     return findings
 
 
@@ -287,8 +325,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if result["unlisted"]:
         print(
-            "release-object guard: unlisted violation(s) on the GitHub side — "
-            "the release object belongs to the ops-engine on Forgejo:",
+            "release-object guard: unlisted violation(s) — the release object "
+            "belongs to the ops-engine on Forgejo:",
             file=sys.stderr,
         )
         for finding, _ in result["unlisted"]:

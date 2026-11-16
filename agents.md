@@ -206,8 +206,10 @@ existing release — it never creates, edits or deletes the release object itsel
 This follows the standard model documented in
 [lvc-ops docs/release-flow-division.md](https://code.langevc.com/langevc/lvc-ops/src/branch/main/docs/release-flow-division.md).
 
-For **release candidates**, `.github/workflows/prerelease.yml` creates the tag
-and the GitHub pre-release object (`gh release create` at prerelease.yml:101).
+For **release candidates**, `.github/workflows/prerelease.yml` is a pre-flight
+validation only (lint, tests, version and README consistency). It creates no
+tag and no pre-release object: RC tags are not mirrored to GitHub, and the
+release object belongs to the ops-engine.
 
 The local script (`scripts/release.sh`) is a convenience tool for version bump,
 commit, push, Homebrew tap update, and — with `--dry-run` — a rehearsal that
@@ -333,7 +335,7 @@ After every release, you MUST verify:
 - `ci.yml`: pytest + ruff on push to main (3.10, 3.11, 3.12). Must pass before tagging a release.
 - `codeql.yml`: Python analysis on push/PR/schedule. May fail on `build/lib/` duplicates — see below.
 - `docs.yml`: Builds mkdocs on push when `docs/**`, `README.md`, or `AGENTS.md` change. Uses `--clean` (no `--strict` — broken links are warnings, not errors).
-- `prerelease.yml`: Triggered manually via workflow_dispatch. Creates RC tags and GitHub pre-release objects with a commit-log summary; attaches no binaries.
+- `prerelease.yml`: Triggered manually via workflow_dispatch. Runs the pre-flight gates for a release candidate (ruff, pytest, pyproject and README version consistency). Creates no tag and no release object; attaches no binaries.
 - `binaries.yml`: Builds standalone binaries for macOS (x64 + arm64), Ubuntu, and Windows.
 - `docker.yml`: Builds and pushes Docker image to GHCR on tag push.
 - `publish.yml`: Manual trigger for PyPI workflow.

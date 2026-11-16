@@ -74,10 +74,12 @@ jobs:
           Rename-Item -Path "dist\cap.exe" -NewName "cap-${{ runner.os }}-${{ runner.arch }}.exe"
           Compress-Archive -Path "dist\cap-${{ runner.os }}-${{ runner.arch }}.exe" -DestinationPath "cap-${{ runner.os }}-${{ runner.arch }}.zip"
 
+      # Attachment only: the release object and its title belong to the
+      # ops-engine layover. Carrying `name:` here would make softprops create
+      # or rewrite the object.
       - name: Release Packages
         uses: softprops/action-gh-release@v2
         with:
-          name: "Capacium ${{ github.ref_name }}"
           files: |
             cap-*.tar.gz
             cap-*.zip
@@ -116,10 +118,10 @@ jobs:
           ./nfpm package --target "release/capacium_${VERSION}.deb" --packager deb
           ./nfpm package --target "release/capacium_${VERSION}.rpm" --packager rpm
 
+      # Attachment only, same as the build job: no release-object identity.
       - name: Upload .deb and .rpm
         uses: softprops/action-gh-release@v2
         with:
-          name: "Capacium ${{ github.ref_name }}"
           files: |
             release/capacium_*.deb
             release/capacium_*.rpm

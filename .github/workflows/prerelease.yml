@@ -1,28 +1,27 @@
-name: Pre-Release
+name: Pre-Release Validation
+
+# Pre-flight gates for a release candidate. This workflow validates the
+# candidate (lint, tests, version and README consistency) and publishes
+# nothing: the release object and the tag belong to the ops-engine layover on
+# Forgejo, and RC tags are not mirrored to GitHub.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 0.4.0) — appended as v{version}-rc.{N}"
+        description: "Version (e.g. 0.4.0) — the candidate is validated as v{version}"
         required: true
         type: string
 
 jobs:
   prerelease:
-    # Hybrid mirror: this GitHub-only release pipeline is skipped on the
-    # self-hosted Forgejo (no macOS/Windows runners). Runs on GitHub only.
+    # Hybrid mirror: this GitHub-only pre-flight is skipped on the
+    # self-hosted Forgejo. Runs on GitHub only.
     if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -63,47 +62,6 @@ jobs:
           fi
           echo "README version references match v${VERSION}."
 
-      - name: Determine next RC number
-        id: next_rc
-        run: |
-          PREFIX="${{ inputs.version }}"
-          EXISTING=$(git tag -l "v${PREFIX}-rc.*" | sed 's/.*-rc\.//' | sort -n | tail -1)
-          NEXT=$((EXISTING + 1))
-          echo "rc_number=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${PREFIX}-rc.${NEXT}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LAST_TAG" ]; then
-            LOG=$(git log --oneline --no-decorate HEAD)
-          else
-            LOG=$(git log --oneline --no-decorate "${LAST_TAG}..HEAD")
-          fi
-          # Filter out non-Capacium-core references (MemPalace, ICM, personal tools, etc.)
-          LOG=$(echo "$LOG" | grep -iv 'mempalace\|icm\|memPalace' || true)
-          echo "log<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$LOG" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Create tag
-        run: |
-          TAG="${{ steps.next_rc.outputs.tag }}"
-          git tag "$TAG"
-          git push origin "$TAG"
-
-      - name: Create GitHub Pre-Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ steps.next_rc.outputs.tag }}"
-          gh release create "$TAG" \
-            --title "Capacium v${{ inputs.version }} RC ${{ steps.next_rc.outputs.rc_number }}" \
-            --prerelease \
-            --notes "## Capacium v${{ inputs.version }} RC ${{ steps.next_rc.outputs.rc_number }}
-
-          **Pre-release** — not for production use.
-
-          ### Changes since last release
-          ${{ steps.changelog.outputs.log }}"
+      # No tag is created and no release object is written here. The
+      # ops-engine lays the release down on Forgejo at tag_push; a GitHub-side
+      # RC tag and pre-release would be a second writer of the same surface.
