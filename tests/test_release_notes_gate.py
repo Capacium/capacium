@@ -373,20 +373,34 @@ class TestNoCommitDumpGeneration:
             assert "tracker_prefixes:" not in _workflow_text(path)
 
 
-class TestForgejoIdempotentPath:
-    def test_patch_writes_title_and_body(self):
+class TestForgejoWorkflowDoesNotWriteTheReleaseObject:
+    """The Forgejo workflow gates the title and the notes; the release object
+    (title, body, tag) belongs to the ops-engine layover. A second writer
+    races the engine: the first writer wins and the loser gets 409/422."""
+
+    def test_no_step_creates_or_reasserts_the_release(self):
         workflow = yaml.safe_load(_workflow_text(FORGEJO_WORKFLOW))
-        step = next(
-            step
+        names = [
+            step.get("name", "")
             for step in workflow["jobs"]["release"]["steps"]
-            if step.get("name") == "Create or re-assert the Forgejo release"
+        ]
+        assert "Create or re-assert the Forgejo release" not in names
+        joined = "\n".join(
+            step.get("run", "")
+            for step in workflow["jobs"]["release"]["steps"]
         )
-        script = step["run"]
-        # The 409/422 branch PATCHes both fields, not the title alone.
-        patch_block = script.split("PATCH_PAYLOAD=", 1)[1]
-        assert "--arg name " in patch_block
-        assert "--arg body " in patch_block
-        assert "{name: $name, body: $body}" in patch_block
+        assert "/releases" not in joined.replace("releases?per_page=100", "")
+        assert "PATCH_PAYLOAD" not in joined
+
+    def test_gates_still_run(self):
+        workflow = yaml.safe_load(_workflow_text(FORGEJO_WORKFLOW))
+        ids = [
+            step.get("id")
+            for step in workflow["jobs"]["release"]["steps"]
+        ]
+        assert "title" in ids
+        assert "notes" in ids
+        assert "audience" in ids
 
 
 class TestGateFetchIsProvenBeforeExecution:

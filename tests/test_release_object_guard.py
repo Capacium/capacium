@@ -142,26 +142,17 @@ EXCEPTIONS = (
     },
 )
 
-#: Violations this repository still carries. They are reported on every run.
+#: Violations this repository still carries. They are reported on every run and
+#: do not make the check pass: an entry only names debt a reader must see.
 #: ``ticket`` is ``None`` where no tracker item has been assigned yet; that is
-#: unassigned debt, and the reason says so instead of pretending otherwise.
-KNOWN_VIOLATIONS = (
-    {
-        "file": ".github/workflows/prerelease.yml",
-        "job": "prerelease",
-        "forms": ("git tag", "git push tag", "gh release create"),
-        "ticket": "INFRA-012",
-        "reason": (
-            "GitHub-side RC channel: 'Create tag' runs git tag + git push "
-            "origin \"$TAG\", then 'Create GitHub Pre-Release' runs gh "
-            "release create on GitHub. RELMODEL-001 audit actor 8 names this "
-            "as the textbook violation; the lvc-ops rc-channel document says "
-            "RC tags are not mirrored to GitHub, so this workflow contradicts "
-            "it. No ticket is assigned. Removing it is outside this lane's "
-            "write scope (release.yml logic and other workflows are frozen)."
-        ),
-    },
-)
+#: unassigned debt and exits non-zero.
+#:
+#: The list is empty because every release-object writer named by RFL-002 has
+#: been removed; the tag-push and ``gh release create`` steps of
+#: ``.github/workflows/prerelease.yml`` were the last ones (INFRA-012). The
+#: matching machinery below is kept because a defect must be listable with a
+#: ticket rather than silently tolerated.
+KNOWN_VIOLATIONS: tuple[dict, ...] = ()
 
 
 def _load_workflow(path: Path) -> dict:
@@ -334,8 +325,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if result["unlisted"]:
         print(
-            "release-object guard: unlisted violation(s) on the GitHub side — "
-            "the release object belongs to the ops-engine on Forgejo:",
+            "release-object guard: unlisted violation(s) — the release object "
+            "belongs to the ops-engine on Forgejo:",
             file=sys.stderr,
         )
         for finding, _ in result["unlisted"]:

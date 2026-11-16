@@ -8,10 +8,11 @@ name: Create Forgejo Release
 #      release before any release object exists if the section is missing or
 #      empty — a release with no authored notes is a release nobody can read,
 #   3. runs the ops-engine external-audience gate, so a body that still names
-#      this repository's own tracker is refused before publication,
-#   4. creates the release with the canonical title and the extracted notes, or
-#      — when it already exists — PATCHes BOTH the title and the body, so the
-#      idempotent path cannot repair a title while leaving a stale body.
+#      this repository's own tracker is refused before publication.
+#
+# The release object itself (title, notes, tag) belongs to the ops-engine
+# layover on Forgejo; this workflow gates the inputs and never creates, edits
+# or deletes a release object.
 #
 # The extraction is one implementation shared with the GitHub release job
 # (scripts/extract_changelog_notes.py), not a second, drifting copy.
@@ -221,57 +222,10 @@ jobs:
             "$NOTES_FILE"
           echo "audience_gate=passed" >> "$GITHUB_OUTPUT"
 
-      - name: Create or re-assert the Forgejo release
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: "${{ github.event.inputs.tag_name || github.ref_name }}"
-          RELEASE_NAME: "${{ steps.title.outputs.release_name }}"
-          NOTES: "${{ steps.notes.outputs.notes }}"
-        run: |
-          set -euo pipefail
-
-          PAYLOAD=$(jq -n \
-            --arg tag_name "$TAG_NAME" \
-            --arg name "$RELEASE_NAME" \
-            --arg body "$NOTES" \
-            '{tag_name: $tag_name, name: $name, body: $body, draft: false, prerelease: false}')
-
-          echo "Creating release $TAG_NAME..."
-          HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
-            -X POST "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases" \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-
-          if [ "$HTTP_STATUS" = "201" ] || [ "$HTTP_STATUS" = "200" ]; then
-            echo "Release created successfully."
-            exit 0
-          fi
-
-          if [ "$HTTP_STATUS" = "409" ] || [ "$HTTP_STATUS" = "422" ]; then
-            echo "Release already exists (HTTP $HTTP_STATUS). Re-asserting canonical title and notes."
-            PATCH_PAYLOAD=$(jq -n \
-              --arg name "$RELEASE_NAME" \
-              --arg body "$NOTES" \
-              '{name: $name, body: $body}')
-            PATCH_STATUS=$(curl -s -o patch.json -w "%{http_code}" \
-              -X PATCH "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" \
-              -H "Authorization: token ${GITHUB_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "$PATCH_PAYLOAD")
-            if [ "$PATCH_STATUS" != "200" ]; then
-              echo "Failed to re-assert release title and notes. HTTP $PATCH_STATUS"
-              cat patch.json
-              exit 1
-            fi
-            echo "Release title and notes re-asserted to '${RELEASE_NAME}'."
-            exit 0
-          fi
-
-          echo "Failed to create release. HTTP $HTTP_STATUS"
-          cat response.json
-          exit 1
+      # The release object is created by the ops-engine layover, not here.
+      # This workflow gates the title, the CHANGELOG notes and the external
+      # audience; writing the object here would be a second writer racing the
+      # engine (first writer wins, the loser gets 409/422).
 
       # ── Dry-run qualified-digests build and comparison ──────────
       # Builds sdist and wheel with SOURCE_DATE_EPOCH=1700000000 and
