@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [1.1.10] - 2026-11-18
+
+### Changed
+
+- The release object, its title and its body are written by the ops-engine on the canonical Forgejo and on the GitHub mirror; no workflow of the repository creates or edits it any more.
+- The asset, PyPI, Docker, Homebrew and marketplace jobs are unchanged and still run on the tag.
+
 ## [1.1.9] - 2026-11-14
 
 ### Fixed
