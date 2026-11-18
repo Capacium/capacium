@@ -28,3 +28,21 @@ tracker_prefixes:
   - CIP
   - ADR
   - SW
+
+# Layer-3 release destinations. The ops-engine release path reads them from the
+# pushed tag and refuses the tag with MissingReleaseDestinationsError when no
+# destination carries the role `release` (measured at v1.1.10, 2026-11-18).
+# The forge is a value, not a key name. Visibilities are the measured state of
+# each forge on 2026-11-18: the canonical Forgejo repository capacium/capacium
+# is private, the GitHub mirror Capacium/capacium is public.
+destinations:
+  - forge: forgejo
+    repo: capacium/capacium
+    role: release
+    visibility: private
+    credential_variable: FORGEJO_TOKEN
+  - forge: github
+    repo: Capacium/capacium
+    role: release
+    visibility: public
+    credential_variable: GH_MIRROR_TOKEN
