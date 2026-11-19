@@ -34,15 +34,15 @@ def test_nfpm_workflow_uses_distinct_package_filenames():
     assert step["env"]["RELEASE_TAG"] == "${{ github.ref_name }}"
 
     workflow = yaml.safe_load(BINARIES_WORKFLOW.read_text())
-    upload = next(
+    attach = next(
         candidate
         for candidate in workflow["jobs"]["nfpm"]["steps"]
-        if candidate.get("name") == "Upload .deb and .rpm"
+        if candidate.get("name") == "Attach the packages"
     )
-    assert upload["with"]["files"].splitlines() == [
-        "release/capacium_*.deb",
-        "release/capacium_*.rpm",
-    ]
+    run = attach["run"]
+    assert "ops-engine-release-attach" in run
+    assert "--artifacts release" in run
+    assert "--repo-dir ." in run
 
 
 @pytest.mark.skipif(
