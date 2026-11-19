@@ -46,3 +46,56 @@ destinations:
     role: release
     visibility: public
     credential_variable: GH_MIRROR_TOKEN
+
+# Layer-3 release manifest (REA-016, decision D2). Each piece names the forge
+# that builds it and the destinations that must hold it. Every binary here is
+# built by GitHub (D4: the standalone binaries and the Python distributions are
+# built by GitHub Actions, which the self-hosted Forgejo has no macOS or Windows
+# runners for), so a piece that is still on its way is pending inside the
+# deadline and red only after it, never red at once.
+#
+# The two types the manifest accepts are release-object assets,
+# `github_release_tarball` and `github_release_zip`; the file extension is not
+# part of the type, so the wheel and checksums.txt are declared as tarballs by
+# the same reading. The .deb and .rpm packages are built by nfpm in binaries.yml
+# and attached to the same release, but they have no release-object type in
+# `release.manifest.assets`: they are built and attached, not declared here.
+release:
+  enabled: true
+  manifest:
+    deadline_minutes: 60
+    assets:
+      - type: github_release_tarball
+        name: cap-Linux-X64.tar.gz
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+      - type: github_release_tarball
+        name: cap-macOS-ARM64.tar.gz
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+      - type: github_release_zip
+        name: cap-Windows-X64.zip
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+      - type: github_release_tarball
+        name: capacium-<version>-py3-none-any.whl
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+      - type: github_release_tarball
+        name: capacium-<version>.tar.gz
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+      - type: github_release_tarball
+        name: checksums.txt
+        producer: github
+        destinations: ["github:Capacium/capacium"]
+    channels:
+      - channel: pypi
+        name: capacium
+        producer: github
+      - channel: ghcr
+        name: capacium/cap
+        producer: github
+      - channel: homebrew
+        name: Capacium/homebrew-tap
+        producer: github
