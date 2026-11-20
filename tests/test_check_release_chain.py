@@ -42,7 +42,7 @@ jobs:
             https://github.com/LangeVC/ops-engine/releases/download/v3.7.0/ops_engine-3.7.0-py3-none-any.whl
       - name: Attach the binaries
         run: |
-          ops-engine-release-attach --config "$OPS_ENGINE_CONFIG" \\
+          ops-engine-release-attach \\
             --repo capacium/capacium --tag "$GITHUB_REF_NAME" \\
             --artifacts dist --repo-dir .
   nfpm:
@@ -54,7 +54,7 @@ jobs:
           mkdir -p dist release
       - name: Attach the packages
         run: |
-          ops-engine-release-attach --config "$OPS_ENGINE_CONFIG" \\
+          ops-engine-release-attach \\
             --repo capacium/capacium --tag "$GITHUB_REF_NAME" \\
             --artifacts release --repo-dir .
 """
@@ -155,7 +155,7 @@ def test_red_against_the_fix_when_softprops_returns(tmp_path):
         BINARIES,
         "      - name: Attach the packages\n"
         "        run: |\n"
-        "          ops-engine-release-attach --config \"$OPS_ENGINE_CONFIG\" \\\n"
+        "          ops-engine-release-attach \\\n"
         "            --repo capacium/capacium --tag \"$GITHUB_REF_NAME\" \\\n"
         "            --artifacts release --repo-dir .\n",
         "      - name: Upload .deb and .rpm\n"
@@ -190,7 +190,7 @@ def test_rejects_a_distributing_job_that_skips_the_entry_point(tmp_path):
         BINARIES,
         "      - name: Attach the packages\n"
         "        run: |\n"
-        "          ops-engine-release-attach --config \"$OPS_ENGINE_CONFIG\" \\\n"
+        "          ops-engine-release-attach \\\n"
         "            --repo capacium/capacium --tag \"$GITHUB_REF_NAME\" \\\n"
         "            --artifacts release --repo-dir .\n",
         "      - name: Collect the packages\n"
@@ -212,6 +212,46 @@ def test_rejects_an_entry_point_without_the_required_arguments(tmp_path):
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "AttachEntryPointMissingError" in result.stderr
     assert "--repo-dir" in result.stderr
+
+
+def test_rejects_an_entry_point_that_passes_a_config(tmp_path):
+    binaries = _replace(
+        BINARIES,
+        "          ops-engine-release-attach \\\n",
+        "          ops-engine-release-attach --config config.yml \\\n",
+    )
+    result = _run(_tree(tmp_path, binaries=binaries))
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "ConfigCopyReferenceError" in result.stderr
+    assert "--config" in result.stderr
+
+
+def test_rejects_a_step_that_builds_the_config_env_var(tmp_path):
+    binaries = _replace(
+        BINARIES,
+        "      - name: Attach the binaries\n",
+        "      - name: Write the config\n"
+        "        run: echo \"$OPS_ENGINE_CONFIG\" > \"$RUNNER_TEMP/release-config.yml\"\n"
+        "      - name: Attach the binaries\n",
+    )
+    result = _run(_tree(tmp_path, binaries=binaries))
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "ConfigCopyReferenceError" in result.stderr
+
+
+def test_rejects_a_channel_workflow_that_passes_a_config(tmp_path):
+    publish = _replace(
+        PUBLISH,
+        "      - uses: pypa/gh-action-pypi-publish@release/v1\n",
+        "      - uses: pypa/gh-action-pypi-publish@release/v1\n"
+        "      - run: ops-engine-release-attach --config \"$OPS_ENGINE_CONFIG\" \\\n"
+        "          --repo capacium/capacium --tag \"$GITHUB_REF_NAME\" \\\n"
+        "          --artifacts dist --repo-dir .\n",
+    )
+    result = _run(_tree(tmp_path, publish=publish))
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "ConfigCopyReferenceError" in result.stderr
+    assert "OPS_ENGINE_CONFIG" in result.stderr
 
 
 def test_rejects_a_missing_nfpm_job(tmp_path):
