@@ -15,11 +15,12 @@ jobs:
   # Stage 1: Build & Test — quality gate, NOT a distribution dependency
   # ═══════════════════════════════════════════
   #
-  # ADR 2026-08-13-release-distribution-boundary: this 3x3 matrix is a gate on
-  # the ref, not a `needs:` input to the distribution steps. The asset attach
-  # and winget jobs depend on `attach-assets` below succeeding, not on the full
-  # matrix, so a Windows test failure no longer silently skips Linux and macOS
-  # distribution (CAP-CI-003).
+  # ADR 2026-08-13-release-distribution-boundary: this 3x3 matrix is a
+  # quality gate on the ref. `attach-assets` below waits for the matrix to
+  # finish, not for it to pass — the job carries `if: !cancelled()`, so a red
+  # or skipped leg cannot silently skip Linux and macOS distribution, while a
+  # cancelled run still stops it. The asset attach and winget jobs depend on
+  # `attach-assets`, not on the full matrix (CAP-CI-003).
   build:
     # Hybrid mirror: this GitHub-only release pipeline is skipped on the
     # self-hosted Forgejo (no macOS/Windows runners). Runs on GitHub only.
@@ -77,15 +78,27 @@ jobs:
   # rule: an object built here would race the engine's and, with different
   # notes, make the engine mark the destination failed.
   #
+  # It waits for the matrix to finish, not for it to pass: the `!cancelled()`
+  # guard below keeps a red or skipped leg from skipping the attach step,
+  # while a cancelled run is still an abort.
+  #
   # This job therefore only ATTACHES the artefacts the Forgejo host cannot
-  # build, and it fails closed: if no release object exists for the tag yet the
-  # attach step raises AttachError and uploads nothing, and an asset that is
-  # already on the release is left untouched rather than overwritten.
+  # build, and it fails closed: when the matrix produced no dist artifact at
+  # all (every leg failed or was skipped) the job stops before attaching
+  # anything — the empty asset manifest raises AttachError; if no release
+  # object exists for the tag yet it raises AttachError too; and an asset that
+  # is already on the release is left untouched rather than overwritten.
   #
   # Standalone binaries + deb/rpm are produced by binaries.yml (single owner);
   # they are NOT built here.
   attach-assets:
     needs: build
+    # RED-or-green: the attach step must run once the matrix has finished, so
+    # a failed or skipped Windows leg cannot skip it (v1.1.8, run
+    # 43145086048). A cancelled run is still an abort, not a release. The
+    # server guard stays: on the self-hosted Forgejo there is no build matrix,
+    # and the engine, not this workflow, owns the release there.
+    if: ${{ !cancelled() && github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -105,10 +118,19 @@ jobs:
 
       - name: Generate checksums
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           mkdir -p release-assets
           cp dist/*.whl dist/*.tar.gz release-assets/ 2>/dev/null || true
+          # Fail closed: with the matrix red on every leg there is nothing to
+          # distribute, and attaching nothing must not look like success.
+          files=(release-assets/*.whl release-assets/*.tar.gz)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "AttachError: no wheel or sdist artifact exists; nothing to attach" >&2
+            exit 2
+          fi
           cd release-assets
-          sha256sum -- *.whl *.tar.gz 2>/dev/null > checksums.txt || true
+          sha256sum -- *.whl *.tar.gz > checksums.txt
           cat checksums.txt
           # Absolute paths: the attach step runs from the workspace root.
           printf '%s\n' "$PWD"/* | tee "$GITHUB_WORKSPACE/release-assets.txt"

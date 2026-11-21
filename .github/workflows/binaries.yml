@@ -74,15 +74,35 @@ jobs:
           Rename-Item -Path "dist\cap.exe" -NewName "cap-${{ runner.os }}-${{ runner.arch }}.exe"
           Compress-Archive -Path "dist\cap-${{ runner.os }}-${{ runner.arch }}.exe" -DestinationPath "cap-${{ runner.os }}-${{ runner.arch }}.zip"
 
-      # Attachment only: the release object and its title belong to the
-      # ops-engine layover. Carrying `name:` here would make softprops create
-      # or rewrite the object.
-      - name: Release Packages
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            cap-*.tar.gz
-            cap-*.zip
+      # Attach only what this leg built: --artifacts reads the top level of the
+      # given directory, so the one archive goes into a directory of its own
+      # rather than the whole workspace root (which also holds the checkout).
+      - name: Collect the built archive (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p release-assets
+          cp "cap-${{ runner.os }}-${{ runner.arch }}.tar.gz" release-assets/
+
+      - name: Collect the built archive (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Copy-Item "cap-${{ runner.os }}-${{ runner.arch }}.zip" release-assets/
+
+      # The release object and its title belong to the ops-engine layover (D1).
+      # Files reach the release through the entry point, not through softprops.
+      # No --config: the CLI is optional-config, and .ops.yaml in --repo-dir
+      # supplies the destinations, the release block and release.assets. A
+      # config copy kept here would drift from the layover's release block.
+      - name: Install the release entry point
+        run: |
+          python3 -m pip install \
+            https://github.com/LangeVC/ops-engine/releases/download/v3.7.0/ops_engine-3.7.0-py3-none-any.whl
+      - name: Attach the binaries
+        run: |
+          ops-engine-release-attach \
+            --repo capacium/capacium --tag "$GITHUB_REF_NAME" \
+            --artifacts release-assets --repo-dir .
 
   nfpm:
     name: Build .deb/.rpm packages (nfpm)
@@ -118,10 +138,14 @@ jobs:
           ./nfpm package --target "release/capacium_${VERSION}.deb" --packager deb
           ./nfpm package --target "release/capacium_${VERSION}.rpm" --packager rpm
 
-      # Attachment only, same as the build job: no release-object identity.
-      - name: Upload .deb and .rpm
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release/capacium_*.deb
-            release/capacium_*.rpm
+      # The release object and its title belong to the ops-engine layover (D1).
+      # Files reach the release through the entry point, not through softprops.
+      - name: Install the release entry point
+        run: |
+          python3 -m pip install \
+            https://github.com/LangeVC/ops-engine/releases/download/v3.7.0/ops_engine-3.7.0-py3-none-any.whl
+      - name: Attach the packages
+        run: |
+          ops-engine-release-attach \
+            --repo capacium/capacium --tag "$GITHUB_REF_NAME" \
+            --artifacts release --repo-dir .

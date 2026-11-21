@@ -117,30 +117,9 @@ RELEASE_OBJECT_KEYS = frozenset(
 #: Artefact attachment to an existing release object. Exception 2 of the
 #: division document: the Forgejo Linux host cannot build macOS/Windows
 #: binaries or .deb/.rpm packages, so GitHub builds them and attaches them.
-EXCEPTIONS = (
-    {
-        "file": ".github/workflows/binaries.yml",
-        "job": "build",
-        "forms": ("softprops/action-gh-release",),
-        "reason": (
-            "Exception 2 (division document): macOS and Windows binaries are "
-            "built on runners the Forgejo host does not have. The action "
-            "attaches cap-*.tar.gz / cap-*.zip to the release object the "
-            "ops-engine created; it is artefact attachment, not creation."
-        ),
-    },
-    {
-        "file": ".github/workflows/binaries.yml",
-        "job": "nfpm",
-        "forms": ("softprops/action-gh-release",),
-        "reason": (
-            "Exception 2 (division document): the .deb and .rpm packages are "
-            "produced by nfpm on the Ubuntu GitHub runner and attached to the "
-            "existing release object; same build-environment exception as the "
-            "build job."
-        ),
-    },
-)
+#: As of REA-042 the attachment goes through ops-engine-release-attach (D1),
+#: not through softprops, so no exception entry is needed.
+EXCEPTIONS = ()
 
 #: Violations this repository still carries. They are reported on every run and
 #: do not make the check pass: an entry only names debt a reader must see.
