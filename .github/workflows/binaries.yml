@@ -97,7 +97,7 @@ jobs:
       - name: Install the release entry point
         run: |
           python3 -m pip install \
-            https://github.com/LangeVC/ops-engine/releases/download/v3.7.2/ops_engine-3.7.2-py3-none-any.whl
+            https://github.com/LangeVC/ops-engine/releases/download/v3.7.3/ops_engine-3.7.3-py3-none-any.whl
       - name: Attach the binaries
         run: |
           ops-engine-release-attach \
@@ -143,7 +143,7 @@ jobs:
       - name: Install the release entry point
         run: |
           python3 -m pip install \
-            https://github.com/LangeVC/ops-engine/releases/download/v3.7.2/ops_engine-3.7.2-py3-none-any.whl
+            https://github.com/LangeVC/ops-engine/releases/download/v3.7.3/ops_engine-3.7.3-py3-none-any.whl
       - name: Attach the packages
         run: |
           ops-engine-release-attach \
