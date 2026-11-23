@@ -208,18 +208,32 @@ TITLE_GATE_PY
     echo -e "${YELLOW}[dry-run gate 3/3] Audience gate${NC}"
     AUDIENCE_GATE="not run"
     if [ -n "${FORGEJO_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
-        AUDIENCE_GATE_SCRIPT="$(mktemp)"
+        # Since OE-007 the gate script carries no copy of the ticket check: it
+        # loads `check_release_notes_audience` from
+        # `src/ops_engine/modules/release_gates.py` by a path relative to its
+        # own location. Fetching only the script would fail at import time;
+        # both files are fetched into the same relative layout so the engine's
+        # own gate stays authoritative, as in the two workflows.
+        GATE_ROOT="$(mktemp -d)"
+        AUDIENCE_GATE_SCRIPT="$GATE_ROOT/scripts/release_notes_audience_gate.py"
         PREFIXES_FILE="$(mktemp)"
         NOTES_FILE="$(mktemp)"
-        trap 'rm -f "$AUDIENCE_GATE_SCRIPT" "$PREFIXES_FILE" "$NOTES_FILE"' EXIT
-        if curl -fsSL \
-            "https://raw.githubusercontent.com/LangeVC/ops-engine/v3.4.2/scripts/release_notes_audience_gate.py" \
-            -o "$AUDIENCE_GATE_SCRIPT" 2>/dev/null; then
-            python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
-                "$AUDIENCE_GATE_SCRIPT" || {
-                echo "AudienceGateError: fetched audience gate script is not valid Python" >&2
-                exit 2
-            }
+        trap 'rm -rf "$GATE_ROOT" "$PREFIXES_FILE" "$NOTES_FILE"' EXIT
+        GATE_BASE="https://raw.githubusercontent.com/LangeVC/ops-engine/v3.7.3"
+        mkdir -p "$GATE_ROOT/scripts" "$GATE_ROOT/src/ops_engine/modules"
+        if curl -fsSL "$GATE_BASE/scripts/release_notes_audience_gate.py" \
+                -o "$AUDIENCE_GATE_SCRIPT" 2>/dev/null \
+            && curl -fsSL "$GATE_BASE/src/ops_engine/modules/release_gates.py" \
+                -o "$GATE_ROOT/src/ops_engine/modules/release_gates.py" 2>/dev/null; then
+            for fetched in \
+                "$AUDIENCE_GATE_SCRIPT" \
+                "$GATE_ROOT/src/ops_engine/modules/release_gates.py"; do
+                python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+                    "$fetched" || {
+                    echo "AudienceGateError: fetched audience gate file is not valid Python: $fetched" >&2
+                    exit 2
+                }
+            done
             printf '%s\n' "$NOTES" > "$NOTES_FILE"
             python3 scripts/extract_tracker_prefixes.py > "$PREFIXES_FILE" || {
                 echo "AudienceGateError: failed to extract ticket prefixes from .ops.yaml" >&2
