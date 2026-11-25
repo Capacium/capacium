@@ -59,36 +59,62 @@ destinations:
 # part of the type, so the wheel and checksums.txt are declared as tarballs by
 # the same reading. The .deb and .rpm packages are built by nfpm in binaries.yml
 # and attached to the same release, but they have no release-object type in
-# `release.manifest.assets`: they are built and attached, not declared here.
+# `release.manifest.assets`: they are built and attached, not declared here,
+# and they are NOT mirrored to Forgejo (owner decision): only the six pieces
+# declared below cross to the Forgejo release; the .deb and .rpm stay on GitHub.
+#
+# Every piece now names BOTH destinations, so the Forgejo release must hold it
+# too. `release.forgejo_assets: pull` (REA-017) arms the pull that downloads
+# each GitHub-built piece and attaches it to the Forgejo release, verifying its
+# SHA-256 against GitHub's digest before uploading. The same six names are
+# declared again under `release.assets` (REA-010) because that is the key the
+# release census reads; a manifest the census does not read would leave the
+# Forgejo release unaccounted for.
 release:
   enabled: true
+  forgejo_assets: pull
+  # The census declaration (REA-010). `<version>` expands to the tag without
+  # its leading `v`. Kept equal to the six `release.manifest.assets` pieces.
+  assets:
+    - type: github_release_tarball
+      name: cap-Linux-X64.tar.gz
+    - type: github_release_tarball
+      name: cap-macOS-ARM64.tar.gz
+    - type: github_release_zip
+      name: cap-Windows-X64.zip
+    - type: github_release_tarball
+      name: capacium-<version>-py3-none-any.whl
+    - type: github_release_tarball
+      name: capacium-<version>.tar.gz
+    - type: github_release_tarball
+      name: checksums.txt
   manifest:
     deadline_minutes: 60
     assets:
       - type: github_release_tarball
         name: cap-Linux-X64.tar.gz
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
       - type: github_release_tarball
         name: cap-macOS-ARM64.tar.gz
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
       - type: github_release_zip
         name: cap-Windows-X64.zip
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
       - type: github_release_tarball
         name: capacium-<version>-py3-none-any.whl
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
       - type: github_release_tarball
         name: capacium-<version>.tar.gz
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
       - type: github_release_tarball
         name: checksums.txt
         producer: github
-        destinations: ["github:Capacium/capacium"]
+        destinations: ["github:Capacium/capacium", "forgejo:capacium/capacium"]
     channels:
       - channel: pypi
         name: capacium
