@@ -136,7 +136,7 @@ jobs:
           printf '%s\n' "$PWD"/* | tee "$GITHUB_WORKSPACE/release-assets.txt"
 
       # Generic tooling lives in the open base. ops-engine is OSS and publicly
-      # mirrored, so this needs no credential. Pinned to the v3.7.3 tag. The
+      # mirrored, so this needs no credential. Pinned to the v3.7.4 tag. The
       # checker is the same one the Forgejo release job fetches, so the two
       # forges enforce the identical audience gate rather than two copies.
       #
@@ -151,7 +151,7 @@ jobs:
           set -euo pipefail
           GATE_ROOT="$RUNNER_TEMP/ops-engine-gate"
           mkdir -p "$GATE_ROOT/scripts" "$GATE_ROOT/src/ops_engine/modules"
-          BASE="https://raw.githubusercontent.com/LangeVC/ops-engine/v3.7.3"
+          BASE="https://raw.githubusercontent.com/LangeVC/ops-engine/v3.7.4"
           curl -fsSL "$BASE/scripts/release_notes_audience_gate.py" \
             -o "$GATE_ROOT/scripts/release_notes_audience_gate.py"
           curl -fsSL "$BASE/src/ops_engine/modules/release_gates.py" \
