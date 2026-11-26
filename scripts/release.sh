@@ -219,7 +219,7 @@ TITLE_GATE_PY
         PREFIXES_FILE="$(mktemp)"
         NOTES_FILE="$(mktemp)"
         trap 'rm -rf "$GATE_ROOT" "$PREFIXES_FILE" "$NOTES_FILE"' EXIT
-        GATE_BASE="https://raw.githubusercontent.com/LangeVC/ops-engine/v3.7.3"
+        GATE_BASE="https://raw.githubusercontent.com/LangeVC/ops-engine/v3.7.4"
         mkdir -p "$GATE_ROOT/scripts" "$GATE_ROOT/src/ops_engine/modules"
         if curl -fsSL "$GATE_BASE/scripts/release_notes_audience_gate.py" \
                 -o "$AUDIENCE_GATE_SCRIPT" 2>/dev/null \
